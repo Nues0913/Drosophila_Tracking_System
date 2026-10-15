@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -9,109 +10,78 @@ import numpy as np
 import torch
 from torch import nn
 
-from .batches import Episode, pack_episode
+from .batches import SequenceModel, pack_episode
+from .collection import PretrainDatasetCache, collect_lockstep, pretrain_stream_identity
 from .config import (
-    TRAIN_ENVIRONMENT_SEED_LIMIT,
     make_env,
     prepare_policy,
     save_actor,
     seed_all,
     write_json,
 )
-from .recovery import EpisodeStore, Recovery, atomic_torch_save, fit_sequence_epochs, restore_rng
+from .parallel import EnvPool, default_workers
+from .recovery import Recovery, atomic_torch_save, fit_sequence_epochs, restore_rng
+
+PRETRAIN_STREAMS = {"vision": 1, "odor": 2}
 
 
-def collect_pretraining(
-    config,
-    contract,
-    policy,
-    modality,
-    episodes,
-    rng,
-    device,
-    total_steps: int | None = None,
-    initial_dataset=None,
-    initial_steps=0,
-    on_episode=None,
-    on_progress=None,
-):
-    dataset: list[Episode] = list(initial_dataset or [])
-    environment_steps = initial_steps
-    env = make_env(config, contract)
-    try:
-        while (
-            environment_steps < total_steps if total_steps is not None else len(dataset) < episodes
-        ):
-            observation, info = env.reset(seed=int(rng.integers(0, TRAIN_ENVIRONMENT_SEED_LIMIT)))
-            observations, labels = [], []
-            previous_bearing = None
-            while True:
-                bearing = float(info["target_bearing_rad"])
-                angular_velocity = (
-                    0.0
-                    if previous_bearing is None
-                    else np.arctan2(
-                        np.sin(bearing - previous_bearing), np.cos(bearing - previous_bearing)
-                    )
-                    / contract.control_dt
-                )
-                present = (
-                    bool(info["target_visible"])
-                    if modality == "vision"
-                    else bool(
-                        np.max(observation["odor"])
-                        > float(config.get("train", {}).get("odor_presence_threshold", 0.01))
-                        and observation["valid"][2] > 0
-                    )
-                )
-                masked = {
-                    key: np.array(observation[key], copy=True)
-                    for key in ("vision", "odor", "valid")
+def pretraining_actor(config, contract, modality):
+    """Teacher following and occasional exploration broaden the sequences.
+
+    Privileged state remains outside the actor input; labels come from ``info``.
+    """
+    train = config.get("train", {})
+    exploration = float(train.get("exploration_probability", 0.2))
+    threshold = float(train.get("odor_presence_threshold", 0.01))
+
+    def act(running, observations, infos):
+        actions = {}
+        for slot, entry in running.items():
+            observation, info = observations[slot], infos[slot]
+            bearing = float(info["target_bearing_rad"])
+            previous = entry.extra.get("previous_bearing")
+            angular_velocity = (
+                0.0
+                if previous is None
+                else np.arctan2(np.sin(bearing - previous), np.cos(bearing - previous))
+                / contract.control_dt
+            )
+            present = (
+                bool(info["target_visible"])
+                if modality == "vision"
+                else bool(np.max(observation["odor"]) > threshold and observation["valid"][2] > 0)
+            )
+            masked = {
+                key: np.array(observation[key], copy=True) for key in ("vision", "odor", "valid")
+            }
+            if modality == "vision":
+                masked["odor"][:] = 0
+                masked["valid"][2] = 0
+            else:
+                masked["vision"][:] = 0
+                masked["valid"][:2] = 0
+            entry.observations.append(masked)
+            entry.labels.append(
+                {
+                    "bearing": np.asarray([np.sin(bearing), np.cos(bearing)], dtype=np.float32),
+                    "present": np.asarray(float(present), dtype=np.float32),
+                    "angular_velocity": np.asarray(angular_velocity, dtype=np.float32),
                 }
-                if modality == "vision":
-                    masked["odor"][:] = 0
-                    masked["valid"][2] = 0
-                else:
-                    masked["vision"][:] = 0
-                    masked["valid"][:2] = 0
-                observations.append(masked)
-                labels.append(
-                    {
-                        "bearing": np.asarray([np.sin(bearing), np.cos(bearing)], dtype=np.float32),
-                        "present": np.asarray(float(present), dtype=np.float32),
-                        "angular_velocity": np.asarray(angular_velocity, dtype=np.float32),
-                    }
+            )
+            action = np.asarray(info["teacher_action"], dtype=np.float32)
+            if entry.rng.random() < exploration:
+                action = np.asarray(
+                    [
+                        entry.rng.uniform(0, contract.v_max),
+                        entry.rng.uniform(-contract.omega_max, contract.omega_max),
+                    ],
+                    dtype=np.float32,
                 )
-                # Teacher following and occasional exploration broaden the sequences.
-                # Privileged state remains outside the actor input.
-                action = np.asarray(info["teacher_action"], dtype=np.float32)
-                if rng.random() < float(
-                    config.get("train", {}).get("exploration_probability", 0.2)
-                ):
-                    action = np.asarray(
-                        [
-                            rng.uniform(0, contract.v_max),
-                            rng.uniform(-contract.omega_max, contract.omega_max),
-                        ],
-                        dtype=np.float32,
-                    )
-                previous_bearing = bearing
-                observation, _, terminated, truncated, info = env.step(action)
-                environment_steps += 1
-                if on_progress:
-                    on_progress(environment_steps)
-                if (
-                    terminated
-                    or truncated
-                    or (total_steps is not None and environment_steps >= total_steps)
-                ):
-                    break
-            dataset.append(pack_episode(observations, labels))
-            if on_episode:
-                on_episode(dataset[-1], len(dataset), environment_steps)
-    finally:
-        env.close()
-    return dataset, environment_steps
+            entry.extra["previous_bearing"] = bearing
+            actions[slot] = action
+        return actions
+
+    return act
 
 
 def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torch.device) -> None:
@@ -151,15 +121,20 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
     parameters = list(policy.parameters()) + list(decoder.parameters())
     optimizer = torch.optim.Adam(parameters, lr=float(train.get("learning_rate", 1e-3)))
     recovery = Recovery(output, config, "pretrain", seed, device=device)
-    store = EpisodeStore(output / "dataset")
+    # Pretraining episodes do not depend on the actor: one stream per seed,
+    # modality and world is shared by all variants when dataset_cache is set.
+    cache = PretrainDatasetCache(
+        Path(config["dataset_cache"]) / "pretrain" if config.get("dataset_cache") else output,
+        pretrain_stream_identity(config, modality, seed),
+    )
     checkpoint = recovery.checkpoint
     environment_steps = checkpoint["environment_steps"] if checkpoint else 0
-    dataset = store.load(checkpoint["dataset_count"]) if checkpoint else []
     if checkpoint:
         policy.load_state_dict(checkpoint["actor"])
         decoder.load_state_dict(checkpoint["decoder"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         restore_rng(checkpoint["rng"], rng)
+    dataset_count = checkpoint["dataset_count"] if checkpoint else 0
 
     def save(phase, fit_state=None):
         recovery.save(
@@ -168,86 +143,123 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
             decoder=decoder.state_dict(),
             optimizer=optimizer.state_dict(),
             phase=phase,
-            dataset_count=len(dataset),
+            dataset_count=dataset_count,
             environment_steps=environment_steps,
             fit_state=fit_state,
         )
 
-    def collected(episode, episode_count, steps):
-        nonlocal environment_steps, dataset
-        store.append(episode_count - 1, episode)
-        environment_steps = steps
-        # The collector owns its list; the outer list only tracks committed shards.
-        dataset.append(episode)
-        save("collect")
-        recovery.progress(
-            force=True,
-            phase="collect",
-            environment_steps=steps,
-            total_steps=total_steps,
-            episodes=episode_count,
-        )
-
     if checkpoint is None or checkpoint["phase"] == "collect":
-        dataset, environment_steps = collect_pretraining(
-            config,
-            contract,
-            policy,
-            modality,
-            count,
-            rng,
-            device,
-            total_steps,
-            initial_dataset=dataset,
-            initial_steps=environment_steps,
-            on_episode=collected,
-            on_progress=lambda steps: recovery.progress(
-                phase="collect", environment_steps=steps, total_steps=total_steps
-            ),
+        with cache.locked():
+            lengths = cache.lengths()
+            available = sum(lengths)
+            if available < total_steps:
+                pool = EnvPool(
+                    [partial(make_env, config, contract) for _ in range(max(1, default_workers()))]
+                )
+
+                def collected(index, episode, steps):
+                    nonlocal environment_steps, dataset_count
+                    cache.append(index, episode, lengths)
+                    environment_steps, dataset_count = min(steps, total_steps), index + 1
+                    save("collect")
+                    recovery.progress(
+                        force=True,
+                        phase="collect",
+                        environment_steps=environment_steps,
+                        total_steps=total_steps,
+                        episodes=dataset_count,
+                    )
+
+                try:
+                    collect_lockstep(
+                        pool,
+                        seed=seed,
+                        stream=PRETRAIN_STREAMS[modality],
+                        first_index=len(lengths),
+                        committed_steps=available,
+                        step_budget=total_steps,
+                        act=pretraining_actor(config, contract, modality),
+                        finish=lambda entry: pack_episode(entry.observations, entry.labels),
+                        on_episode=collected,
+                        on_progress=lambda steps: recovery.progress(
+                            phase="collect", environment_steps=steps, total_steps=total_steps
+                        ),
+                        truncate=False,
+                    )
+                finally:
+                    pool.close()
+        dataset, environment_steps = cache.load_prefix(total_steps)
+        dataset_count = len(dataset)
+        write_json(
+            output / "dataset.json",
+            {
+                "cache": str(cache.directory),
+                "stream_sha256": cache.key,
+                "episodes": dataset_count,
+                "environment_steps": environment_steps,
+            },
         )
         save("fit")
+    else:
+        dataset, environment_steps = cache.load_prefix(total_steps)
+        if len(dataset) != dataset_count:
+            raise ValueError("Recovery dataset count differs from the cached episode stream")
 
-    def window_loss(episode, start, end, state):
-        outputs, activities = [], []
-        for step in range(start, end):
-            obs = {
-                key: torch.as_tensor(values[step : step + 1], device=device)
-                for key, values in episode.observations.items()
-            }
-            _, state, activity = policy(obs, state)
-            outputs.append(decoder(activity[:, mask])[0])
-            activities.append(activity.square().mean())
-        prediction = torch.stack(outputs)
-        target = torch.as_tensor(episode.labels["bearing"][start:end], device=device)
-        present = torch.as_tensor(episode.labels["present"][start:end], device=device)
-        denom = present.sum().clamp_min(1)
-        bearing_loss = ((prediction[:, :2] - target).square().sum(-1) * present).sum() / denom
-        loss = bearing_loss + nn.functional.binary_cross_entropy_with_logits(
-            prediction[:, 2], present
-        )
+    model = SequenceModel(policy, device)
+    inputs = model.encode(dataset)
+    labels = [
+        {key: torch.as_tensor(value, device=device) for key, value in episode.labels.items()}
+        for episode in dataset
+    ]
+    # Raw camera frames are no longer needed once encoded (about 1.4 GB per 240k steps).
+    del dataset
+    velocity_coef = float(train.get("angular_velocity_coef", 0.1))
+    activity_coef = float(train.get("activity_coef", 1e-4))
+
+    def window_loss(outputs, targets, step_mask):
+        # Per lane, exactly the single-window loss: bearing/velocity averaged
+        # over present steps, presence and activity over the lane's steps.
+        activity = outputs["activity"]
+        prediction = decoder(activity[..., mask])
+        present = targets["present"] * step_mask
+        denom = present.sum(0).clamp_min(1)
+        steps = step_mask.sum(0).clamp_min(1)
+        bearing_loss = ((prediction[..., :2] - targets["bearing"]).square().sum(-1) * present).sum(
+            0
+        ) / denom
+        presence_loss = (
+            nn.functional.binary_cross_entropy_with_logits(
+                prediction[..., 2], targets["present"], reduction="none"
+            )
+            * step_mask
+        ).sum(0) / steps
+        loss = bearing_loss + presence_loss
         if modality == "vision":
-            velocity = torch.as_tensor(episode.labels["angular_velocity"][start:end], device=device)
             loss = (
                 loss
-                + float(train.get("angular_velocity_coef", 0.1))
-                * ((prediction[:, 3] - velocity).square() * present).sum()
+                + velocity_coef
+                * ((prediction[..., 3] - targets["angular_velocity"]).square() * present).sum(0)
                 / denom
             )
-        loss = loss + float(train.get("activity_coef", 1e-4)) * torch.stack(activities).mean()
-        return loss, state
+        activity_loss = (activity.square().mean(-1) * step_mask).sum(0) / steps
+        return loss + activity_coef * activity_loss
 
     reports = fit_sequence_epochs(
-        policy,
-        dataset,
+        model,
+        inputs,
+        labels,
         {"epochs": 20, **train},
         optimizer,
         parameters,
         rng,
-        device,
         window_loss,
         lambda state: save("fit", state),
-        lambda **values: recovery.progress(
-            phase="fit", environment_steps=environment_steps, total_steps=total_steps, **values
+        lambda force=False, phase="fit", **values: recovery.progress(
+            force=force,
+            phase=phase,
+            environment_steps=environment_steps,
+            total_steps=total_steps,
+            **values,
         ),
         checkpoint.get("fit_state") if checkpoint and checkpoint["phase"] == "fit" else None,
     )

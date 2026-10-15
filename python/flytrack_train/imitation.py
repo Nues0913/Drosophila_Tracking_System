@@ -2,118 +2,113 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from .batches import Episode, pack_episode, tensor_observation
+from .batches import Episode, SequenceModel, pack_episode, tensor_observation
+from .collection import collect_lockstep
 from .config import (
-    TRAIN_ENVIRONMENT_SEED_LIMIT,
     make_env,
     prepare_policy,
     save_actor,
     seed_all,
     write_json,
 )
+from .parallel import EnvPool, default_workers
 from .recovery import EpisodeStore, Recovery, fit_sequence_epochs, restore_rng
 
+BC_STREAM = 10
 
-def collect_episodes(
-    config,
-    contract,
-    policy,
-    count: int,
-    rng: np.random.Generator,
-    device,
-    teacher_probability: float,
-    step_budget: int | None = None,
-    initial_episodes=None,
-    initial_steps=0,
-    on_episode=None,
-    on_progress=None,
-):
-    episodes: list[Episode] = list(initial_episodes or [])
-    steps = initial_steps
-    env = make_env(config, contract)
-    try:
-        policy.eval()
-        while steps < step_budget if step_budget is not None else len(episodes) < count:
-            observation, info = env.reset(seed=int(rng.integers(0, TRAIN_ENVIRONMENT_SEED_LIMIT)))
-            state = policy.initial_state(1, device)
-            observations, labels = [], []
-            while True:
-                teacher_action = np.asarray(info["teacher_action"], dtype=np.float32)
-                observations.append(
-                    {
-                        key: np.array(observation[key], copy=True)
-                        for key in ("vision", "odor", "valid")
-                    }
-                )
-                labels.append({"action": teacher_action.copy()})
-                with torch.no_grad():
-                    student_action, state, _ = policy(
-                        tensor_observation([observation], device), state
-                    )
-                action = (
-                    teacher_action
-                    if rng.random() < teacher_probability
-                    else student_action[0].cpu().numpy()
-                )
-                observation, _, terminated, truncated, info = env.step(action)
-                steps += 1
-                if on_progress:
-                    on_progress(steps)
-                if terminated or truncated or (step_budget is not None and steps >= step_budget):
-                    break
-            episodes.append(pack_episode(observations, labels))
-            if on_episode:
-                on_episode(episodes[-1], len(episodes), steps)
-    finally:
-        env.close()
-    return episodes, steps
+
+def dagger_actor(model: SequenceModel, contract, teacher_probability: float):
+    """Teacher labels every step; the acting policy mixes teacher and student.
+
+    The student runs batched over all slots with its own recurrent state per
+    slot. It always advances (as in deployment), whoever's action is applied.
+    """
+
+    def start(slot, entry):
+        if teacher_probability < 1:
+            entry.extra["sensory"], entry.extra["central"] = model.initial(1)
+
+    def act(running, observations, infos):
+        slots = list(running)
+        for slot in slots:
+            entry = running[slot]
+            entry.observations.append(
+                {
+                    key: np.array(observations[slot][key], copy=True)
+                    for key in ("vision", "odor", "valid")
+                }
+            )
+            entry.labels.append(
+                {"action": np.asarray(infos[slot]["teacher_action"], dtype=np.float32).copy()}
+            )
+        actions = {
+            slot: np.asarray(infos[slot]["teacher_action"], dtype=np.float32) for slot in slots
+        }
+        if teacher_probability >= 1:
+            return actions
+        with torch.no_grad(), model.cache():
+            obs = tensor_observation([observations[slot] for slot in slots], model.device)
+            sensory = (
+                torch.cat([running[slot].extra["sensory"] for slot in slots])
+                if model.split
+                else None
+            )
+            central = torch.cat([running[slot].extra["central"] for slot in slots])
+            inputs, sensory = model.observe(obs, sensory)
+            student, central, _ = model.step(inputs, central)
+        student = student.cpu().numpy()
+        for row, slot in enumerate(slots):
+            entry = running[slot]
+            if model.split:
+                entry.extra["sensory"] = sensory[row : row + 1]
+            entry.extra["central"] = central[row : row + 1]
+            if entry.rng.random() >= teacher_probability:
+                actions[slot] = student[row]
+        return actions
+
+    return start, act
 
 
 def fit_behavior(
-    policy,
+    model: SequenceModel,
+    inputs,
     episodes: list[Episode],
     train: dict[str, Any],
     contract,
     optimizer,
     rng,
-    device,
     fit_state=None,
     on_checkpoint=None,
     on_progress=None,
 ):
     if not episodes:
         raise ValueError("Behavior cloning requires collected episodes")
+    device = model.device
     scale = torch.tensor([contract.v_max, contract.omega_max], device=device)
+    labels = [{"action": torch.as_tensor(e.labels["action"], device=device)} for e in episodes]
+    activity_coef = float(train.get("activity_coef", 1e-4))
 
-    def window_loss(episode, start, end, state):
-        predictions, activities = [], []
-        for step in range(start, end):
-            obs = {
-                key: torch.as_tensor(values[step : step + 1], device=device)
-                for key, values in episode.observations.items()
-            }
-            prediction, state, activity = policy(obs, state)
-            predictions.append(prediction[0])
-            activities.append(activity.square().mean())
-        target = torch.as_tensor(episode.labels["action"][start:end], device=device)
-        loss = ((torch.stack(predictions) - target) / scale).square().mean()
-        loss = loss + float(train.get("activity_coef", 1e-4)) * torch.stack(activities).mean()
-        return loss, state
+    def window_loss(outputs, targets, step_mask):
+        steps = step_mask.sum(0).clamp_min(1)
+        error = ((outputs["action"] - targets["action"]) / scale).square().mean(-1)
+        activity = outputs["activity"].square().mean(-1)
+        return ((error + activity_coef * activity) * step_mask).sum(0) / steps
 
     return fit_sequence_epochs(
-        policy,
-        episodes,
+        model,
+        inputs,
+        labels,
         train,
         optimizer,
-        list(policy.parameters()),
+        list(model.policy.parameters()),
         rng,
-        device,
         window_loss,
         on_checkpoint or (lambda state: None),
         on_progress or (lambda **values: None),
@@ -155,6 +150,8 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         policy.load_state_dict(checkpoint["actor"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         restore_rng(checkpoint["rng"], rng)
+    model = SequenceModel(policy, device)
+    encoded: list[dict[str, torch.Tensor]] = []
     for round_index in range(first_round, rounds + 1):
         # The final round is fully student driven; labels always come from the privileged teacher.
         probability = (
@@ -216,40 +213,56 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             )
 
         if phase == "collect":
-            collect_episodes(
-                config,
-                contract,
-                policy,
-                initial_episodes if round_index == 0 else dagger_episodes,
-                rng,
-                device,
-                probability,
-                budget,
-                initial_episodes=episodes[base_count:],
-                initial_steps=round_steps,
-                on_episode=collected,
-                on_progress=lambda steps, round_index=round_index, base_steps=base_steps: (
-                    recovery.progress(
-                        phase="collect",
-                        round=round_index,
-                        environment_steps=base_steps + steps,
-                        total_steps=teacher_steps + rounds * dagger_steps,
-                    )
-                ),
+            start, act = dagger_actor(model, contract, probability)
+            pool = EnvPool(
+                [partial(make_env, config, contract) for _ in range(max(1, default_workers()))]
             )
+            try:
+                collect_lockstep(
+                    pool,
+                    seed=seed,
+                    stream=BC_STREAM + round_index,
+                    first_index=len(episodes) - base_count,
+                    committed_steps=round_steps,
+                    step_budget=budget,
+                    act=act,
+                    finish=lambda entry: pack_episode(entry.observations, entry.labels),
+                    on_episode=lambda index, episode, steps, collected=collected: collected(
+                        episode, index + 1, steps
+                    ),
+                    on_start=start,
+                    on_progress=lambda steps, round_index=round_index, base_steps=base_steps: (
+                        recovery.progress(
+                            phase="collect",
+                            round=round_index,
+                            environment_steps=base_steps + steps,
+                            total_steps=teacher_steps + rounds * dagger_steps,
+                        )
+                    ),
+                )
+            finally:
+                pool.close()
             save("fit")
+        # The frozen sensory code of an episode never changes; encode new ones only.
+        encoded.extend(model.encode(episodes[len(encoded) :]))
         fit_reports = fit_behavior(
-            policy,
+            model,
+            encoded,
             episodes,
             train,
             contract,
             optimizer,
             rng,
-            device,
             checkpoint.get("fit_state") if continuing and phase == "fit" else None,
             on_checkpoint=lambda state: save("fit", state),
-            on_progress=lambda round_index=round_index, **values: recovery.progress(
-                phase="fit", round=round_index, environment_steps=environment_steps, **values
+            on_progress=lambda round_index=round_index, force=False, phase="fit", **values: (
+                recovery.progress(
+                    force=force,
+                    phase=phase,
+                    round=round_index,
+                    environment_steps=environment_steps,
+                    **values,
+                )
             ),
         )
         reports.append(

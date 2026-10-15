@@ -40,7 +40,7 @@ lock 檔固定 Linux x86_64、Python 3.12、PyTorch 2.9.1+cu126（細節見 [req
 ### 3. 確認環境正常
 
 ```bash
-pytest python/tests                    # 應為 66 passed（自動使用 artifacts/frontend）
+pytest python/tests                    # 應為 73 passed（自動使用 artifacts/frontend）
 ruff check python scripts
 python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   # 約 10 秒的小流程
 ```
@@ -51,8 +51,12 @@ python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   #
 python scripts/prepare_experiments.py --algorithm ppo --device cuda
 cat runs/experiment_configs/parameter_budget.json      # 六變體參數數須在 VO 的 ±5% 內
 bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC → PPO
-python -m flytrack_train evaluate --config configs/train/evaluate.yaml
+python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
 ```
+
+`run_all.sh` 呼叫 `scripts/run_experiments.py`，預設同時跑 2 組（變體, 種子），每組內的階段依序執行，中斷後重跑會自動略過已完成並驗證過的階段、從 checkpoint 續跑。額外參數會傳下去，例如 `bash runs/experiment_configs/run_all.sh --seeds 2` 或 `--variants VO --seeds 0 --jobs 1`。環境模擬在 CPU 子行程平行執行（`--workers`，預設依 CPU 數分配），預訓練資料同一種子只收集一次（`runs/datasets/`）。
+
+WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的 `C:\Users\<帳號>\.wslconfig` 寫入 `[wsl2]`、`memory=12GB`，再於 PowerShell 執行 `wsl --shutdown` 後重開 Ubuntu。筆電訓練時請插電並使用最佳效能電源模式。
 
 先跑單一變體、單一種子確認穩定性與速度，再分工跑完整矩陣。分工方式與注意事項見 [docs/gpu_hosts.md](docs/gpu_hosts.md#分工跑正式訓練)。`runs/` 不進 git；訓練完成後請把各自的 `runs/<variant>/seed_<n>/actor` 與 log 交回整合。
 

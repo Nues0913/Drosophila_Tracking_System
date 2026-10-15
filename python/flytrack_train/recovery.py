@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from .batches import Episode, sequence_windows
+from .batches import Episode, LaneSchedule
 from .config import TRAIN_ENVIRONMENT_SEED_POLICY, project_source_fingerprint, write_json
 
 
@@ -175,82 +175,203 @@ class EpisodeStore:
         return result
 
 
+def _cpu_copy(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: _cpu_copy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cpu_copy(item) for item in value)
+    return value
+
+
+def held_out_episodes(count: int, every: int) -> list[int]:
+    """Every ``every``-th episode is validation; none for tiny datasets or every<=0."""
+    if every <= 1 or count < every:
+        return []
+    return [index for index in range(count) if index % every == every - 1]
+
+
+def _window_batch(model, window, inputs, labels, central):
+    """Pad one window per lane to [T, L, ...]; lanes without data are masked.
+
+    Lanes starting an episode get a fresh initial state. It may depend on
+    trainable parameters (connectome resting bias), so it is rebuilt per window
+    and gradients reach it exactly as in single-episode TBPTT.
+    """
+    lanes = len(window)
+    span = max(item[2] - item[1] for item in window if item is not None)
+    device = model.device
+    mask = torch.zeros(span, lanes, device=device)
+    batch_inputs, batch_labels = {}, {}
+    for lane, item in enumerate(window):
+        if item is None:
+            continue
+        episode, start, end, _ = item
+        mask[: end - start, lane] = 1
+        for target, source in ((batch_inputs, inputs[episode]), (batch_labels, labels[episode])):
+            for key, values in source.items():
+                if key not in target:
+                    target[key] = values.new_zeros((span, lanes, *values.shape[1:]))
+                target[key][: end - start, lane] = values[start:end]
+    begins = torch.tensor([item is not None and item[3] for item in window], device=device)
+    if bool(begins.any()):
+        _, initial = model.initial(lanes)
+        central = torch.where(begins.unsqueeze(-1), initial, central)
+    return batch_inputs, batch_labels, mask, central
+
+
+def _run_window(model, batch_inputs, mask, central):
+    actions, activities = [], []
+    with model.cache():
+        for step in range(len(mask)):
+            action, updated, activity = model.step(
+                {key: values[step] for key, values in batch_inputs.items()}, central
+            )
+            # Padded steps of finished lanes leave their state untouched.
+            central = torch.where(mask[step].bool().unsqueeze(-1), updated, central)
+            actions.append(action)
+            activities.append(activity)
+    return {"action": torch.stack(actions), "activity": torch.stack(activities)}, central
+
+
 def fit_sequence_epochs(
-    policy,
-    episodes,
+    model,
+    inputs,
+    labels,
     train,
     optimizer,
     parameters,
     rng,
-    device,
     window_loss,
     save,
     progress,
     fit_state=None,
 ):
-    """TBPTT with committed sequence order, hidden state and optimizer boundaries."""
+    """Batched TBPTT with committed lane order, hidden state and optimizer boundaries.
+
+    ``batch_episodes`` episodes advance in parallel chronological windows; each
+    optimizer step averages their per-window losses. Every
+    ``validation_every``-th episode is held out; after each epoch its loss decides
+    early stopping (``early_stopping_patience`` epochs without relative
+    improvement ``early_stopping_min_delta``) and the best parameters are kept.
+    ``window_loss(outputs, labels, mask)`` returns one loss per lane.
+    """
+    length = int(train.get("sequence_length", 32))
+    lanes = int(train.get("batch_episodes", 16))
+    max_epochs = int(train.get("epochs", 10))
+    patience = int(train.get("early_stopping_patience", 3))
+    min_delta = float(train.get("early_stopping_min_delta", 0.0))
+    interval = int(train.get("checkpoint_windows", 100))
+    if interval <= 0 or lanes <= 0 or patience <= 0 or min_delta < 0:
+        raise ValueError("checkpoint_windows, batch_episodes and patience must be positive")
+    lengths = [len(next(iter(item.values()))) for item in inputs]
+    held = held_out_episodes(len(inputs), int(train.get("validation_every", 10)))
+    fitted = [index for index in range(len(inputs)) if index not in set(held)]
     fitting = fit_state or {
         "epoch": 0,
-        "windows": [],
-        "next_window": 0,
-        "previous_episode": None,
+        "schedule": None,
         "state": None,
         "losses": [],
         "reports": [],
+        "best": None,
+        "bad_epochs": 0,
+        "stopped": False,
     }
-    interval = int(train.get("checkpoint_windows", 100))
-    if interval <= 0:
-        raise ValueError("checkpoint_windows must be positive")
-    policy.train()
-    while fitting["epoch"] < int(train.get("epochs", 10)):
-        if not fitting["windows"]:
-            fitting["windows"] = sequence_windows(
-                episodes, int(train.get("sequence_length", 32)), rng
+    max_norm = float(train.get("max_grad_norm", 0.5))
+
+    def restore_best():
+        best = fitting["best"]
+        if best is None:
+            return
+        with torch.no_grad():
+            for parameter, value in zip(parameters, best["parameters"], strict=True):
+                parameter.copy_(value.to(parameter.device))
+        optimizer.load_state_dict(best["optimizer"])
+
+    @torch.no_grad()
+    def validation_loss() -> float:
+        schedule = LaneSchedule(lengths, held, lanes, length)
+        _, central = model.initial(lanes)
+        total, count = 0.0, 0
+        while (window := schedule.next()) is not None:
+            batch_inputs, batch_labels, mask, central = _window_batch(
+                model, window, inputs, labels, central
             )
-        state = fitting["state"].to(device) if fitting["state"] is not None else None
-        for index in range(fitting["next_window"], len(fitting["windows"])):
-            episode_index, start, end = fitting["windows"][index]
-            state = (
-                policy.initial_state(1, device)
-                if fitting["previous_episode"] != episode_index
-                else state.detach()
+            outputs, central = _run_window(model, batch_inputs, mask, central)
+            losses = window_loss(outputs, batch_labels, mask)
+            active = torch.tensor([item is not None for item in window], device=model.device)
+            total += float(losses[active].sum())
+            count += int(active.sum())
+        return total / max(count, 1)
+
+    model.policy.train()
+    while fitting["epoch"] < max_epochs and not fitting["stopped"]:
+        if fitting["schedule"] is None:
+            order = [fitted[i] for i in rng.permutation(len(fitted))]
+            fitting["schedule"] = LaneSchedule(lengths, order, lanes, length).state_dict()
+        schedule = LaneSchedule.from_state(lengths, lanes, length, fitting["schedule"])
+        total_windows = schedule.total_windows()
+        _, central = model.initial(lanes)
+        if fitting["state"] is not None:
+            central = fitting["state"].to(model.device)
+        central = central.detach()
+        while (window := schedule.next()) is not None:
+            batch_inputs, batch_labels, mask, central = _window_batch(
+                model, window, inputs, labels, central
             )
-            loss, state = window_loss(episodes[episode_index], start, end, state)
+            outputs, central = _run_window(model, batch_inputs, mask, central)
+            losses = window_loss(outputs, batch_labels, mask)
+            active = torch.tensor([item is not None for item in window], device=model.device)
+            loss = losses[active].mean()
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError("Supervised loss is nonfinite; inspect activity and gain")
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                parameters, float(train.get("max_grad_norm", 0.5)), error_if_nonfinite=True
-            )
+            torch.nn.utils.clip_grad_norm_(parameters, max_norm, error_if_nonfinite=True)
             optimizer.step()
-            fitting.update(
-                next_window=index + 1, previous_episode=episode_index, state=state.detach().cpu()
-            )
+            central = central.detach()
+            fitting.update(schedule=schedule.state_dict(), state=central.cpu())
             fitting["losses"].append(float(loss.detach()))
+            fitting["windows_done"] = fitting.get("windows_done", 0) + int(active.sum())
             progress(
                 epoch=fitting["epoch"] + 1,
-                window=index + 1,
-                windows=len(fitting["windows"]),
+                window=fitting["windows_done"],
+                windows=total_windows,
+                update=len(fitting["losses"]),
                 loss=float(loss.detach()),
             )
-            if (index + 1) % interval == 0:
+            if len(fitting["losses"]) % interval == 0:
                 save(fitting)
-        fitting["reports"].append(
-            {
-                "epoch": fitting["epoch"] + 1,
-                "loss": float(np.mean(fitting["losses"])),
-                "sequences": len(fitting["losses"]),
-            }
-        )
-        fitting = {
+        report = {
             "epoch": fitting["epoch"] + 1,
-            "windows": [],
-            "next_window": 0,
-            "previous_episode": None,
-            "state": None,
-            "losses": [],
-            "reports": fitting["reports"],
+            "loss": float(np.mean(fitting["losses"])) if fitting["losses"] else None,
+            "updates": len(fitting["losses"]),
+            "sequences": total_windows,
         }
+        if held:
+            value = validation_loss()
+            model.policy.train()
+            report["validation_loss"] = value
+            best = fitting["best"]
+            if best is None or value < best["loss"] * (1 - min_delta):
+                fitting["best"] = {
+                    "loss": value,
+                    "epoch": fitting["epoch"] + 1,
+                    "parameters": [parameter.detach().cpu().clone() for parameter in parameters],
+                    "optimizer": _cpu_copy(optimizer.state_dict()),
+                }
+                fitting["bad_epochs"] = 0
+            else:
+                fitting["bad_epochs"] += 1
+                fitting["stopped"] = fitting["bad_epochs"] >= patience
+            report["best_epoch"] = fitting["best"]["epoch"]
+        fitting["reports"].append(report)
+        progress(force=True, phase="epoch", **report)
+        fitting.update(
+            epoch=fitting["epoch"] + 1, schedule=None, state=None, losses=[], windows_done=0
+        )
         save(fitting)
+    # Idempotent: the exported actor is the held-out-best one, also after resume.
+    restore_best()
     return fitting["reports"]

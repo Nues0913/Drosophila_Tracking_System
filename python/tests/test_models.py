@@ -247,6 +247,51 @@ def test_lesion_preserves_budget_and_current_analysis_is_explicit(
         policy.set_lesion("unknown")
 
 
+@pytest.mark.parametrize("variant", ["V", "VO", "VO-late", "RS", "GRU"])
+def test_cached_sensory_code_and_adjacency_reproduce_full_forward(
+    graph_path, official_frontend, variant
+):
+    contract = SensorContract()
+    policy = build_policy(variant, graph_path, contract, official_frontend)
+    generator = torch.Generator().manual_seed(3)
+    sequence = [
+        {
+            "vision": torch.rand(2, 2, contract.n_ommatidia, generator=generator),
+            "odor": torch.rand(2, 2, generator=generator),
+            "valid": (torch.rand(2, 3, generator=generator) > 0.3).float(),
+        }
+        for _ in range(4)
+    ]
+    full_state = policy.initial_state(2, "cpu")
+    full_actions = []
+    for obs in sequence:
+        action, full_state, _ = policy(obs, full_state)
+        full_actions.append(action)
+    split = policy.encoder.state_size
+    sensory, central = full_state.new_tensor(policy.initial_state(2, "cpu")).split(
+        [split, policy.state_size - split], dim=1
+    )
+    codes = []
+    for obs in sequence:
+        code, sensory = policy.sense(obs, sensory)
+        codes.append(code)
+    gradients = []
+    for cached in (False, True):
+        policy.zero_grad()
+        state = central
+        actions = []
+        with policy.adjacency_cache() if cached else torch.enable_grad():
+            for code in codes:
+                action, state, _ = policy.forward_code(code, state)
+                actions.append(action)
+        torch.stack(actions).square().sum().backward()
+        gradients.append([p.grad.clone() for p in policy.parameters() if p.grad is not None])
+        for expected, observed in zip(full_actions, actions, strict=True):
+            torch.testing.assert_close(expected, observed, atol=0, rtol=0)
+    for plain, cached in zip(*gradients, strict=True):
+        torch.testing.assert_close(plain, cached, atol=1e-7, rtol=1e-5)
+
+
 def test_ros_watchdog_reset_and_out_of_order_packets(monkeypatch):
     monkeypatch.syspath_prepend(
         str(Path(__file__).resolve().parents[2] / "ros2_ws/src/flytrack_policy")

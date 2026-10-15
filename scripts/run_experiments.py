@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the complete generated six-variant, five-seed stage matrix sequentially."""
+"""Run the complete generated six-variant, five-seed stage matrix.
+
+Stages of one (variant, seed) chain always run in order; ``--jobs`` chains run
+concurrently (they share the GPU and split the CPU environment workers).
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -52,6 +58,11 @@ def main():
     parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--jobs", type=int, default=1, help="Concurrent (variant, seed) chains")
+    parser.add_argument(
+        "--workers", default="auto", help="Environment worker processes per job (auto splits CPUs)"
+    )
+    parser.add_argument("--tf32", action="store_true", help="Pass --tf32 to every stage")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     device = (
@@ -61,6 +72,13 @@ def main():
     )
     if len(set(args.seeds)) != len(args.seeds) or not args.seeds or min(args.seeds) < 0:
         parser.error("Seeds must be distinct nonnegative integers")
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
+    workers = (
+        max(1, min(8, ((os.cpu_count() or 2) - 1) // args.jobs))
+        if args.workers == "auto"
+        else int(args.workers)
+    )
     plan = []
     for variant in args.variants:
         stages = (
@@ -99,9 +117,18 @@ def main():
     if args.dry_run:
         print(json.dumps(manifest, indent=2))
         return
-    write_json(args.configs / "execution_plan.json", manifest)
+    lock = threading.Lock()
+    failures: list[str] = []
+
+    def commit():
+        with lock:
+            write_json(args.configs / "execution_plan.json", manifest)
+
+    commit()
     environment = {**os.environ, "PYTHON_DOTENV_DISABLED": "1", "PYTHONUNBUFFERED": "1"}
-    for index, row in enumerate(plan):
+    extra = ["--workers", str(workers), *(["--tf32"] if args.tf32 else [])]
+
+    def run_stage(index, row):
         config = read_config(row["path"])
         destination = Path(row["output"])
         if completed(config, row["command"], device):
@@ -117,11 +144,12 @@ def main():
                 row["path"],
                 "--device",
                 str(device),
+                *extra,
             ]
             if (destination / "training_checkpoint.pt").is_file():
                 command.append("--resume")
             row["status"] = "running"
-            write_json(args.configs / "execution_plan.json", manifest)
+            commit()
             with (destination / "execution.log").open("a", buffering=1) as log:
                 print(
                     f"[{index + 1}/{len(plan)}] {row['variant']} seed={row['seed']} "
@@ -133,8 +161,8 @@ def main():
                 )
             if result.returncode:
                 row.update(status="failed", exit_code=result.returncode)
-                write_json(args.configs / "execution_plan.json", manifest)
-                raise SystemExit(f"Stage failed; inspect {destination / 'execution.log'}")
+                commit()
+                raise RuntimeError(f"Stage failed; inspect {destination / 'execution.log'}")
             if not completed(config, row["command"], device):
                 raise RuntimeError(f"Stage exited without a verified actor artifact: {destination}")
             status = "complete"
@@ -157,6 +185,7 @@ def main():
                     str(validation),
                     "--device",
                     str(device),
+                    *extra,
                 ]
                 with (destination / "validation.log").open("a", buffering=1) as log:
                     result = subprocess.run(
@@ -164,10 +193,31 @@ def main():
                     )
                 if result.returncode:
                     row.update(status="heldout_validation_failed", exit_code=result.returncode)
-                    write_json(args.configs / "execution_plan.json", manifest)
-                    raise SystemExit(f"Held-out decoding gate failed; inspect {validation}")
+                    commit()
+                    raise RuntimeError(f"Held-out decoding gate failed; inspect {validation}")
         row.update(status=status, finished_unix_s=time.time())
-        write_json(args.configs / "execution_plan.json", manifest)
+        commit()
+
+    chains: dict[tuple[str, int], list[int]] = {}
+    for index, row in enumerate(plan):
+        chains.setdefault((row["variant"], row["seed"]), []).append(index)
+
+    def run_chain(indices):
+        for index in indices:
+            if failures:
+                return
+            try:
+                run_stage(index, plan[index])
+            except Exception as error:  # noqa: BLE001 - reported after other chains stop
+                with lock:
+                    failures.append(str(error))
+                print(error, flush=True)
+                return
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        list(executor.map(run_chain, chains.values()))
+    if failures:
+        raise SystemExit("; ".join(failures))
     manifest["completed_unix_s"] = time.time()
     write_json(args.configs / "execution_plan.json", manifest)
 

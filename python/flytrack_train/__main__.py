@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import torch
 from flytrack_core.model import load_policy_artifact
 
 from .config import contract_from_config, read_config, write_json
+from .parallel import set_default_workers
 
 
 def export_actor(config, source: Path, destination: Path):
@@ -64,6 +66,16 @@ def main():
         help="Resume the same stage from its source-bound recovery checkpoint",
     )
     parser.add_argument(
+        "--workers",
+        default="auto",
+        help="Environment worker processes; 0 keeps worlds in-process; auto = CPUs - 1 (max 8)",
+    )
+    parser.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Allow TF32 CUDA matmuls (faster, ~1e-3 relative precision)",
+    )
+    parser.add_argument(
         "--variant",
         choices=("V", "O", "VO", "VO-late", "GRU", "RS"),
         help="Override variant before model construction",
@@ -83,6 +95,13 @@ def main():
         if args.device == "auto"
         else torch.device(args.device)
     )
+    workers = (
+        max(1, min(8, (os.cpu_count() or 2) - 1)) if args.workers == "auto" else int(args.workers)
+    )
+    set_default_workers(workers)
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     if args.command == "validate-pretrain":
         from .validation import validate_pretraining
 

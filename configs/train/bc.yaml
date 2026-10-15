@@ -16,7 +16,11 @@ train:
   dagger_steps_per_round: 30000
   dagger_rounds: 3
   dagger_beta: 0.5
-  epochs: 10
+  # Upper bound only: held-out early stopping decides each round.
+  epochs: 30
+  batch_episodes: 16
+  validation_every: 10
+  early_stopping_patience: 3
   sequence_length: 32
   learning_rate: 0.001
   max_grad_norm: 0.5

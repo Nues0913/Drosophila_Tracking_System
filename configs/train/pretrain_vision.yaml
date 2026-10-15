@@ -13,7 +13,11 @@ env:
 train:
   modality: vision
   total_steps: 120000
-  epochs: 20
+  # Upper bound only: held-out early stopping decides (V seed 0 vision stopped at 11).
+  epochs: 40
+  batch_episodes: 16
+  validation_every: 10
+  early_stopping_patience: 3
   sequence_length: 32
   learning_rate: 0.001
   max_grad_norm: 0.5

@@ -49,7 +49,10 @@ python -m flytrack_train export --config configs/train/ppo.yaml --artifact runs/
 train:
   modality: vision
   total_steps: 120000
-  epochs: 20
+  epochs: 20                  # 上限；提早停止決定實際 epoch 數
+  batch_episodes: 16
+  validation_every: 10
+  early_stopping_patience: 3
   sequence_length: 32
   learning_rate: 0.001
   exploration_probability: 0.2
@@ -59,7 +62,15 @@ train:
   max_grad_norm: 0.5
 ```
 
-collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。監督式 TBPTT 隨機排列回合，保持每回合窗口順序；完整記憶在窗口間持續，但梯度在邊界 detach，避免每個窗口重算整段前綴的二次複雜度。窗口之間更新權重，保留上一窗口產生的 detached state，這是串流 TBPTT 的近似。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助头。
+collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
+
+**平行收集。** 環境放在 `--workers` 個子行程（`parallel.EnvPool`），trainer 仍決定每次 reset 與動作。第 `i` 個回合的環境種子與私有亂數只由 `SeedSequence([seed, stream, i])` 決定，回合依編號提交，跨過預算的那個回合被截斷，所以資料與 worker 數、排程時序無關，和單一序列收集器的語意相同。預訓練資料不依賴 actor，設定 `dataset_cache` 時同一種子／模態／世界的回合流只收集一次，所有變體讀取自己預算需要的前綴（檔案鎖保護同時執行）。
+
+**凍結感覺快取。** flyvis 前端與 ORN 適應沒有可訓練參數，`policy.sense()` 輸出的感覺碼只取決於觀測歷史，因此每個收集到的步只算一次，所有 epoch 與 PPO 更新重用；可訓練部分走 `policy.forward_code()`。`policy(obs, state)` 仍是兩者的組合，部署行為不變。同一個前向圖（一個 TBPTT 窗口、一次 no-grad rollout）內，`adjacency_cache()` 只組一次連接矩陣。
+
+**批次 TBPTT。** `batch_episodes`（預設 16）條回合平行前進，每條在自己的 lane 依時間順序走 `sequence_length` 窗口並延續自己的遞迴狀態；一次 optimizer step 平均各 lane 的單窗口損失（每 lane 的損失定義與單回合時完全相同）。梯度在窗口邊界 detach，回合開頭的初始狀態每窗口重建，梯度照常流到靜息 bias。
+
+**提早停止。** 每第 `validation_every`（預設 10）個回合保留為驗證集，不參與擬合；每個 epoch 後計算驗證損失，連續 `early_stopping_patience`（預設 3）個 epoch 沒有相對改善 `early_stopping_min_delta` 就停止，最後還原驗證損失最佳的參數與 optimizer 狀態。`epochs` 是上限。回合數少於 `validation_every` 時不保留驗證集，跑滿 `epochs`。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助头。
 
 正式公平流程可讓 V/O 各用 240000 步，VO/VO-late/GRU/RS 各先視覺 120000 步，再以該次 `actor/` 作 `init_artifact` 做嗅覺 120000 步。模型各自暖啟動，可避免從生物模型替基準模型挑選較好的初始權重。
 
@@ -81,7 +92,7 @@ train:
   activity_coef: 0.0001
 ```
 
-先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
+先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
 ## Recurrent PPO
 
@@ -106,7 +117,7 @@ train:
   target_kl: 0.03
 ```
 
-多個 scalar 環境由 trainer 擁有，逐一取得終局 info 後手動 reset，無 Gymnasium autoreset 覆寫終局觀測的風險。`total_steps` 必須是 `num_envs` 的倍數；最後 rollout 可縮短。每個 TBPTT minibatch 保留連續時間窗口，不以任意單步打散遞迴；窗口初始 state 是該 rollout 的 detached behavior state，窗口內按 episode-start reset。
+多個 scalar 環境由 trainer 擁有（在 `EnvPool` 子行程中同時 step），逐一取得終局 info 後手動 reset，無 Gymnasium autoreset 覆寫終局觀測的風險。`total_steps` 必須是 `num_envs` 的倍數；最後 rollout 可縮短。每個 TBPTT minibatch 保留連續時間窗口，不以任意單步打散遞迴；窗口初始 state 是該 rollout 的 detached behavior state，窗口內按 episode-start reset。
 
 策略先把 actor 物理均值 `[v,omega]` 轉為 `atanh([2v/v_max-1,omega/omega_max])`，再從 latent Gaussian 抽樣，經 tanh 與物理 affine transform 還原。這保留正向速度 sigmoid readout 的含義，log probability 包含 tanh 與物理縮放的 Jacobian。存 latent sample，避免接近界限時對實際動作做不穩定反算。
 
@@ -158,7 +169,7 @@ evaluation:
 
 invalid 回合仍以 success=false 納入成功率；距離、方位、重新捕獲、平滑度與碰撞摘要只使用有效完整回合，完整原始部分資料保留在 episodes 報表，另提供 valid_episode / sample_coverage 的種子摘要。模型 walltime 不依賴真值覆蓋率，仍可用於診斷。
 
-2D latency 是 sensor tensor 組装至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
+2D 評估把每格（變體／種子／情境）的回合分散到 `batch_episodes` 個平行世界，actor 批次推論；每格前 `latency_episodes`（預設 1）個回合仍以部署方式每步單筆呼叫完整 `policy(obs, state)` 並量 latency，其餘回合的 latency 欄位為空，種子平均只用量過的回合。2D latency 是 sensor tensor 組装至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
 
 策略另發布 `/fly/inference_latency_ms`（std_msgs/Float64），ROS evaluator 在 JSON/CSV 的 `inference_wall_p50_ms` / `inference_wall_p95_ms` 保留真正 perf-counter 模型推論處理時間，含 tensor 準備與 CPU materialization，排除感測生成、DDS 與等待控制 timer。兩組 latency 指標不可混用。
 

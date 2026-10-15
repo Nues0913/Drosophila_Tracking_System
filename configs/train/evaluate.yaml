@@ -15,6 +15,10 @@ evaluation:
   scenarios: [normal, occlusion, noise, conflict]
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 100
+  # Episodes run batched across parallel worlds; the first latency_episodes of
+  # each cell run one actor call per step to measure deployment latency.
+  batch_episodes: 32
+  latency_episodes: 1
   artifact_template: 'runs/{variant}/seed_{seed}/actor'
   require_full_matrix: true
   require_equal_budget: true

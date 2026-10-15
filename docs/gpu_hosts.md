@@ -28,23 +28,25 @@ GPU 建議 8 GB 以上。3 GB 的 GTX 1050 已確認不夠（PPO 更新時 OOM�
 
 ## 分工跑正式訓練
 
-`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，每一行是一個階段，同一個「變體／種子」要依序跑 pretrain → BC → PPO。分工時建議**以種子分**，每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤：
+`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，它呼叫 `scripts/run_experiments.py`：同一個「變體／種子」依序跑 pretrain → BC → PPO，不同組之間預設同時跑 2 組（`--jobs`）。分工時建議**以種子分**，每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤；同一種子的預訓練資料也只需收集一次：
 
 ```bash
 python scripts/prepare_experiments.py --algorithm ppo --device cuda --seeds 2
-bash runs/experiment_configs/run_all.sh
+bash runs/experiment_configs/run_all.sh --seeds 2
 ```
 
 也可以只挑一個變體：
 
 ```bash
-grep '/VO/seed_0/' runs/experiment_configs/run_all.sh | bash
+bash runs/experiment_configs/run_all.sh --variants VO --seeds 0 --jobs 1
 ```
+
+中斷後直接重跑同一行即可：已完成的階段會驗證後略過，進行中的階段從 checkpoint 續跑。
 
 規則：
 
 - **不要修改** `configs/`、`python/` 後再跑正式實驗；要改就先提 PR，合併後所有人一起重跑，否則六變體不可比較。
 - 開跑前記下 `git rev-parse HEAD`；訓練產物的 `model_card.json` 也會記錄程式指紋。
-- 先跑 `pytest python/tests`，確認與其他人結果一致（66 passed）。
+- 先跑 `pytest python/tests`，確認與其他人結果一致（73 passed）。
 - 跑完把 `runs/<variant>/seed_<n>/`（含 `actor/` 與 log）打包交回；`runs/` 不進 git。
 - 第一次跑請記錄每階段耗時與 `nvidia-smi` 顯存峰值，回報到 [status.md](status.md)。

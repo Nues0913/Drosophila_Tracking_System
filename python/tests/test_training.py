@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 from flytrack_core.metrics import EpisodeMetrics
-from flytrack_train.batches import Episode, reset_state, sequence_windows, tensor_observation
+from flytrack_train.batches import LaneSchedule, reset_state, tensor_observation
 from flytrack_train.distributions import BoundedGaussian, generalized_advantage
 from flytrack_train.es import centered_ranks
 from flytrack_train.evaluation import bootstrap_mean, seed_statistics
@@ -113,14 +113,118 @@ def test_es_tied_fitness_has_no_perturbation_preference():
     assert np.array_equal(centered_ranks(np.ones((4, 2))), np.zeros((4, 2)))
 
 
-def test_supervised_tbptt_preserves_chronology_within_shuffled_episodes():
-    episodes = [Episode({"odor": np.zeros((length, 2))}, {}) for length in (9, 12)]
-    windows = sequence_windows(episodes, 4, np.random.default_rng(4))
-    for index, episode in enumerate(episodes):
-        sequence = [(start, end) for episode_id, start, end in windows if episode_id == index]
-        assert sequence == [
-            (start, min(start + 4, len(episode))) for start in range(0, len(episode), 4)
-        ]
+def test_lane_tbptt_preserves_chronology_and_covers_every_window_once():
+    lengths = [9, 12, 4, 7, 5]
+    schedule = LaneSchedule(lengths, [3, 0, 4, 1, 2], lanes=2, length=4)
+    seen: dict[int, list[tuple[int, int]]] = {}
+    lane_of: dict[int, int] = {}
+    while (window := schedule.next()) is not None:
+        for lane, item in enumerate(window):
+            if item is None:
+                continue
+            episode, start, end, begins = item
+            assert begins == (episode not in seen)
+            # An episode stays on one lane, so its recurrent state is carried.
+            assert lane_of.setdefault(episode, lane) == lane
+            seen.setdefault(episode, []).append((start, end))
+    for episode, length in enumerate(lengths):
+        assert seen[episode] == [(start, min(start + 4, length)) for start in range(0, length, 4)]
+
+
+def test_lockstep_collection_is_independent_of_slot_count_and_truncates_exactly():
+    from flytrack_train.collection import collect_lockstep
+    from flytrack_train.parallel import EnvPool
+
+    def act(running, observations, infos):
+        actions = {}
+        for slot, entry in running.items():
+            entry.observations.append({k: observations[slot][k].copy() for k in observations[slot]})
+            entry.labels.append({"action": np.asarray([entry.rng.random(), 0.0], np.float32)})
+            actions[slot] = entry.labels[-1]["action"]
+        return actions
+
+    def finish(entry):
+        from flytrack_train.batches import pack_episode
+
+        return pack_episode(entry.observations, entry.labels)
+
+    datasets = []
+    for slots in (1, 3):
+        collected = []
+        pool = EnvPool([_RecoveryEnv for _ in range(slots)], workers=0)
+        steps = collect_lockstep(
+            pool,
+            seed=5,
+            stream=1,
+            first_index=0,
+            committed_steps=0,
+            step_budget=8,
+            act=act,
+            finish=finish,
+            on_episode=lambda index, episode, steps, collected=collected: collected.append(
+                (index, episode, steps)
+            ),
+        )
+        pool.close()
+        assert steps == 8
+        datasets.append(collected)
+    assert [(i, s, len(e)) for i, e, s in datasets[0]] == [(0, 3, 3), (1, 6, 3), (2, 8, 2)]
+    for (_, left, _), (_, right, _) in zip(*datasets, strict=True):
+        for key in left.observations:
+            assert np.array_equal(left.observations[key], right.observations[key])
+        assert np.array_equal(left.labels["action"], right.labels["action"])
+
+
+def test_early_stopping_keeps_held_out_best_parameters():
+    from flytrack_train.batches import SequenceModel
+    from flytrack_train.recovery import fit_sequence_epochs
+
+    class _RestingStatePolicy(_RecoveryPolicy):
+        # Like the connectome, the initial state depends on a trainable parameter.
+        def __init__(self):
+            super().__init__()
+            self.rest = torch.nn.Parameter(torch.full((2,), 0.1))
+
+        def initial_state(self, batch, device):
+            return self.rest.expand(batch, -1).clone()
+
+    torch.manual_seed(0)
+    policy = _RestingStatePolicy()
+    model = SequenceModel(policy, "cpu")
+    episodes = [
+        {
+            "vision": torch.zeros(6, 2, 3),
+            "odor": torch.randn(6, 2),
+            "valid": torch.ones(6, 3),
+        }
+        for _ in range(10)
+    ]
+    labels = [{"target": torch.zeros(6, 2)} for _ in episodes]
+    optimizer = torch.optim.SGD(policy.parameters(), lr=5.0)  # deliberately unstable
+    seen = []
+
+    def window_loss(outputs, targets, mask):
+        error = (outputs["action"] - targets["target"]).square().mean(-1)
+        return (error * mask).sum(0) / mask.sum(0).clamp_min(1)
+
+    reports = fit_sequence_epochs(
+        model,
+        episodes,
+        labels,
+        {"epochs": 8, "sequence_length": 3, "batch_episodes": 4, "validation_every": 5},
+        optimizer,
+        list(policy.parameters()),
+        np.random.default_rng(0),
+        window_loss,
+        lambda state: seen.append(state["best"]),
+        lambda **values: None,
+    )
+    best = min(reports, key=lambda report: report["validation_loss"])
+    assert all(report["best_epoch"] <= best["epoch"] for report in reports)
+    restored = seen[-1]["parameters"]
+    for parameter, value in zip(policy.parameters(), restored, strict=True):
+        assert torch.equal(parameter.detach(), value)
+    assert len(reports) == 8 or reports[-1]["epoch"] - best["epoch"] == 3
 
 
 def test_recovery_restores_all_cpu_random_streams_without_cuda_init(tmp_path):

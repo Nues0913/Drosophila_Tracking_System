@@ -173,15 +173,19 @@ class FrozenFlyvis(nn.Module):
         # The policy concatenates frozen sensory memory and trainable central
         # memory. Its slice may inherit requires_grad from that concatenation;
         # the retina has no dependency on any trainable actor parameter.
-        voltage = state.detach().reshape(batch * 2, self.n_nodes)
-        current = torch.zeros_like(voltage)
-        current.index_add_(1, self.input_node, image[:, self.input_ommatidium])
+        # Integrate in node-major [N, eyes] layout: CSR spmm with a contiguous
+        # dense operand is several times faster than with a transposed view.
+        voltage = state.detach().reshape(batch * 2, self.n_nodes).T.contiguous()
+        current = voltage.new_zeros(voltage.shape)
+        current.index_add_(0, self.input_node, image[:, self.input_ommatidium].T)
         # Upstream flyvis clamps frozen tau at dt. Central trainable tau uses 2dt.
-        ratio = self.neural_dt / self.tau.clamp_min(self.neural_dt)
+        ratio = (self.neural_dt / self.tau.clamp_min(self.neural_dt)).unsqueeze(1)
+        bias = self.bias.unsqueeze(1)
+        columns = available.reshape(1, batch * 2)
         for _ in range(self.substeps):
-            recurrent = torch.sparse.mm(self.weight, torch.relu(voltage).T).T
-            evolved = voltage + ratio * (-voltage + self.bias + recurrent + current)
-            voltage = torch.where(available, evolved, voltage)
-        features = torch.sparse.mm(self.pooling, torch.relu(voltage).T).T
+            recurrent = torch.sparse.mm(self.weight, torch.relu(voltage))
+            evolved = voltage + ratio * (-voltage + bias + recurrent + current)
+            voltage = torch.where(columns, evolved, voltage)
+        features = torch.sparse.mm(self.pooling, torch.relu(voltage)).T
         features = torch.where(available, features, 0.0)
-        return features.reshape(batch, 2, -1), voltage.reshape(batch, -1)
+        return features.reshape(batch, 2, -1), voltage.T.reshape(batch, -1)

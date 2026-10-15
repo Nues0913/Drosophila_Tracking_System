@@ -1,0 +1,17 @@
+.git
+.aws
+.codex
+.agents
+.env
+.venv
+.tools
+.cache
+data
+runs
+artifacts
+**/__pycache__
+**/*.egg-info
+ros2_ws/build
+ros2_ws/install
+ros2_ws/log
+*.pdf

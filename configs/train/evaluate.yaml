@@ -1,0 +1,25 @@
+sensor_contract_path: configs/sensor_contract.json
+output: runs/evaluation/formal
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
+env:
+  episode_seconds: 60
+  target_motion: curved
+  plume_model: puff
+  domain_randomization: false
+evaluation:
+  variants: [V, O, VO, VO-late, GRU, RS]
+  scenarios: [normal, occlusion, noise, conflict]
+  seeds: [0, 1, 2, 3, 4]
+  episodes_per_seed: 100
+  artifact_template: 'runs/{variant}/seed_{seed}/actor'
+  require_full_matrix: true
+  require_equal_budget: true
+  # Held-out environment seeds, disjoint from the training namespace [0, 1e9).
+  environment_seed: 1700000000
+  bootstrap_draws: 10000
+  success_distance_m: 2.0
+  success_time_fraction: 0.8

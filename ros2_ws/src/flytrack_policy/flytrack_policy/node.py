@@ -1,0 +1,240 @@
+"""Thin ROS policy node: subscribe to corrupted sensory data only."""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+import rclpy
+from flytrack_core.contracts import SensorContract
+from flytrack_core.model import load_policy_artifact
+from flytrack_core.sensing.hex_eye import HexEye
+from flytrack_interfaces.msg import NeuralActivity, OdorReading
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image
+from std_msgs.msg import Float64
+from std_srvs.srv import Trigger
+
+from .runtime import PolicyRuntime
+from .timing import ControlTracer
+
+SENSOR_TOPICS = (
+    "/fly/camera/left/image_raw",
+    "/fly/camera/right/image_raw",
+    "/fly/odor",
+)
+
+
+def image_to_grayscale(message: Image) -> np.ndarray:
+    """Decode declared strides and encodings without a cv_bridge dependency."""
+    encoding = message.encoding.lower()
+    channels = {"mono8": 1, "rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4}
+    if message.width < 1 or message.height < 1 or message.step < 1:
+        raise ValueError("Empty camera image")
+    if len(message.data) < message.height * message.step:
+        raise ValueError("Truncated camera image")
+    if encoding == "32fc1":
+        if message.step < message.width * 4:
+            raise ValueError("Camera stride is shorter than one row")
+        dtype = np.dtype(">f4" if message.is_bigendian else "<f4")
+        image = np.ndarray(
+            (message.height, message.width),
+            dtype=dtype,
+            buffer=message.data,
+            strides=(message.step, 4),
+        ).astype(np.float32)
+        return np.clip(image, 0, 1)
+    if encoding not in channels:
+        raise ValueError(f"Unsupported camera encoding: {message.encoding}")
+    count = channels[encoding]
+    if message.step < message.width * count:
+        raise ValueError("Camera stride is shorter than one row")
+    rows = np.frombuffer(message.data, dtype=np.uint8, count=message.height * message.step).reshape(
+        message.height, message.step
+    )
+    image = (
+        rows[:, : message.width * count]
+        .reshape(message.height, message.width, count)
+        .astype(np.float32)
+        / 255
+    )
+    if count == 1:
+        return image[..., 0]
+    rgb = image[..., :3]
+    if encoding.startswith("bgr"):
+        rgb = rgb[..., ::-1]
+    return rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def stamp_seconds(header) -> float:
+    return header.stamp.sec + header.stamp.nanosec * 1e-9
+
+
+class ConnectomePolicyNode(Node):
+    def __init__(self):
+        super().__init__("connectome_policy_node")
+        if not self.has_parameter("use_sim_time"):
+            self.declare_parameter("use_sim_time", True)
+        if not self.get_parameter("use_sim_time").value:
+            raise ValueError("connectome_policy_node requires use_sim_time=true")
+        self.declare_parameter("artifact", "")
+        self.declare_parameter("sensor_contract_json", "")
+        self.declare_parameter("device", "cpu")
+        artifact = str(self.get_parameter("artifact").value)
+        if not artifact:
+            raise ValueError(
+                "The artifact parameter must identify a complete exported policy directory"
+            )
+        device = str(self.get_parameter("device").value)
+        policy, contract, self.card = load_policy_artifact(artifact, device=device)
+        expected_path = str(self.get_parameter("sensor_contract_json").value)
+        if expected_path:
+            expected = SensorContract.from_dict(
+                json.loads(Path(expected_path).read_text(encoding="utf-8"))
+            )
+            if expected.sha256() != contract.sha256():
+                raise ValueError("Deployment sensor contract differs from model artifact")
+        self.contract = contract
+        self.eye = HexEye(contract)
+        self.runtime = PolicyRuntime(policy, contract, device)
+        self.tracer = ControlTracer(self)
+        camera_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=2, reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+        odor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=5, reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+        command_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE
+        )
+        activity_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=2, reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+        self.command_publisher = self.create_publisher(Twist, "/cmd_vel", command_qos)
+        self.activity_publisher = self.create_publisher(
+            NeuralActivity, "/fly/neural_activity", activity_qos
+        )
+        self.latency_publisher = self.create_publisher(
+            Float64, "/fly/inference_latency_ms", odor_qos
+        )
+        self.camera_subscriptions = [
+            self.create_subscription(
+                Image, SENSOR_TOPICS[0], lambda msg: self.camera_callback(msg, 0), camera_qos
+            ),
+            self.create_subscription(
+                Image, SENSOR_TOPICS[1], lambda msg: self.camera_callback(msg, 1), camera_qos
+            ),
+        ]
+        self.odor_subscription = self.create_subscription(
+            OdorReading, SENSOR_TOPICS[2], self.odor_callback, odor_qos
+        )
+        self.reset_service = self.create_service(
+            Trigger, "/connectome_policy_node/reset", self.reset_callback
+        )
+        self.timer = self.create_timer(contract.control_dt, self.control_callback)
+        self.last_activity_stamp = -float("inf")
+        self.get_logger().info(
+            f"Loaded {self.card['variant']} policy with "
+            f"{self.card['trainable_parameters']} trainable parameters"
+        )
+
+    def camera_callback(self, message: Image, eye: int) -> None:
+        received_ns = time.monotonic_ns()
+        try:
+            if (
+                message.width != self.contract.camera_width
+                or message.height != self.contract.camera_height
+            ):
+                raise ValueError("Image dimensions differ from sensor contract")
+            gray = image_to_grayscale(message)
+            if not np.isfinite(gray).all():
+                self.runtime.mark_missing(eye, stamp_seconds(message.header))
+                return
+            values = self.eye.sample_image(gray, eye=eye)
+            if self.runtime.update_vision(eye, values, stamp_seconds(message.header)):
+                self.tracer.received(eye, message.header, received_ns)
+        except (ValueError, TypeError) as error:
+            self.runtime.mark_missing(eye, stamp_seconds(message.header))
+            self.get_logger().warning(f"Rejected camera sample: {error}", throttle_duration_sec=5)
+
+    def odor_callback(self, message: OdorReading) -> None:
+        received_ns = time.monotonic_ns()
+        accepted = self.runtime.update_odor(
+            np.array([message.left, message.right], dtype=np.float32),
+            stamp_seconds(message.header),
+            valid=bool(message.valid),
+        )
+        if accepted:
+            self.tracer.received(2, message.header, received_ns)
+
+    def reset_callback(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        self.runtime.reset(minimum_stamp=self.get_clock().now().nanoseconds * 1e-9)
+        self.tracer.reset()
+        self.last_activity_stamp = -float("inf")
+        self.publish_stop()
+        response.success, response.message = True, "Policy state and sensor buffers reset"
+        return response
+
+    def control_callback(self) -> None:
+        started_ns = time.monotonic_ns()
+        now = self.get_clock().now()
+        seconds = now.nanoseconds * 1e-9
+        try:
+            command, activity, valid = self.runtime.tick(seconds)
+        except (ValueError, RuntimeError) as error:
+            self.runtime.reset(minimum_stamp=seconds)
+            self.publish_stop()
+            self.get_logger().error(f"Policy inference failed: {error}", throttle_duration_sec=5)
+            return
+        message = Twist()
+        message.linear.x, message.angular.z = float(command[0]), float(command[1])
+        self.command_publisher.publish(message)
+        published_ns = time.monotonic_ns()
+        self.tracer.command(
+            now.to_msg(),
+            started_ns,
+            published_ns,
+            valid,
+            self.runtime.stamps,
+            self.runtime.last_inference_latency_ms is not None,
+        )
+        if self.runtime.last_inference_latency_ms is not None:
+            latency_message = Float64()
+            latency_message.data = self.runtime.last_inference_latency_ms
+            self.latency_publisher.publish(latency_message)
+        if seconds < self.last_activity_stamp:
+            self.last_activity_stamp = -float("inf")
+        if activity is not None and seconds - self.last_activity_stamp >= 0.1 - 1e-6:
+            activity_message = NeuralActivity()
+            activity_message.header.stamp = now.to_msg()
+            activity_message.header.frame_id = "base_link"
+            activity_message.node_ids = self.runtime.policy.node_ids.detach().cpu().tolist()
+            activity_message.activity = activity.astype(np.float32).tolist()
+            activity_message.variant = self.card["variant"]
+            self.activity_publisher.publish(activity_message)
+            self.last_activity_stamp = seconds
+
+    def publish_stop(self) -> None:
+        self.command_publisher.publish(Twist())
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = ConnectomePolicyNode()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node is not None:
+            node.publish_stop()
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()

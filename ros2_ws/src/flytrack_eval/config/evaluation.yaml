@@ -1,0 +1,15 @@
+flytrack_evaluator:
+  ros__parameters:
+    use_sim_time: true
+    variant: VO
+    artifact: ''
+    training_seed: -1
+    output_dir: runs/gazebo_eval
+    control_dt: 0.05
+    arena_size_m: 10.0
+    agent_radius_m: 0.18
+    collision_distance_m: 0.33
+    pose_timeout_s: 0.2
+    success_distance_m: 2.0
+    success_time_fraction: 0.8
+    minimum_sample_coverage: 0.95

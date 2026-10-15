@@ -1,0 +1,40 @@
+raw_dir: data/raw
+output: data/subgraphs/main
+min_synapses: 60
+min_total_synapses: 5
+downstream_hops: 3
+upstream_hops: 5
+convergence_hops: 3
+min_neurons: 500
+max_neurons: 3000
+nt_confidence_min: 0.5
+unknown_nt_policy: drop
+# Type sharing requires publisher cell types; never invent labels for untyped cells.
+unknown_type_policy: drop
+# Scheme A: early optic lobes are supplied by flyvis; the central graph excludes
+# optic-lobe intrinsic neurons and ventral-nerve-cord motor circuits.
+allowed_superclasses: [cb_intrinsic, visual_projection, descending_neuron, cb_sensory]
+selection_rationale:
+  candidate_audit: artifacts/data_execution/candidate_scan.json
+  threshold: '60 retains all seven sensory types within budget; 55/up5 exceeds 3000 and 65 loses LC9/LC11'
+  upstream_hops: 'Increased initial 4 to 5: real ORN_DM1/VA2 and LC11 shortest paths to DN are five edges at theta=60'
+  convergence: 'Only four h<=3 convergence neurons; treat biological convergence as sparse and report VO-late fallback'
+# Confirmed against the downloaded MaleCNS v1.0 annotation table (2026-10-15).
+# Root side is needed for ORNs whose somata lie outside the CNS volume.
+selection:
+  visual_seed_patterns: [LC10a, LC10d, LC9, LC11, LPLC2]
+  odor_seed_patterns: [ORN_DM1, ORN_VA2]
+  # Nine of 83 VA2 cells have publisher rootSide='unknown'; exclude from injected seeds.
+  unknown_odor_side_policy: drop
+  turn_dn_patterns: [DNa01, DNa02]
+  forward_dn_patterns: [DNp09]
+columns:
+  body: bodyId
+  type: type
+  side: somaSide
+  root_side: rootSide
+  nt_body: body
+  nt_prediction: consensus_nt
+  pre: body_pre
+  post: body_post
+  weight: weight

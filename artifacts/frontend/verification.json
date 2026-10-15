@@ -1,0 +1,180 @@
+{
+  "artifact": "artifacts/frontend/frontend.npz",
+  "artifact_sha256": "47cccf33ad8a5ba708d557e500cf48b7f3946be1b0f9f6eecffec6349955ec69",
+  "artifact_bytes": 1095482,
+  "torch": "2.9.1+cu126",
+  "n_nodes_per_eye": 45669,
+  "n_edges_per_eye": 1513231,
+  "features_per_eye": 40,
+  "substeps": 5,
+  "neural_dt": 0.01,
+  "control_dt": 0.05,
+  "source_metadata": {
+    "checkpoint_name": "chkpt_00000",
+    "checkpoint_sha256": "d0e42857e738d0315897c2d50fde9eb3fb1a3fb1f071d55dfc13d53d72bccc3f",
+    "connectome_file": "fib25-fib19_v2.2.json",
+    "input_coordinate_order": "sensing.hex_eye.axial_coordinates: r(v) ascending, then q(u) ascending inside valid hex bounds",
+    "network_config": {
+      "connectome": {
+        "extent": 15,
+        "file": "fib25-fib19_v2.2.json",
+        "n_syn_fill": 1,
+        "type": "ConnectomeFromAvgFilters"
+      },
+      "dynamics": {
+        "activation": {
+          "type": "relu"
+        },
+        "type": "PPNeuronIGRSynapses"
+      },
+      "edge_config": {
+        "sign": {
+          "groupby": [
+            "source_type",
+            "target_type"
+          ],
+          "initial_dist": "Value",
+          "requires_grad": false,
+          "type": "SynapseSign"
+        },
+        "syn_count": {
+          "groupby": [
+            "source_type",
+            "target_type",
+            "du",
+            "dv"
+          ],
+          "initial_dist": "Lognormal",
+          "mode": "mean",
+          "requires_grad": false,
+          "std": 1.0,
+          "type": "SynapseCount"
+        },
+        "syn_strength": {
+          "clamp": "non_negative",
+          "groupby": [
+            "source_type",
+            "target_type"
+          ],
+          "initial_dist": "Value",
+          "requires_grad": true,
+          "scale": 0.01,
+          "type": "SynapseCountScaling"
+        }
+      },
+      "node_config": {
+        "bias": {
+          "groupby": [
+            "type"
+          ],
+          "initial_dist": "Normal",
+          "mean": 0.5,
+          "mode": "sample",
+          "penalize": {
+            "activity": true
+          },
+          "requires_grad": true,
+          "seed": 0,
+          "std": 0.05,
+          "type": "RestingPotential"
+        },
+        "time_const": {
+          "groupby": [
+            "type"
+          ],
+          "initial_dist": "Value",
+          "requires_grad": true,
+          "type": "TimeConstant",
+          "value": 0.05
+        }
+      }
+    },
+    "package_version": "1.2.0",
+    "parity": {
+      "atol": 2e-05,
+      "dt": 0.01,
+      "max_abs_error": 1.9073486328125e-06,
+      "n_neural_steps": 120,
+      "passed": true,
+      "rtol": 2e-05,
+      "stimuli": [
+        "constant grey",
+        "central flash",
+        "moving sinusoidal pattern"
+      ]
+    },
+    "runtime_parity": {
+      "backend": "torch-cpu-sparse-csr",
+      "binocular_independence": true,
+      "max_feature_abs_error": 3.5762786865234375e-07,
+      "max_state_abs_error": 1.9073486328125e-06,
+      "n_control_steps": 24,
+      "passed": true,
+      "visual_bins": 5
+    },
+    "source": "TuragaLab/flyvis",
+    "source_urls": [
+      "https://github.com/TuragaLab/flyvis",
+      "https://turagalab.github.io/flyvis/reference/network/",
+      "https://raw.githubusercontent.com/TuragaLab/flyvis/v1.2.0/flyvis/network/dynamics.py",
+      "https://raw.githubusercontent.com/TuragaLab/flyvis/v1.2.0/flyvis/network/stimulus.py"
+    ]
+  },
+  "benchmarks": [
+    {
+      "threads": 1,
+      "batch": 1,
+      "samples": 15,
+      "mean_control_step_ms": 21.435173733395157,
+      "p50_control_step_ms": 21.08586100030152,
+      "p95_control_step_ms": 23.298171800161068,
+      "environment_steps_per_s": 46.65229274265407
+    },
+    {
+      "threads": 1,
+      "batch": 4,
+      "samples": 15,
+      "mean_control_step_ms": 32.19471573323365,
+      "p50_control_step_ms": 32.171598999866546,
+      "p95_control_step_ms": 34.556936299804875,
+      "environment_steps_per_s": 124.24399187568903
+    },
+    {
+      "threads": 1,
+      "batch": 8,
+      "samples": 15,
+      "mean_control_step_ms": 59.72584333324751,
+      "p50_control_step_ms": 59.597067999675346,
+      "p95_control_step_ms": 65.91211099994325,
+      "environment_steps_per_s": 133.9453669220381
+    },
+    {
+      "threads": 2,
+      "batch": 1,
+      "samples": 15,
+      "mean_control_step_ms": 16.70208846659686,
+      "p50_control_step_ms": 16.042307999668992,
+      "p95_control_step_ms": 20.76970350003648,
+      "environment_steps_per_s": 59.87275196152493
+    },
+    {
+      "threads": 2,
+      "batch": 4,
+      "samples": 15,
+      "mean_control_step_ms": 24.62206879996908,
+      "p50_control_step_ms": 25.009699999827717,
+      "p95_control_step_ms": 26.17251289998421,
+      "environment_steps_per_s": 162.45588591666282
+    },
+    {
+      "threads": 2,
+      "batch": 8,
+      "samples": 15,
+      "mean_control_step_ms": 45.94622086663851,
+      "p50_control_step_ms": 46.31502200027171,
+      "p95_control_step_ms": 50.084998900274506,
+      "environment_steps_per_s": 174.1166052202737
+    }
+  ],
+  "process_peak_rss_mib": 602.03515625
+}

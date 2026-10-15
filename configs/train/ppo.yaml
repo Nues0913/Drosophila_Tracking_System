@@ -1,0 +1,36 @@
+variant: VO
+seed: 0
+sensor_contract_path: configs/sensor_contract.json
+graph_path: data/subgraphs/main/graph.npz
+frontend_path: artifacts/frontend/frontend.npz
+init_artifact: runs/bc/VO/seed_0/actor
+output: runs/VO/seed_0
+model: {odor_K: [0.1, 0.3, 1.0], readout: structured, visual_bins: 5}
+env:
+  episode_seconds: 60
+  target_motion: curved
+  plume_model: puff
+train:
+  num_envs: 8
+  total_steps: 2000000
+  rollout_steps: 256
+  sequence_length: 32
+  sequence_batch_size: 16
+  update_epochs: 4
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  activity_coef: 0.0001
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  critic_hidden_size: 128
+  curriculum:
+    - {until: 0.15, target_motion: stationary, plume_model: gaussian, scenario: normal}
+    - {until: 0.35, target_motion: linear, plume_model: gaussian, scenario: normal}
+    - {until: 0.6, target_motion: curved, plume_model: puff, scenario: normal}
+    - {until: 0.75, target_motion: curved, plume_model: puff, scenario: occlusion}
+    - {until: 0.9, target_motion: curved, plume_model: puff, scenario: noise}
+    - {until: 1.0, target_motion: curved, plume_model: puff, scenario: conflict}

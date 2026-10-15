@@ -1,0 +1,20 @@
+reference: VO
+tolerance: 0.05
+variants: [V, O, VO, VO-late, GRU, RS]
+common:
+  alpha_init: 0.01
+  init_spectral_radius: 0.9
+  tau_init: 0.05
+  bias_init: 0.0
+  dense_threshold: 5000
+  readout: structured
+  odor_K: [0.1, 0.3, 1.0]
+  odor_hill_n: 2.0
+  odor_adaptation_tau_s: 2.0
+  visual_bins: 5
+  allow_unknown_side_mean: false
+  visual_input_mapping: {}
+  log_std_init: -0.5
+overrides:
+  RS: {random_seed: 0, random_swaps_per_edge: 10}
+  GRU: {hidden_size: 16}

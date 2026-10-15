@@ -1,0 +1,99 @@
+# 模型、固定前端及部署契約
+
+下面描述實作與驗證流程。目前已執行的測試、前端轉換與小規模訓練見 [docs/status.md](../../../docs/status.md)；尚無正式實驗結果。
+
+## 責任與 API
+
+- `graph.py` 驗證中央子圖，以及建立保度數的隨機拓樸控制。
+- `frontend.py` 載入真實 flyvis 匯出參數，執行雙眼固定稀疏速率網路與固定空間池化；部署不依賴 flyvis。
+- `policy.py` 管理感測編碼、中央神經動態、六種策略及可訓練參數計數。
+- `artifacts.py` 保存完整重建設定、來源雜湊、安全權重載入及單模態暖啟動。
+- ROS `flytrack_policy/node.py` 負責訊息與生命週期，`runtime.py` 管理感測快取、隱狀態、看門狗與加速度限制。
+
+公開 API 從 `flytrack_core.model` 匯入：
+
+```python
+policy = build_policy(variant, graph_path, contract, frontend_path, **model_config)
+state = policy.initial_state(batch_size, device)
+action_mean, state, activity = policy(observation, state)
+save_policy_artifact(
+    directory, policy, policy.model_config, contract, graph_path, frontend_path, metadata={}
+)
+policy, contract, card = load_policy_artifact(directory, device="cpu")
+```
+
+觀測只接受 `vision[B,2,N_eye]`、`odor[B,2]`、`valid[B,3]`。有效性依序是左相機、右相機、成對气味讀數。任何額外欄位都被拒絕，包含目標或機器人真值。action_mean 為 `[v,ω]`，單位 m/s 與 rad/s；`log_std[2]` 是 PPO 用的可訓練潛在高斯標準差。`activity[B,N_central]` 為中央群活性；GRU 的同形狀輸出是重複映射的隱通道診斷值，不對應生物神經元。
+
+state 是單一 `Tensor[B,policy.state_size]`，包含雙眼固定前端電位、ORN 適應 K，以及中央電位或 GRU 隱狀態。狀態跨控制步持續，只在回合重置時以 `initial_state` 重建，不能整段歸零，因為 ORN 的初始 K 及前端 bias 不是零。`history_steps=10` 用於資料緩衝與訓練 burn-in；不能每次控制把舊的十步再灌入同一個持續狀態。
+
+感測編碼器以 no_grad 執行，固定 flyvis／ORN 狀態不參與 BPTT；中央／GRU 狀態保留梯度。這防止將含中央梯度的完整 state 拼接張量傳回感測切片時，無意建立整個固定視葉的反向圖。
+
+## flyvis 方案 A 的真實來源
+
+轉換依据閱讀時的官方 API 與原始碼，實際匯出記錄已安裝 flyvis 的版本、checkpoint SHA-256 和網路設定：
+
+- [官方實作與論文來源](https://github.com/TuragaLab/flyvis)
+- [Network 官方 API](https://turagalab.github.io/flyvis/reference/network/)
+- [官方速率動態與參數乘積](https://raw.githubusercontent.com/TuragaLab/flyvis/main/flyvis/network/dynamics.py)
+- [官方共享參數索引與 Euler 積分](https://raw.githubusercontent.com/TuragaLab/flyvis/main/flyvis/network/network.py)
+- [官方 photoreceptor 刺激映射](https://raw.githubusercontent.com/TuragaLab/flyvis/main/flyvis/network/stimulus.py)
+- [官方 model directory 與 checkpoint 選取](https://raw.githubusercontent.com/TuragaLab/flyvis/main/flyvis/network/network_view.py)
+
+`scripts/export_flyvis.py` 在 Python 3.12 訓練環境使用官方 Network 的設定初始化模型，然後以 `torch.load(..., weights_only=True)` 載入實際官方 checkpoint。它不呼叫可能使用不安全反序列化的上游 checkpoint recovery。bias、time constant、sign、synapse count、synapse strength 依上游 semantic values 及共享索引展開為每個細胞／邊的固定參數。
+
+轉換只支援上游 passive rate／ReLU 動態，其他模型直接拒絕。真正執行匯出時，會以固定灰階、中央閃光、移動正弦刺激，比較載入的官方模型與展開方程；未通過就不輸出可接受的產物。匯出資料包括 parity 結果及其步長。執行端只接受附有合法來源、checkpoint 雜湊、通過 parity 記錄及完整六角映射的產物；缺少真實權重就拒絕所有六變體，沒有 random、identity 或 untrained 前端備援。來源記錄是重現契約，不是對檔案作者的密碼學驗證。
+
+photoreceptor 索引按 `sensing.hex_eye.axial_coordinates` 的 `(q,r)` 順序轉換，即 r 外圈、q 內圈，不能假定上游 node 順序就是感測順序。中央 trainable τ 使用 `2·dt + softplus(raw_tau)`；固定 flyvis τ 依上游規則下限為 dt，以保存來源模型的數值行為。控制週期 50 ms，神經步長 10 ms，各控制步執行五個 Euler 子步。
+
+早期前端來自 flyvis 使用的視葉連接體，中央 graph 來自 MaleCNS。這是已揭露的混合資料來源，不把前端稱為 MaleCNS 重建。官方 checkpoint 轉換已通過 parity（`docs/frontend_execution.md`）；跨 flyvis 版本相容性與 GPU/CPU 數值差異未驗證。
+
+## 感測投射與缺失
+
+中央 graph 使用 `input_mask` 的位元 1、2 指定視覺及嗅覺種子；`group_mask` 的視覺／嗅覺位元則標記完整路徑，兩者可以重疊。不得將所有下游神經當成感覺輸入。沒有 input_mask 時，必須在設定指定種子型別。
+
+固定 flyvis 輸出預設選 T4a–d、T5a–d，各型別切成五個水平空間池化區。視覺種子按其型別與左右側，均勻分配到同側池化區。這個 LC 投射是保留方向資訊的工程假設，沒有宣稱實測 receptive field。`visual_input_mapping` 可用 body ID 字串或 cell type 為 key，值為 `{"types": ["T4a", ...], "bins": [0, ...]}` 覆寫。欲研究更精確的投射，仍需神經元 RF 資料及獨立驗證。
+
+未知側別的感覺種子預設拒絕；只有顯式 `allow_unknown_side_mean=True` 才採雙眼／雙觸角平均，並由 model_config 保留此決定。沒有用未知側別推測左右。
+
+ORN 先以舊 K 計算 Hill response，再以 `K += min(control_dt/τ_adapt,1)·(c-K)` 更新並限制 K≥1e-4。預設 K=0.3、Hill exponent=2、適應時間 2 秒。不同 ORN 型別按穩定 type 順序對應 `odor_K` 各通道；這是可重現的模擬濃度映射，不是特定氣味的實測受體親和力。缺失氣味時 response=0 且 K 凍結；缺失眼睛時固定前端狀態凍結、輸出池化特徵為零。valid mask 同時轉成對應 seed 的可訓練缺失電流，GRU 則直接收到 valid 特徵。沒有把缺失當成濃度真的等於零。
+
+## 六變體與公平性
+
+| 變體 | 實際差異 |
+| --- | --- |
+| V | 相同中央 graph，禁止氣味輸入及其 valid 通道 |
+| O | 相同中央 graph，禁止雙眼輸入及其 valid 通道 |
+| VO | 雙感覺輸入與完整中央連接體 |
+| VO-late | 兩套互不交換活性的中央狀態，各使用該模態的 induced subgraph，DN 狀態在讀出才拼接；型別參數共享 |
+| GRU | 相同固定前端、ORN 轉換及 LC／ORN 種子投射；以投射後種子電流加 valid flags 驅動無拓樸約束 GRUCell 及小讀出 |
+| RS | 中央邊經同源號誌分組的 double-edge swap，保留所有節點入／出度、密度及各目標收到的正負邊數 |
+
+V/O 是**感測消融**，保留整張中央圖和同樣參數數，不是重新萃取成更小的單模態圖。VO-late 共享 α／τ／bias 以控制預算，但各支路的 state 和 recurrent currents 完全隔離；這個比較檢验早期神經活性融合與晚期讀出的差異，不能宣稱比較了兩個獨立學習參數集。
+
+所有變體共用同一份固定種子投射。GRU 的輸入維度為 `len(seed_indices)+3`，依穩定 node 順序取得 LC／ORN 種子的外部感覺電流，再加三個 valid flags；它不直接取得投射前的完整視覺池化或 ORN 通道。因此兩種架構接收相同的感測映射資訊，不能由基準額外讀取未提供中央圖的通道。GRU 自動參數預算計算以這個投射後維度為準。
+
+中央 graph 的邊值始終為固定 `s_pre × N_edge × softplus(α_type-pair)`；只有有邊的位置被儲存。τ 和 bias 同型別共享，符號不能隨訓練翻轉。RS 的原始 type-pair sharing labels 留在**邊的參數槽**，不能按隨機後的型別重算，否則參數預算會變。RS 的 labels 因此不再代表隨機後的實際 type-pair，model_card 明示這項限制。無法產生至少一個有效且改变拓樸的 swap 時拒絕 RS，不把原圖冒充隨機控制。
+
+參數計數只含 `requires_grad=True`，包括 readout、缺失電流及 PPO log_std，排除共同凍結前端。V/O/VO/RS 的中央參數數相同；VO-late 的讀出可能稍大，而兩支路均停用的 type-pair 不配置可訓練 α，避免把不會参与運算的參數算進預算。缺失電流也只配置感覺種子型別。`budget_target` 用於 GRU 自動選最接近的整數 hidden size，`assert_parameter_budget` 用於所有比較。±5% 不可達時必須拒絕／調整有功能的架構，沒有補未使用的假參數。極小測試圖可能無法達到 ±5%，不可當成公平實驗結果。
+
+motor readout 預設在有左右成對 turn DN 及 forward DN 時使用結構讀出；資料不足則明確記錄 linear DN fallback。完全沒有 DN 直接拒絕，不改讀普通中央神經來假造運動端點。
+
+## 執行時 lesion 與匯流電流分析
+
+`policy.set_lesion("none" | "vision" | "odor")` 不增加、移除或重訓參數。VO/RS 等中央圖策略除了停止該模態的感測和缺失電流，也將該模態獨有中央群的電位與所有輸入／輸出邊靜默；兩路共享群、匯流群及 DN 保留。VO-late 則將對應的整個獨立支路靜默，另一支路照常。GRU 只停止相應輸入，沒有生物神經細胞 lesion。移除 lesion 後使用現有持續狀態，恢復過程本身會有暫態；獨立比較回合應重建 initial_state，不能混用兩種評估口徑。
+
+`policy.convergence_current_contributions(activity)` 回傳三個 Tensor `[B,N_convergence]`：`visual_exclusive`、`odor_exclusive`、`shared`。每項是該來源群到每個匯流細胞的 **Σ|邊電流|**，不是抵消後的 |Σ電流|，也不是因果貢獻；群別依 presynaptic 節點的 visual／olfactory 路徑位元定義。來源號誌、邊數、突觸數和活性幅度都可能影響這個比值，不能只憑大小推論某模態必要性。因果相關問題要搭配 lesion 行為實驗。
+
+`convergence_node_ids` 提供輸出欄位對應的 body ID。VO-late 使用最近一次 forward 保存的兩支路活動與各自遮罩分別計算，再加總電流質量；必須傳入最近該次 forward 回傳的 activity，因為已合併的平均活動不能還原兩套獨立電流。GRU 拒絕此生物電流分析。`describe()` 明示 variant、lesion、活動語意及參數數；所有分析與 lesion 執行仍待後續在真實模型產物上驗證。
+
+## 產物與 ROS
+
+各模型產物包含 `model_card.json`、`weights.pt`、`graph.npz`、`frontend.npz`、`sensor_contract.json`。card 包含解決後的完整 model_config、各檔案 SHA-256、感測契約及小眼方向表雜湊、訓練參數數、狀態形狀及來源。weights 只序列化 Tensor state_dict，載入使用 weights_only=True；來源或幾何不一致拒絕啟動。card 最後原子替換，未完整寫入的產物不會通過雜湊檢查。
+
+ROS executable 和 node name 為 `connectome_policy_node`；參數為 `artifact`、`sensor_contract_json`、`device`、`use_sim_time=true`。只訂閱三個 `/fly/*` 感測 topic，不訂閱 `/world/*`。固定 absolute reset 服務為 `/connectome_policy_node/reset`（std_srvs/Trigger），提供情境管理器在每回合重置時清空隱狀態、歷史、所有感測時間戳並立即發布零速度；僅接受嚴格晚於重置模擬時間的感測包，避免 DDS 中上一回合排隊但仍未逾時的資料重新填滿快取。重置後三路感測都重新有效且未逾時，才恢復第一次動作。
+
+看門狗以保留的感測生成時間戳和模擬時鐘計算 200 ms 逾時，拒絕亂序包；單一感測缺失使用 mask 繼續，全部缺失立即零速度。時鐘倒退清空整個 actor 與快取，未來時間戳也不能拿來恢復動作。速度與加速度限制依共同 SensorContract，activity 以 10 Hz 發布。ROS 處理灰階及 RGB/BGR 的影像 stride，不依賴 cv_bridge。
+
+本輪只做靜態閱讀。後續仍需實際執行：官方權重轉換 parity、核心／CSR 梯度測試、六變體產物與參數預算測試、ROS 真值隔離及 reset/watchdog 跨節點測試、GPU 推論延遲量測。沒有聲稱 p95<50 ms、模型已訓練，或 Gazebo 已閉環成功。
+
+`/fly/inference_latency_ms`（std_msgs/Float64、best effort depth 5）是額外診斷 topic，以 perf_counter 測量 tensor 準備到動作與 activity 已實體化到 CPU 的處理 walltime；GPU 的 `.cpu()` 會同步完成運算。這不含相機 callback 的複眼取樣時間，也不是感測生成到 cmd_vel 的端到端延遲；感測時間戳對 cmd_vel 的模擬時間差必須另行記錄並標明量測基礎。

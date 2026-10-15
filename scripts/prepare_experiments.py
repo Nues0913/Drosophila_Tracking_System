@@ -1,0 +1,130 @@
+"""Resolve real actor parameter budgets and write six-variant/seed stage configs.
+
+This command constructs actors to count parameters but does not collect data or
+train. Run it only during the later validation phase after genuine artifacts exist.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import shlex
+from pathlib import Path
+
+import yaml
+from flytrack_core.contracts import SensorContract
+from flytrack_core.model import assert_parameter_budget, build_policy, count_trainable_parameters
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-config", type=Path, default=Path("configs/model/variants.yaml"))
+    parser.add_argument("--graph", type=Path, default=Path("data/subgraphs/main/graph.npz"))
+    parser.add_argument("--frontend", type=Path, default=Path("artifacts/frontend/frontend.npz"))
+    parser.add_argument(
+        "--sensor-contract", type=Path, default=Path("configs/sensor_contract.json")
+    )
+    parser.add_argument("--output", type=Path, default=Path("runs/experiment_configs"))
+    parser.add_argument("--seeds", type=int, nargs="+", default=list(range(5)))
+    parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
+    parser.add_argument("--device", default="auto")
+    args = parser.parse_args()
+    if not args.seeds or len(set(args.seeds)) != len(args.seeds) or min(args.seeds) < 0:
+        parser.error("seeds must be distinct nonnegative integers")
+    options = yaml.safe_load(args.model_config.read_text(encoding="utf-8"))
+    contract = SensorContract.from_json(args.sensor_contract)
+    reference = options["reference"]
+    common = options.get("common", {})
+    reference_policy = build_policy(reference, args.graph, contract, args.frontend, **common)
+    target = count_trainable_parameters(reference_policy)
+    configs = {}
+    models = {reference: reference_policy}
+    for variant in options["variants"]:
+        resolved = {
+            **common,
+            **options.get("overrides", {}).get(variant, {}),
+            "budget_target": target,
+        }
+        model = build_policy(variant, args.graph, contract, args.frontend, **resolved)
+        models[variant] = model
+        configs[variant] = dict(model.model_config)
+    counts = assert_parameter_budget(
+        models, reference=reference, tolerance=float(options["tolerance"])
+    )
+    # Free all duplicated frozen frontends before invoking any actual learner.
+    del models, reference_policy
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output / "parameter_budget.json").write_text(
+        json.dumps(
+            {
+                "reference": reference,
+                "tolerance": options["tolerance"],
+                "actor_trainable_parameters": counts,
+                "resolved_models": configs,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    commands = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "# Run from the project root after reviewing budgets.",
+    ]
+    for variant, model_config in configs.items():
+        for seed in args.seeds:
+            chain = (
+                [("pretrain_vision", "vision", 240000)]
+                if variant == "V"
+                else [("pretrain_odor", "odor", 240000)]
+                if variant == "O"
+                else [("pretrain_vision", "vision", 120000), ("pretrain_odor", "odor", 120000)]
+            )
+            chain += [("bc", None, None), (args.algorithm, None, None)]
+            previous = None
+            for template_name, modality, steps in chain:
+                config = yaml.safe_load(Path(f"configs/train/{template_name}.yaml").read_text())
+                config = copy.deepcopy(config)
+                config.update(
+                    variant=variant,
+                    seed=seed,
+                    model=model_config,
+                    graph_path=str(args.graph),
+                    frontend_path=str(args.frontend),
+                    sensor_contract_path=str(args.sensor_contract),
+                )
+                config["scenario_configs"] = {
+                    name: f"configs/scenarios/{name}.yaml"
+                    for name in ("normal", "occlusion", "noise", "conflict")
+                }
+                config.pop("init_artifact", None)
+                config.pop("pretrained_artifacts", None)
+                if previous:
+                    config["init_artifact"] = str(previous)
+                if modality:
+                    output = Path(f"runs/pretrain/{variant}/seed_{seed}/{modality}")
+                    config["train"]["total_steps"] = steps
+                elif template_name == "bc":
+                    output = Path(f"runs/bc/{variant}/seed_{seed}")
+                else:
+                    output = Path(f"runs/{variant}/seed_{seed}")
+                config["output"] = str(output)
+                config_file = args.output / variant / f"seed_{seed}" / f"{template_name}.yaml"
+                config_file.parent.mkdir(parents=True, exist_ok=True)
+                config_file.write_text(
+                    yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
+                )
+                command = "pretrain" if modality else template_name
+                commands.append(
+                    f"python -m flytrack_train {command} "
+                    f"--config {shlex.quote(str(config_file))} "
+                    f"--device {shlex.quote(args.device)}"
+                )
+                previous = output / "actor"
+    (args.output / "run_all.sh").write_text("\n".join(commands) + "\n", encoding="utf-8")
+    print(f"Resolved actor counts: {counts}; review {args.output / 'run_all.sh'} before running")
+
+
+if __name__ == "__main__":
+    main()

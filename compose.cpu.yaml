@@ -1,0 +1,9 @@
+# Optional override for a machine without NVIDIA container support. Compose >= 2.30.
+services:
+  train:
+    gpus: !reset []
+  sim:
+    gpus: !reset []
+    environment:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      EGL_PLATFORM: surfaceless

@@ -1,0 +1,36 @@
+# 本機環境與快取
+.env
+.venv/
+.tools/
+.cache/
+.claude/
+.codex/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# 大型原始資料、訓練輸出：不進版本控制
+data/*
+!data/subgraphs/
+data/subgraphs/*
+!data/subgraphs/main/
+runs/
+artifacts/*
+!artifacts/frontend/
+!artifacts/data_execution/
+artifacts/data_execution/*
+!artifacts/data_execution/*.json
+
+# ROS
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+*.bag
+*.db3
+*.mcap
+colab_workspace/
+
+# 個人文件（計劃書封面含個資；作業 PDF 與本專案無關）
+*.pdf

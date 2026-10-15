@@ -1,0 +1,722 @@
+{
+  "allowed_superclasses": [
+    "cb_intrinsic",
+    "visual_projection",
+    "descending_neuron",
+    "cb_sensory"
+  ],
+  "edge_cache_rows": 417082,
+  "elapsed_s": 11.233463826999923,
+  "results": [
+    {
+      "convergence": 1733,
+      "downstream_hops": 3,
+      "edges": 272505,
+      "missing_seed_types": [],
+      "neurons": 20424,
+      "retained_seed_counts": {
+        "LC10a": 269,
+        "LC10d": 213,
+        "LC11": 142,
+        "LC9": 219,
+        "LPLC2": 185,
+        "ORN_DM1": 74,
+        "ORN_VA2": 74
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 2,
+        "LC9": 1,
+        "LPLC2": 2,
+        "ORN_DM1": 3,
+        "ORN_VA2": 4
+      },
+      "threshold": 20,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 1743,
+      "downstream_hops": 3,
+      "edges": 274209,
+      "missing_seed_types": [],
+      "neurons": 20627,
+      "retained_seed_counts": {
+        "LC10a": 269,
+        "LC10d": 213,
+        "LC11": 142,
+        "LC9": 219,
+        "LPLC2": 185,
+        "ORN_DM1": 74,
+        "ORN_VA2": 74
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 2,
+        "LC9": 1,
+        "LPLC2": 2,
+        "ORN_DM1": 3,
+        "ORN_VA2": 4
+      },
+      "threshold": 20,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 449,
+      "downstream_hops": 3,
+      "edges": 124709,
+      "missing_seed_types": [],
+      "neurons": 13931,
+      "retained_seed_counts": {
+        "LC10a": 255,
+        "LC10d": 209,
+        "LC11": 130,
+        "LC9": 190,
+        "LPLC2": 184,
+        "ORN_DM1": 68,
+        "ORN_VA2": 73
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 1,
+        "LPLC2": 2,
+        "ORN_DM1": 3,
+        "ORN_VA2": 4
+      },
+      "threshold": 30,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 452,
+      "downstream_hops": 3,
+      "edges": 125823,
+      "missing_seed_types": [],
+      "neurons": 14108,
+      "retained_seed_counts": {
+        "LC10a": 255,
+        "LC10d": 209,
+        "LC11": 130,
+        "LC9": 190,
+        "LPLC2": 184,
+        "ORN_DM1": 74,
+        "ORN_VA2": 73
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 1,
+        "LPLC2": 2,
+        "ORN_DM1": 3,
+        "ORN_VA2": 4
+      },
+      "threshold": 30,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 107,
+      "downstream_hops": 3,
+      "edges": 58411,
+      "missing_seed_types": [],
+      "neurons": 8615,
+      "retained_seed_counts": {
+        "LC10a": 235,
+        "LC10d": 193,
+        "LC11": 66,
+        "LC9": 97,
+        "LPLC2": 180,
+        "ORN_DM1": 65,
+        "ORN_VA2": 15
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 1,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 4
+      },
+      "threshold": 40,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 108,
+      "downstream_hops": 3,
+      "edges": 59518,
+      "missing_seed_types": [],
+      "neurons": 8868,
+      "retained_seed_counts": {
+        "LC10a": 235,
+        "LC10d": 193,
+        "LC11": 66,
+        "LC9": 101,
+        "LPLC2": 180,
+        "ORN_DM1": 74,
+        "ORN_VA2": 71
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 1,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 4
+      },
+      "threshold": 40,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 55,
+      "downstream_hops": 3,
+      "edges": 28745,
+      "missing_seed_types": [],
+      "neurons": 4446,
+      "retained_seed_counts": {
+        "LC10a": 217,
+        "LC10d": 170,
+        "LC11": 17,
+        "LC9": 12,
+        "LPLC2": 155,
+        "ORN_DM1": 4,
+        "ORN_VA2": 5
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 2,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 4
+      },
+      "threshold": 50,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 59,
+      "downstream_hops": 3,
+      "edges": 30190,
+      "missing_seed_types": [],
+      "neurons": 4823,
+      "retained_seed_counts": {
+        "LC10a": 217,
+        "LC10d": 170,
+        "LC11": 20,
+        "LC9": 21,
+        "LPLC2": 155,
+        "ORN_DM1": 74,
+        "ORN_VA2": 69
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 2,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 4
+      },
+      "threshold": 50,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 37,
+      "downstream_hops": 3,
+      "edges": 20289,
+      "missing_seed_types": [
+        "ORN_VA2"
+      ],
+      "neurons": 3343,
+      "retained_seed_counts": {
+        "LC10a": 212,
+        "LC10d": 163,
+        "LC11": 4,
+        "LC9": 5,
+        "LPLC2": 134,
+        "ORN_DM1": 1,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 2,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 5
+      },
+      "threshold": 55,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 42,
+      "downstream_hops": 3,
+      "edges": 21913,
+      "missing_seed_types": [],
+      "neurons": 3673,
+      "retained_seed_counts": {
+        "LC10a": 212,
+        "LC10d": 163,
+        "LC11": 8,
+        "LC9": 5,
+        "LPLC2": 134,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 3,
+        "LC9": 2,
+        "LPLC2": 3,
+        "ORN_DM1": 4,
+        "ORN_VA2": 5
+      },
+      "threshold": 55,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 9878,
+      "missing_seed_types": [
+        "LC11",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 1910,
+      "retained_seed_counts": {
+        "LC10a": 208,
+        "LC10d": 143,
+        "LC11": 0,
+        "LC9": 1,
+        "LPLC2": 112,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 5,
+        "LC9": 4,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 60,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 4,
+      "downstream_hops": 3,
+      "edges": 14165,
+      "missing_seed_types": [],
+      "neurons": 2569,
+      "retained_seed_counts": {
+        "LC10a": 208,
+        "LC10d": 143,
+        "LC11": 1,
+        "LC9": 1,
+        "LPLC2": 112,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": 5,
+        "LC9": 4,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 60,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 7833,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 1685,
+      "retained_seed_counts": {
+        "LC10a": 202,
+        "LC10d": 126,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 90,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 65,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 3,
+      "downstream_hops": 3,
+      "edges": 11294,
+      "missing_seed_types": [
+        "LC11",
+        "LC9"
+      ],
+      "neurons": 2171,
+      "retained_seed_counts": {
+        "LC10a": 202,
+        "LC10d": 126,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 90,
+        "ORN_DM1": 72,
+        "ORN_VA2": 69
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 65,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 4801,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 1240,
+      "retained_seed_counts": {
+        "LC10a": 196,
+        "LC10d": 111,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 70,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 70,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 1,
+      "downstream_hops": 3,
+      "edges": 7566,
+      "missing_seed_types": [
+        "LC11",
+        "LC9"
+      ],
+      "neurons": 1588,
+      "retained_seed_counts": {
+        "LC10a": 196,
+        "LC10d": 111,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 70,
+        "ORN_DM1": 53,
+        "ORN_VA2": 54
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 70,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 3375,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 1008,
+      "retained_seed_counts": {
+        "LC10a": 185,
+        "LC10d": 91,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 49,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 75,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 3686,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 1072,
+      "retained_seed_counts": {
+        "LC10a": 185,
+        "LC10d": 91,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 49,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 75,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 2061,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 777,
+      "retained_seed_counts": {
+        "LC10a": 174,
+        "LC10d": 67,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 34,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 80,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 2439,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 828,
+      "retained_seed_counts": {
+        "LC10a": 174,
+        "LC10d": 67,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 34,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 3,
+        "ORN_DM1": 5,
+        "ORN_VA2": 5
+      },
+      "threshold": 80,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 1045,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 452,
+      "retained_seed_counts": {
+        "LC10a": 155,
+        "LC10d": 37,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 18,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 4,
+        "ORN_DM1": 6,
+        "ORN_VA2": 6
+      },
+      "threshold": 90,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 1089,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 463,
+      "retained_seed_counts": {
+        "LC10a": 155,
+        "LC10d": 37,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 18,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 4,
+        "ORN_DM1": 6,
+        "ORN_VA2": 6
+      },
+      "threshold": 90,
+      "upstream_hops": 5
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 571,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 276,
+      "retained_seed_counts": {
+        "LC10a": 99,
+        "LC10d": 19,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 9,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 4,
+        "ORN_DM1": 6,
+        "ORN_VA2": 7
+      },
+      "threshold": 100,
+      "upstream_hops": 4
+    },
+    {
+      "convergence": 0,
+      "downstream_hops": 3,
+      "edges": 591,
+      "missing_seed_types": [
+        "LC11",
+        "LC9",
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "neurons": 282,
+      "retained_seed_counts": {
+        "LC10a": 99,
+        "LC10d": 19,
+        "LC11": 0,
+        "LC9": 0,
+        "LPLC2": 9,
+        "ORN_DM1": 0,
+        "ORN_VA2": 0
+      },
+      "seed_minimum_motor_distance": {
+        "LC10a": 2,
+        "LC10d": 2,
+        "LC11": null,
+        "LC9": null,
+        "LPLC2": 4,
+        "ORN_DM1": 6,
+        "ORN_VA2": 7
+      },
+      "threshold": 100,
+      "upstream_hops": 5
+    }
+  ]
+}

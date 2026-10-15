@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flytrack"
+version = "0.1.0"
+description = "Connectome-constrained multisensory target tracking"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2.1,<3", "torch==2.9.1"]
+
+[project.optional-dependencies]
+extract = ["pandas>=2.2,<3", "pyarrow>=18,<24", "PyYAML>=6,<7", "neuprint-python>=0.5,<1"]
+train = ["gymnasium>=1.1,<2", "PyYAML>=6,<7", "tensorboard>=2.18,<3"]
+visual = ["flyvis==1.2.0; python_version < '3.13'", "torchvision==0.24.1; python_version < '3.13'"]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["flytrack_core*", "connectome_extract*", "flytrack_sim*", "flytrack_train*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+pythonpath = ["python"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]

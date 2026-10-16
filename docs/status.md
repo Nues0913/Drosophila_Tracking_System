@@ -13,8 +13,8 @@
 | MaleCNS v1.0 原始表格 | 三份官方表格下載，大小、ETag、Arrow 框架、SHA-256 核對 | `docs/data_sources.md` |
 | flyvis 前端（方案 A） | 官方 checkpoint 作者 SHA-256 核對；原生轉換對官方輸出最大誤差 1.91e-6 | `artifacts/frontend/verification.json`、`docs/frontend_execution.md` |
 | 中央子圖萃取 | 2569 神經元、14165 邊；弱連通、每個種子型別可達 DN、號誌、雜湊等 19 項獨立檢查全過；重跑兩次位元相同 | `artifacts/data_execution/graph_verification.json`、`scripts/verify_subgraph.py` |
-| 六變體參數預算 | VO/V/O/RS=6794、VO-late=6766、GRU=6831，均在 ±5% 內 | `scripts/prepare_experiments.py` 產生的 `parameter_budget.json` |
-| 測試與 lint | 73 passed（含真實前端）；`ruff check`、`ruff format --check` 通過 | `pytest python/tests` |
+| 六變體參數預算 | DN A＋C 後仍為 VO/V/O/RS=6794、VO-late=6766、GRU=6831，均在 ±5% 內 | `runs/dn_fix/experiment_configs/parameter_budget.json`（只產生設定，沒有執行 run_all.sh） |
+| 測試與 lint | 98 passed（含真實前端）；`ruff check`、`ruff format --check` 通過 | `runs/dn_fix/pytest.txt`、`runs/dn_fix/REPORT.md` |
 | 小規模訓練鏈 | VO seed 0 縮小版：視覺預訓練 → 氣味預訓練 → BC → PPO 全部跑完，各階段權重有限且有更新 | 可用 `configs/train/smoke.yaml` 重現 PPO 部分 |
 | Docker 映像 | `flytrack-ml:0.1`、`flytrack-ros:0.1` 本機建置成功 | `docs/ros_execution.md` |
 
@@ -28,7 +28,11 @@
 
 ## 已知問題與科學上的限制（報告須揭露）
 
-0. **【正式訓練前必須處理】運動 DN 全部沉默。** 完整視覺預訓練後六個 DN 的 bias 漂成負值（−0.006～−0.018），電位全程為負，ReLU 輸出零，動作固定為 `[0.25, 0]`、與視覺無關；動作損失對中央參數的梯度為零，BC／PPO 無法修復。原始程式碼同樣如此，與加速修改無關。詳見 `runs/dn_audit/REPORT.md`；修正方向需全組決定並以小規模端到端訓練驗證。
+0. **【程式已修、待訓練驗證】運動 DN 沉默的 A＋C 修正。** 新連接體模型只對運動 DN 用 `softplus(10v)/10`，遞迴、activity、動作讀出共用；pretrain／BC／PPO 的直接活動正則排除 DN。GRU 動態與參數預算不變，舊 artifact 未記錄 β 時仍保留 ReLU。現有 smoke 權重的唯讀 CPU 反事實探針：換眼角速度差中位數由 `5.13e-7` 升到 `2.08e-4 rad/s`，有效 DN 由 0/6 升到 6/6（rate>1e-3）；仍未達 `0.05 rad/s` 的控制門檻，不能宣稱已通過端到端驗收。`dn_health.py` 已加入階段 gate，單元測試確認能偵測全 DN 沉默並回傳失敗。本次沒有實際訓練，預訓練／BC 後活性、控制誤差與 validate-pretrain 均**待訓練驗證**；完整數字、舊沉默 checkpoint 探針與風險見 [修正報告](dn/fix_A_C_2026-10-15.md)，原始證據見 [DN 檢查報告](dn/audit_2026-10-15.md)。活動正則是否造成沉默仍未做因果消融。
+
+   同一組 held-out 種子重播現有中斷 V checkpoint（不更新權重）：舊 ReLU 的 6 個 DN 正活性比例均為 0、中央動作梯度範數為 0；只切換 β=10 後均為 100%，中央梯度恢復至 `1.74e-3`，但換眼差中位數仍為 0、最大僅 `5.38e-6 rad/s`。這證明本次探針解除 dead ReLU 的阻斷，尚未證明有足夠的感覺控制能力。
+
+   **2026-10-16 更新：小規模端到端驗證未通過 BC gate。** DN 已不再沉默、梯度恢復，但 BC 只學到平均動作（固定轉向偏差），換眼差 0.017 rad/s。診斷顯示 pretrain 後方位資訊已傳到 DN 左右差（R² 0.66）但幅度僅約 3e-4，BC 因而改調偏置並破壞了這些資訊。完整數據、反事實測試與待決定事項見 [DN 診斷結論](dn/diagnosis_2026-10-16.md)；訓練時間見 [training_time.md](training_time.md)。
 
 1. **匯流神經元只有 4 個。** 視覺與嗅覺路徑在 3 跳內交會的神經元很少；依計劃書 G1，以 VO-late 為後備主要變體並明示，不能把晚期融合說成找到生物匯流。
 2. **LC9、LC11 各只保留 1 個神經元**（原有 219、143 個）。視覺輸入實際上主要來自 LC10a（208）、LC10d（143）、LPLC2（112）。

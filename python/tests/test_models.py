@@ -1,7 +1,10 @@
 """Model invariants and integration checks with authentic frontend artifacts."""
 
 import dataclasses
+import importlib.util
+import json
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +20,9 @@ from flytrack_core.model import (
 )
 from flytrack_core.model.frontend import FrozenFlyvis
 from flytrack_core.model.graph import Graph, randomize_edges
-from flytrack_core.model.policy import DEFAULT_CONFIG, MaskedRateCore
+from flytrack_core.model.policy import DEFAULT_CONFIG, MaskedRateCore, MotorReadout
+from flytrack_train.config import prepare_policy
+from flytrack_train.losses import activity_penalty
 
 
 @pytest.fixture
@@ -78,6 +83,64 @@ def test_initial_recurrence_is_contractive_for_large_synapse_counts(graph):
     for _ in range(200):
         state = core(torch.ones(1, graph.n_nodes), state)
     assert torch.isfinite(state).all() and state.abs().max() < 100
+
+
+@pytest.mark.parametrize("beta", [10.0, None])
+def test_non_motor_dynamics_match_old_relu_formula_without_motor_feedback(graph, beta):
+    # Network trajectories may change through DN feedback. Remove only that
+    # feedback in this fixture to isolate the unchanged non-DN dynamics.
+    motor = graph.population("turn") | graph.population("forward")
+    graph = dataclasses.replace(
+        graph,
+        pre=graph.pre[~motor[graph.pre]],
+        post=graph.post[~motor[graph.pre]],
+        synapse_count=graph.synapse_count[~motor[graph.pre]],
+    )
+    core = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "motor_rate_beta": beta})
+    voltage = torch.linspace(-0.2, 0.3, graph.n_nodes).unsqueeze(0)
+    external = torch.linspace(0.4, -0.3, graph.n_nodes).unsqueeze(0)
+    expected = voltage.clone()
+    ratio = core.dt / core.tau[core.type_index]
+    drive = core.bias[core.type_index] + external
+    for _ in range(core.substeps):
+        expected = torch.lerp(
+            expected, torch.addmm(drive, expected.relu(), core.adjacency().T), ratio
+        )
+    observed = core(external, voltage)
+    torch.testing.assert_close(
+        observed[:, ~core.motor_mask], expected[:, ~core.motor_mask], atol=0, rtol=0
+    )
+    torch.testing.assert_close(
+        core.rates(voltage)[:, ~core.motor_mask],
+        voltage.relu()[:, ~core.motor_mask],
+        atol=0,
+        rtol=0,
+    )
+
+
+def test_motor_rate_rest_symmetry_lipschitz_and_active_mask(graph):
+    core = MaskedRateCore(graph, SensorContract(), dict(DEFAULT_CONFIG))
+    voltage = torch.zeros(1, graph.n_nodes, requires_grad=True)
+    rate = core.rates(voltage)
+    expected = np.log(2) / DEFAULT_CONFIG["motor_rate_beta"]
+    torch.testing.assert_close(
+        rate[:, core.motor_mask], torch.full_like(rate[:, core.motor_mask], expected)
+    )
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    assert readout([rate])[0, 1] == 0  # Equal left/right rest rates cancel exactly.
+    derivative = torch.autograd.grad(rate.sum(), voltage)[0]
+    assert bool(((derivative >= 0) & (derivative <= 1)).all())
+    assert torch.count_nonzero(core.rates(voltage, torch.zeros(graph.n_nodes))) == 0
+    # The mixed-rate map obeys the same |delta rate| <= |delta v| bound as ReLU.
+    left = torch.linspace(-1, 1, graph.n_nodes).unsqueeze(0)
+    right = left.flip(-1)
+    assert bool(((core.rates(left) - core.rates(right)).abs() <= (left - right).abs()).all())
+
+
+@pytest.mark.parametrize("beta", [0, -1, float("nan"), float("inf")])
+def test_motor_rate_rejects_invalid_beta(graph, beta):
+    with pytest.raises(ValueError, match="motor_rate_beta"):
+        MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "motor_rate_beta": beta})
 
 
 def test_dense_and_csr_dynamics_agree(graph):
@@ -216,6 +279,165 @@ def test_single_modality_masks_information(graph_path, official_frontend):
         torch.testing.assert_close(original, modified, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("variant", ["V", "O", "VO", "VO-late", "RS"])
+def test_negative_motor_voltages_keep_action_gradients(graph_path, official_frontend, variant):
+    policy = build_policy(variant, graph_path, SensorContract(), official_frontend, bias_init=-0.1)
+    code = torch.zeros(1, policy.encoder.code_size)
+    code[:, -3:] = 1
+    # Asymmetric positive upstream state, with every motor voltage negative.
+    initial = torch.tensor([[0.4, 0.2, 0.3, 0.1, -0.1, -0.2, -0.15, -0.12]])
+    initial = initial.repeat(1, policy.branches)
+    action, central, activity = policy.forward_code(code, initial)
+    motor = policy.core.motor_mask
+    assert bool((central.reshape(1, policy.branches, -1)[:, :, motor] < 0).all())
+    assert bool((activity[:, motor] > 0).all())
+    (action - action.new_tensor([[0.4, 0.6]])).square().sum().backward()
+    assert policy.readout.turn_weight.grad.norm() > 1e-9
+    motor_types = policy.core.type_index[motor].unique()
+    assert policy.core.bias.grad[motor_types].norm() > 1e-9
+    upstream = ~motor[policy.core.pre] & motor[policy.core.post] & policy.core.edge_enabled
+    labels = policy.core.edge_label[upstream].unique()
+    assert len(labels) > 0 and policy.core.raw_alpha.grad[labels].norm() > 1e-9
+
+
+def test_late_fusion_lesion_cannot_leak_softplus_rest_rates(graph_path, official_frontend):
+    policy = build_policy("VO-late", graph_path, SensorContract(), official_frontend)
+    policy.set_lesion("vision")
+    code = torch.zeros(1, policy.encoder.code_size)
+    _, central, activity = policy.forward_code(code, policy.central_initial_state(1, "cpu"))
+    visual_rates, odor_rates = [item[0] for item in policy._last_branch_activity]
+    assert torch.count_nonzero(central[:, : policy.n_nodes]) == 0
+    assert torch.count_nonzero(visual_rates) == 0
+    torch.testing.assert_close(activity, odor_rates, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("variant", ["VO", "VO-late", "GRU"])
+def test_activity_penalty_excludes_only_connectome_motor_nodes(
+    graph_path, official_frontend, variant
+):
+    policy = build_policy(variant, graph_path, SensorContract(), official_frontend)
+    activity = torch.arange(2 * 3 * policy.n_nodes, dtype=torch.float32).reshape(2, 3, -1)
+    activity.requires_grad_()
+    penalty = activity_penalty(policy, activity)
+    if variant == "GRU":
+        torch.testing.assert_close(penalty, activity.square().mean(-1), atol=0, rtol=0)
+    else:
+        motor = policy.core.motor_mask
+        torch.testing.assert_close(penalty, activity[..., ~motor].square().mean(-1))
+        gradient = torch.autograd.grad(penalty.sum(), activity)[0]
+        assert torch.count_nonzero(gradient[..., motor]) == 0
+        assert torch.count_nonzero(gradient[..., ~motor]) > 0
+
+
+def test_legacy_artifact_keeps_relu_semantics(graph_path, official_frontend, tmp_path):
+    policy = build_policy(
+        "VO", graph_path, SensorContract(), official_frontend, motor_rate_beta=None
+    )
+    destination = tmp_path / "legacy"
+    save_policy_artifact(
+        destination, policy, policy.model_config, policy.contract, graph_path, official_frontend
+    )
+    card_path = destination / "model_card.json"
+    card = json.loads(card_path.read_text())
+    del card["model_config"]["motor_rate_beta"]
+    card_path.write_text(json.dumps(card))
+    recovered, _, _ = load_policy_artifact(destination)
+    assert recovered.core.motor_rate_beta is None
+    voltage = torch.full((1, policy.n_nodes), -0.01)
+    assert torch.count_nonzero(recovered.core.rates(voltage)) == 0
+    migrated, _ = prepare_policy(
+        {
+            "init_artifact": str(destination),
+            "graph_path": str(graph_path),
+            "frontend_path": str(official_frontend),
+            "model": {"motor_rate_beta": 10.0},
+        },
+        torch.device("cpu"),
+    )
+    assert migrated.core.motor_rate_beta == migrated.model_config["motor_rate_beta"] == 10.0
+    assert torch.count_nonzero(migrated.core.rates(voltage)[:, migrated.core.motor_mask]) > 0
+    for name, weight in recovered.state_dict().items():
+        assert torch.equal(weight, migrated.state_dict()[name])
+
+
+@pytest.fixture
+def dn_health_module():
+    path = Path(__file__).resolve().parents[2] / "scripts/dn_health.py"
+    spec = importlib.util.spec_from_file_location("dn_health", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dn_health_cli_detects_all_silent_artifact_without_updating_weights(
+    graph_path, official_frontend, tmp_path, monkeypatch, dn_health_module
+):
+    policy = build_policy(
+        "VO", graph_path, SensorContract(), official_frontend, motor_rate_beta=None, bias_init=-1.0
+    )
+    destination, output = tmp_path / "actor", tmp_path / "health.json"
+    save_policy_artifact(
+        destination, policy, policy.model_config, policy.contract, graph_path, official_frontend
+    )
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dn_health.py",
+            "--artifact",
+            str(destination),
+            "--output",
+            str(output),
+            "--episodes",
+            "1",
+            "--steps",
+            "2",
+            "--burn-in",
+            "1",
+            "--gradient-steps",
+            "2",
+            "--require-healthy",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        dn_health_module.main()
+    assert error.value.code == 2
+    report = json.loads(output.read_text())
+    assert report["all_motor_silent"] and not report["passed"]
+    assert report["gradient_norms"]["core"] == 0
+    assert report["gradient_norms"]["readout.turn_weight"] == 0
+    assert report["eye_swap_abs_omega_delta"]["max"] == 0
+    assert all(row["positive_rate_fraction"] == 0 for row in report["motor_neurons"])
+    assert before == {path.name: path.read_bytes() for path in destination.iterdir()}
+
+
+@pytest.mark.parametrize("base,seed", [(0, 0), (1_699_999_999, 1), (1_500_000_000, -1)])
+def test_dn_health_refuses_non_heldout_seeds(dn_health_module, base, seed):
+    with pytest.raises(ValueError, match="held-out"):
+        dn_health_module.heldout_seeds({"validation": {"environment_seed": base}, "seed": seed}, 2)
+
+
+def test_dn_health_does_not_accept_softplus_floor_as_visual_control(dn_health_module):
+    report = {
+        "finite": True,
+        "effective_active_motor_count": 6,
+        "gradient_norms": {"core": 0.01},
+        "all_motor_silent": False,
+        "visual_intervention_applicable": True,
+        "eye_swap_abs_omega_delta": {"median": 0.0},
+        "omega_mae_improvement_over_zero": 0.3,
+    }
+    # Pretraining has no motor target: only DN liveness is required there.
+    assert dn_health_module.health_gate(report, "pretrain")["passed"]
+    assert not dn_health_module.health_gate(report, "bc")["passed"]
+    assert not dn_health_module.health_gate(report, "ppo")["passed"]
+    report["visual_intervention_applicable"] = False  # O suppresses all vision by design.
+    assert dn_health_module.health_gate(report, "bc")["passed"]
+    report["omega_mae_improvement_over_zero"] = 0.0
+    assert not dn_health_module.health_gate(report, "bc")["passed"]
+
+
 @pytest.mark.parametrize("variant", ["VO", "VO-late", "RS", "GRU"])
 def test_lesion_preserves_budget_and_current_analysis_is_explicit(
     graph_path, official_frontend, variant
@@ -247,7 +469,7 @@ def test_lesion_preserves_budget_and_current_analysis_is_explicit(
         policy.set_lesion("unknown")
 
 
-@pytest.mark.parametrize("variant", ["V", "VO", "VO-late", "RS", "GRU"])
+@pytest.mark.parametrize("variant", ["V", "O", "VO", "VO-late", "RS", "GRU"])
 def test_cached_sensory_code_and_adjacency_reproduce_full_forward(
     graph_path, official_frontend, variant
 ):

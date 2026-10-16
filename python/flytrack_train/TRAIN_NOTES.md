@@ -1,6 +1,6 @@
 # 訓練與評估實作契約
 
-本輪只新增程式碼及文件，未執行測試、訓練、推論、ROS build 或依賴安裝。以下指令供後续流程使用，不能視為已通過驗證。
+本文描述訓練介面；以下訓練指令供後續流程使用。2026-10-15 的 DN 修正只執行單元測試、lint、設定產生與無權重更新的 CPU 診斷，沒有執行實際訓練或 validate-pretrain；證據見 [DN 修正報告](../../runs/dn_fix/REPORT.md)。
 
 ## 責任與介面
 
@@ -75,6 +75,18 @@ collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
 正式公平流程可讓 V/O 各用 240000 步，VO/VO-late/GRU/RS 各先視覺 120000 步，再以該次 `actor/` 作 `init_artifact` 做嗅覺 120000 步。模型各自暖啟動，可避免從生物模型替基準模型挑選較好的初始權重。
 
 另有選配 `pretrained_artifacts: {vision: PATH, odor: PATH}`，按模態移植連接體 type / type-pair 參數，交集平均，保留新任務 motor readout。限連接體 family、要求相同圖與前端來源；不能與 `init_artifact` 同時使用，也不能套到 GRU。
+
+## DN 活動正則與階段診斷
+
+pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連接體策略的 `activity_coef` 只乘上非運動 DN 神經元的平方活性平均，分母是非 DN 數量；保留時間／批次軸供原本的 lane／step mask 彙總。全為運動 DN 時回傳可微的零。GRU 保留全部診斷 hidden channels 的平方平均。DN 仍可能透過對其他神經元的回饋受到間接梯度；這不是證明活動正則造成先前沉默的消融結果。
+
+所有新連接體模型使用 `motor_rate_beta=10.0` 的 DN softplus（其他神經元維持 ReLU），完整定義見 [MODEL_NOTES.md](../flytrack_core/model/MODEL_NOTES.md)。舊 artifact 缺少 β 時保留 ReLU；若要暖啟動並切換為新規則，須明確設定 `model: {motor_rate_beta: 10.0}`，新生成的六變體設定已包含此鍵。單純讀取 artifact 不會修改它。
+
+`scripts/dn_health.py --artifact PATH` 是 CPU 唯讀診斷：使用 model card 記錄的世界設定（或 `--config`）與 held-out 種子 `[1.5e9,1.7e9)`，以教師駕駛世界，重播原始與只交換左右眼影像的配對序列。預設 4 回合，各 burn-in 16 步、量 64 步，從量測段前 16 步計算教師動作的尺度正規化 MSE 梯度；回合提早結束會如實記錄實際步數。沒有 optimizer、參數更新或預訓練 decoder。輸出每個 DN 的正活性比例、有效活性比例與 rate 分布、各支路電位分位數、換眼角速度差、`core.*`／`readout.*` 及其群組梯度範數、角速度誤差與固定零轉向基準。
+
+softplus 的正值靜息項不能當作運動控制證據。除原始 `rate>0` 比例，診斷另用 `rate>1e-3` 計算有效活性，要求至少 4 個 DN 在 ≥10% 步數有效、中央梯度範數 >1e-6、視覺換眼角速度差中位數 ≥0.05 rad/s，所有數值有限；BC 階段另要求角速度 MAE 比固定零輸出低至少 20%。O 變體依設計完全遮蔽視覺，所以不套視覺換眼門檻；GRU 沒有生物 DN 對應，略過 DN gate。診斷不能取代正式 held-out 評估或 validate-pretrain。
+
+`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷；未通過寫入 `dn_health_failed` 並停止後續鏈。**本次只修改此整合，沒有執行 runner。** 門檻很嚴格，現有 smoke 權重及只切換 rate 的版本仍未達換眼門檻，後續預訓練也可能因此被攔下；不得為了繼續訓練而默默放寬。
 
 ## BC 與 DAgger
 

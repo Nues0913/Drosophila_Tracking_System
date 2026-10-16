@@ -116,11 +116,17 @@ class MaskedRateCore(nn.Module):
             )
             self.register_buffer(name, torch.as_tensor(array, dtype=dtype), persistent=False)
         self.n_nodes = graph.n_nodes
+        self.register_buffer(
+            "motor_mask",
+            torch.as_tensor(graph.population("turn") | graph.population("forward")),
+            persistent=False,
+        )
+        self.motor_rate_beta = config["motor_rate_beta"]
         alpha_init = float(config["alpha_init"])
         target_radius = config.get("init_spectral_radius")
         if target_radius is not None:
             # Raw synapse counts (>=60 per edge) make a fixed alpha explode the
-            # ReLU recurrence; cap alpha so |W| starts with the given spectral radius.
+            # 1-Lipschitz rate recurrence; cap alpha so |W| starts at this radius.
             radius = _abs_spectral_radius(
                 pre[enabled_edges],
                 post[enabled_edges],
@@ -182,6 +188,16 @@ class MaskedRateCore(nn.Module):
     def tau(self) -> Tensor:
         return 2 * self.dt + F.softplus(self.raw_tau)
 
+    @property
+    def motor_rate_beta(self) -> float | None:
+        return self._motor_rate_beta
+
+    @motor_rate_beta.setter
+    def motor_rate_beta(self, beta: float | None) -> None:
+        if beta is not None and (not math.isfinite(beta) or beta <= 0):
+            raise ValueError("motor_rate_beta must be positive and finite, or None for legacy ReLU")
+        self._motor_rate_beta = beta
+
     def edge_weights(self) -> Tensor:
         return (
             self.sign[self.pre]
@@ -208,6 +224,19 @@ class MaskedRateCore(nn.Module):
     def initial_state(self, batch_size: int, device: str | torch.device) -> Tensor:
         return self.bias[self.type_index].to(device).expand(batch_size, -1).clone()
 
+    def rates(self, voltage: Tensor, active: Tensor | None = None) -> Tensor:
+        """DN softplus and non-DN ReLU, shared by recurrence, activity and readout.
+
+        None preserves the ReLU semantics of pre-fix artifacts. Explicit masking
+        is necessary because softplus(0) is positive even in a silenced branch.
+        """
+        rates = torch.relu(voltage)
+        if self.motor_rate_beta is not None:
+            rates = torch.where(
+                self.motor_mask, F.softplus(voltage, beta=self.motor_rate_beta), rates
+            )
+        return rates if active is None else rates * active
+
     def forward(self, external: Tensor, voltage: Tensor, active: Tensor | None = None) -> Tensor:
         operator, ratio, bias = self._dynamics(active)
         if active is not None:
@@ -216,9 +245,9 @@ class MaskedRateCore(nn.Module):
             bias = bias * active
         drive = bias + external
         for _ in range(self.substeps):
-            rates = torch.relu(voltage)
-            # Euler step v + r(-v + bias + W relu(v) + ext) == lerp(v, drive + W relu(v), r):
-            # three kernels per substep instead of eight.
+            rates = self.rates(voltage, active)
+            # Euler step v + r(-v + bias + W rates(v) + ext) == lerp(v, drive + W rates(v), r):
+            # Preserve fused dense current assembly and Euler interpolation.
             if self.dense:
                 target = torch.addmm(drive, rates, operator)
             else:
@@ -575,8 +604,10 @@ class ConnectomePolicy(nn.Module):
             "readout": self.readout.mode,
             "frontend": self.frontend.metadata,
             "activity_semantics": (
-                "central rectified rates; late-fusion output averages active branch rates"
+                "motor DN softplus (legacy: ReLU), other central ReLU rates; "
+                "late-fusion output averages active branch rates"
             ),
+            "motor_rate_beta": self.core.motor_rate_beta,
             "current_contributions": (
                 "sum of absolute incoming edge currents, grouped by presynaptic path membership; "
                 "observational, not causal"
@@ -675,8 +706,9 @@ class ConnectomePolicy(nn.Module):
         elif self.lesion == "odor":
             external = external * ~self.encoder.odor_inputs
         if self.branches == 1:
-            central = self.core(external, initial, self._active_for_lesion())
-            activity = torch.relu(central)
+            active = self._active_for_lesion()
+            central = self.core(external, initial, active)
+            activity = self.core.rates(central, active)
             action = self.readout([activity])
             return action, central, activity
         # Only input seeds of the relevant modality can receive external currents.
@@ -690,7 +722,8 @@ class ConnectomePolicy(nn.Module):
         )
         visual = self.core(v_external, initial[:, : self.n_nodes], visual_active)
         odor = self.core(o_external, initial[:, self.n_nodes :], odor_active)
-        rates_v, rates_o = torch.relu(visual), torch.relu(odor)
+        rates_v = self.core.rates(visual, visual_active)
+        rates_o = self.core.rates(odor, odor_active)
         action = self.readout([rates_v, rates_o])
         denominator = (visual_active.to(external.dtype) + odor_active.to(external.dtype)).clamp_min(
             1
@@ -861,6 +894,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "init_spectral_radius": 0.9,
     "tau_init": 0.05,
     "bias_init": 0.0,
+    "motor_rate_beta": 10.0,
     "dense_threshold": 5000,
     "readout": "auto",
     "odor_K": [0.3],

@@ -19,6 +19,7 @@ from .config import (
     seed_all,
     write_json,
 )
+from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .recovery import Recovery, atomic_torch_save, fit_sequence_epochs, restore_rng
 
@@ -241,7 +242,7 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
                 * ((prediction[..., 3] - targets["angular_velocity"]).square() * present).sum(0)
                 / denom
             )
-        activity_loss = (activity.square().mean(-1) * step_mask).sum(0) / steps
+        activity_loss = (activity_penalty(policy, activity) * step_mask).sum(0) / steps
         return loss + activity_coef * activity_loss
 
     reports = fit_sequence_epochs(

@@ -18,6 +18,7 @@ from .config import (
     seed_all,
     write_json,
 )
+from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .recovery import EpisodeStore, Recovery, fit_sequence_epochs, restore_rng
 
@@ -98,7 +99,7 @@ def fit_behavior(
     def window_loss(outputs, targets, step_mask):
         steps = step_mask.sum(0).clamp_min(1)
         error = ((outputs["action"] - targets["action"]) / scale).square().mean(-1)
-        activity = outputs["activity"].square().mean(-1)
+        activity = activity_penalty(model.policy, outputs["activity"])
         return ((error + activity_coef * activity) * step_mask).sum(0) / steps
 
     return fit_sequence_epochs(

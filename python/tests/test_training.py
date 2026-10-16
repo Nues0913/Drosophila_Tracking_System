@@ -1,7 +1,10 @@
 """Algorithmic checks to run later; no downloaded data or trained artifact required."""
 
+import importlib.util
 import math
 import random
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,6 +15,28 @@ from flytrack_train.distributions import BoundedGaussian, generalized_advantage
 from flytrack_train.es import centered_ranks
 from flytrack_train.evaluation import bootstrap_mean, seed_statistics
 from flytrack_train.recovery import Recovery, capture_rng, restore_rng
+
+
+@pytest.mark.parametrize("exit_code", [0, 2])
+def test_experiment_stage_dn_gate_propagates_diagnostic_failure(tmp_path, monkeypatch, exit_code):
+    # Import only: never invoke the experiment runner or a training command.
+    path = Path(__file__).resolve().parents[2] / "scripts/run_experiments.py"
+    spec = importlib.util.spec_from_file_location("experiment_runner", path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=exit_code)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    assert runner.check_dn_health("python", "config.yaml", tmp_path, "bc", {}) == exit_code
+    command = commands[0]
+    assert Path(command[1]).name == "dn_health.py"
+    assert "--require-healthy" in command
+    assert command[command.index("--stage") + 1] == "bc"
+    assert command[command.index("--artifact") + 1] == str(tmp_path / "actor")
 
 
 def test_physical_mean_survives_sigmoid_and_tanh_mapping():

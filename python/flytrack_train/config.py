@@ -20,6 +20,7 @@ from flytrack_core.model import (
     save_policy_artifact,
     transplant_pretrained_modalities,
 )
+from flytrack_core.model.policy import ConnectomePolicy
 
 from .worlds import make_env  # noqa: F401 - re-exported for trainers
 
@@ -91,6 +92,10 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             raise ValueError(
                 "Initial artifact graph/frontend differs from configured training sources"
             )
+        if isinstance(policy, ConnectomePolicy) and "motor_rate_beta" in config.get("model", {}):
+            # Explicit warm-start migration; ordinary loading preserves old card semantics.
+            policy.core.motor_rate_beta = config["model"]["motor_rate_beta"]
+            policy.model_config["motor_rate_beta"] = policy.core.motor_rate_beta
     else:
         policy = build_policy(
             config.get("variant", "VO"),

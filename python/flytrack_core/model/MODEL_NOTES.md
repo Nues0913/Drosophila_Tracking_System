@@ -78,6 +78,18 @@ V/O 是**感測消融**，保留整張中央圖和同樣參數數，不是重新
 
 motor readout 預設在有左右成對 turn DN 及 forward DN 時使用結構讀出；資料不足則明確記錄 linear DN fallback。完全沒有 DN 直接拒絕，不改讀普通中央神經來假造運動端點。
 
+## 運動 DN rate 與沉默修正（A＋C）
+
+新建立的連接體策略 V、O、VO、VO-late、RS 共用同一規則：對 `turn | forward` 運動 DN，`r(v) = log(1 + exp(βv)) / β`，設定 `motor_rate_beta=10.0`；其他中央神經元仍用 `relu(v)`。實作用數值穩定的 `F.softplus(v, beta=β)`。這是避免負電位阻斷動作梯度的**工程假設，並非生物學測量或擬合得到的放電曲線**。沒有加正 bias 限制或額外動作輔助頭。
+
+`MaskedRateCore.rates` 同時用於遞迴輸出、回傳的 activity 與 MotorReadout。VO-late 的兩個獨立支路也如此；停用節點／支路的 rates 明確乘上 active mask，避免 `softplus(0)` 漏出靜息電流。非 DN 的 rate、Euler 方程與積分步長不變，但有 DN 回饋連結時，其他神經元的數值軌跡可以隨 DN 輸出改變。`sense()`／`forward_code()`、`adjacency_cache()`、dense `addmm`／`lerp` 與部署組合 API 保留。
+
+靜息 `r(0)=ln(2)/10≈0.0693147`；相同的左右 rates 在結構轉向讀出中相消，前進讀出仍可能有小幅基線偏移。ReLU 與此 softplus 都是 1-Lipschitz，後者導數 `sigmoid(βv)` 介於 0 和 1；因此原本 `ρ(|W|)<1` 的初始化界仍適用。在適當正權重的無窮範數下可取 `|W|q≤cq`（`ρ(|W|)<c<1`），Euler 差分的界為 `max_i(1-r_i+r_i c)<1`，其中 `r_i=dt/τ_i∈(0,1/2)`。active／edge mask 只會減少此上界。softplus 靜息項會移動固定點，不改變差分收縮界；訓練後 α 可變大，這不是全訓練期間的穩定保證。極負電位下浮點數仍可能下溢，不能宣稱永不沉默。
+
+motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新增可訓練參數、不改圖、Dale 號誌、突觸數或 edge mask；GRU 的動態不變。既有 model card 若沒有 `motor_rate_beta`，載入時明確補 `None` 以保留舊 ReLU 語意，不能把舊模型默默當成已修模型。新產物記錄 β；暖啟動舊 artifact 時須在訓練 `model` 明確給 `motor_rate_beta: 10.0` 才會在記憶體切換 rate，之後存出的新 actor 記錄此設定。
+
+活動正則排除運動 DN，定義及限制見 [TRAIN_NOTES.md](../../flytrack_train/TRAIN_NOTES.md)。本次只做單元測試與 CPU 無權重更新探針；端到端訓練與控制能力驗收**待訓練驗證**，數字與風險見 [DN 修正報告](../../../runs/dn_fix/REPORT.md)。
+
 ## 執行時 lesion 與匯流電流分析
 
 `policy.set_lesion("none" | "vision" | "odor")` 不增加、移除或重訓參數。VO/RS 等中央圖策略除了停止該模態的感測和缺失電流，也將該模態獨有中央群的電位與所有輸入／輸出邊靜默；兩路共享群、匯流群及 DN 保留。VO-late 則將對應的整個獨立支路靜默，另一支路照常。GRU 只停止相應輸入，沒有生物神經細胞 lesion。移除 lesion 後使用現有持續狀態，恢復過程本身會有暫態；獨立比較回合應重建 initial_state，不能混用兩種評估口徑。

@@ -21,6 +21,7 @@ from .config import (
     write_json,
 )
 from .distributions import BoundedGaussian, generalized_advantage
+from .losses import activity_penalty
 from .parallel import EnvPool
 from .recovery import Recovery, restore_rng
 
@@ -350,7 +351,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                                     dist.log_prob_latent(data["latent"][times, env_indices])
                                 )
                                 entropies.append(dist.entropy())
-                                activities.append(activity.square().mean())
+                                activities.append(activity_penalty(policy, activity).mean())
                         times = starts.unsqueeze(0) + torch.arange(length, device=device).unsqueeze(
                             1
                         )

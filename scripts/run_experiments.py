@@ -50,6 +50,28 @@ def completed(config, command, device):
     return True
 
 
+def check_dn_health(python, config_path, destination, stage, environment):
+    """Run a fresh read-only gate, including when a completed stage is resumed."""
+    command = [
+        python,
+        str(Path(__file__).with_name("dn_health.py")),
+        "--artifact",
+        str(destination / "actor"),
+        "--config",
+        str(config_path),
+        "--stage",
+        stage,
+        "--output",
+        str(destination / "dn_health" / "metrics.json"),
+        "--require-healthy",
+    ]
+    with (destination / "dn_health.log").open("a", buffering=1) as log:
+        result = subprocess.run(
+            command, stdout=log, stderr=subprocess.STDOUT, env=environment, check=False
+        )
+    return result.returncode
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configs", type=Path, default=Path("runs/experiment_configs"))
@@ -166,6 +188,16 @@ def main():
             if not completed(config, row["command"], device):
                 raise RuntimeError(f"Stage exited without a verified actor artifact: {destination}")
             status = "complete"
+        if row["variant"] != "GRU":
+            exit_code = check_dn_health(
+                args.python, row["path"], destination, row["command"], environment
+            )
+            if exit_code:
+                row.update(status="dn_health_failed", exit_code=exit_code)
+                commit()
+                raise RuntimeError(
+                    f"DN health gate failed; inspect {destination / 'dn_health.log'}"
+                )
         if row["command"] == "pretrain":
             validation = destination / "validation"
             metrics = validation / "metrics.json"

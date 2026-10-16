@@ -6,6 +6,7 @@ condition replays them through the central core in one batch.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dn_health import heldout_seeds  # noqa: E402
 
 EPISODES, BURN_IN, STEPS = 24, 16, 200
-GAINS = (1, 3, 10, 30, 100)
+GAINS = tuple(float(g) for g in os.environ.get("GAINS", "1,3,10,30,100").split(","))
+SCOPES = tuple(os.environ.get("SCOPES", "into_DN,into_DN_and_presyn,global").split(","))
 
 
 def collect(policy, config, device):
@@ -108,6 +110,8 @@ def evaluate(policy, codes, teacher, mask, device):
         "policy_omega_std": float(omega.std()),
         "policy_eye_swap_median": float(np.median(np.abs(omega - omega_swap))),
         "policy_improvement_over_zero": float(1 - np.abs(omega - y).mean() / np.abs(y).mean()),
+        "policy_omega_corr_with_teacher": float(np.corrcoef(omega, y)[0, 1]),
+        "policy_omega_R2": float(1 - ((omega - y) ** 2).sum() / ((y - y.mean()) ** 2).sum()),
         "convergence_silent": float((orig[:, conv.cpu().numpy()].max(0) <= 0).mean()),
         "central_silent": float((orig.max(0) <= 0).mean()),
     }
@@ -142,7 +146,7 @@ def main():
         policy.eval()
         if codes is None:
             codes, teacher, mask = collect(policy, card["metadata"]["config"], device)
-        for scope in ("into_DN", "into_DN_and_presyn", "global"):
+        for scope in SCOPES:
             for gain in GAINS if scope != "global" else (1, 1.5, 2, 3):
                 result = {"artifact": path.split("runs/")[1], "scope": scope, "gain": gain}
                 result |= evaluate(scoped(policy, scope, gain), codes, teacher, mask, device)

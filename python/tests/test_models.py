@@ -548,3 +548,16 @@ def test_ros_watchdog_reset_and_out_of_order_packets(monkeypatch):
     runtime.reset(minimum_stamp=3.0)
     assert not runtime.update_vision(0, image, 2.95)  # queued previous-episode packet
     assert not runtime.update_odor(np.ones(2), 3.0)
+
+
+def test_optional_turn_bias_sets_mean_turn_without_changing_default(graph):
+    rate = torch.full((1, graph.n_nodes), 0.3)
+    plain = MotorReadout(graph, SensorContract(), "structured")
+    assert plain.turn_bias is None
+    assert "readout.turn_bias" not in {f"readout.{n}" for n, _ in plain.named_parameters()}
+    biased = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
+    torch.testing.assert_close(biased([rate]), plain([rate]))  # Zero-initialized bias.
+    with torch.no_grad():
+        biased.turn_bias.fill_(0.2)
+    omega = biased([rate])[0, 1]
+    torch.testing.assert_close(omega, SensorContract().omega_max * torch.tanh(torch.tensor(0.2)))

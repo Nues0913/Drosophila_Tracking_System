@@ -74,6 +74,17 @@ class FlyTrackEnv(gym.Env):
         self.trajectory_config = dict(options.pop("trajectory_config", {}) or {})
         self.scenario_config = dict(options.pop("scenario_config", {}) or {})
         self.initial_agent_pose = options.pop("initial_agent_pose", None)
+        # Optional per-episode diversity; the defaults reproduce the original fixed layout.
+        self.randomize_target_direction = bool(options.pop("randomize_target_direction", False))
+        self.start_lateral_offset_m = float(options.pop("start_lateral_offset_m", 0.0))
+        self.start_heading_offset_deg = float(options.pop("start_heading_offset_deg", 0.0))
+        if not (
+            np.isfinite(self.start_lateral_offset_m)
+            and np.isfinite(self.start_heading_offset_deg)
+            and self.start_lateral_offset_m >= 0
+            and 0 <= self.start_heading_offset_deg <= 180
+        ):
+            raise ValueError("start offsets must be finite, nonnegative and at most 180 degrees")
         self.obstacles = [dict(obstacle) for obstacle in options.pop("obstacles", [])]
         self.subrays = int(options.pop("subrays", 7))
         self.camera_height_m = float(options.pop("camera_height_m", 0.27))
@@ -140,8 +151,14 @@ class FlyTrackEnv(gym.Env):
             self._next_episode_seed = int(seed)
         self._episode_seed = self._next_episode_seed
         self._next_episode_seed += 1
+        # A separate stream keeps every other per-episode random draw unchanged.
+        layout = np.random.default_rng([self._episode_seed, 0x1A70])
+        direction = float(layout.choice((-1.0, 1.0))) if self.randomize_target_direction else 1.0
+        lateral = layout.uniform(-1, 1) * self.start_lateral_offset_m
+        yaw_offset = np.deg2rad(layout.uniform(-1, 1) * self.start_heading_offset_deg)
         config = {
             "motion": self.target_motion,
+            "direction": direction,
             "speed_m_s": self.target_speed_m_s,
             "center_x": self.arena_center[0],
             "center_y": self.arena_center[1],
@@ -158,10 +175,11 @@ class FlyTrackEnv(gym.Env):
         initial = (options or {}).get("agent_pose", self.initial_agent_pose)
         if initial is None:
             heading = self.target_pose[2]
+            # Behind the target, shifted sideways by `lateral` (positive = left of its heading).
             initial = [
-                self.target_pose[0] - 1.5 * np.cos(heading),
-                self.target_pose[1] - 1.5 * np.sin(heading),
-                heading,
+                self.target_pose[0] - 1.5 * np.cos(heading) - lateral * np.sin(heading),
+                self.target_pose[1] - 1.5 * np.sin(heading) + lateral * np.cos(heading),
+                float(wrap_angle(heading + yaw_offset)) if yaw_offset else heading,
             ]
         self.agent_pose = np.asarray(initial, dtype=np.float64).copy()
         if self.agent_pose.shape != (3,) or not np.all(np.isfinite(self.agent_pose)):

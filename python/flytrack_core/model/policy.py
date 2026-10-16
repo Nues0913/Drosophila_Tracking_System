@@ -261,7 +261,14 @@ class MaskedRateCore(nn.Module):
 class MotorReadout(nn.Module):
     """Structured DN left/right differences, with an explicit linear fallback."""
 
-    def __init__(self, graph: Graph, contract: SensorContract, mode: str, branches: int = 1):
+    def __init__(
+        self,
+        graph: Graph,
+        contract: SensorContract,
+        mode: str,
+        branches: int = 1,
+        turn_bias: bool = False,
+    ):
         super().__init__()
         turns, forward = graph.population("turn"), graph.population("forward")
         motor = turns | forward
@@ -302,6 +309,8 @@ class MotorReadout(nn.Module):
             self.turn_weight = nn.Parameter(torch.full((len(pairs) * branches,), 0.1))
             self.forward_weight = nn.Parameter(torch.full((len(forward_types) * branches,), 0.1))
             self.forward_bias = nn.Parameter(torch.zeros(()))
+            # Optional: lets the mean turn rate come from a bias instead of the DN difference.
+            self.turn_bias = nn.Parameter(torch.zeros(())) if turn_bias else None
 
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
@@ -322,7 +331,10 @@ class MotorReadout(nn.Module):
         return torch.stack(
             (
                 self.v_max * torch.sigmoid(forward @ self.forward_weight + self.forward_bias),
-                self.omega_max * torch.tanh(turns @ self.turn_weight),
+                self.omega_max
+                * torch.tanh(
+                    turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
+                ),
             ),
             dim=-1,
         )
@@ -580,7 +592,9 @@ class ConnectomePolicy(nn.Module):
             odor = graph.population("olfactory") | motor
             self.register_buffer("visual_active", torch.as_tensor(visual), persistent=False)
             self.register_buffer("odor_active", torch.as_tensor(odor), persistent=False)
-        self.readout = MotorReadout(graph, contract, config["readout"], self.branches)
+        self.readout = MotorReadout(
+            graph, contract, config["readout"], self.branches, bool(config["readout_turn_bias"])
+        )
         self.model_config["readout"] = self.readout.mode
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
@@ -897,6 +911,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "motor_rate_beta": 10.0,
     "dense_threshold": 5000,
     "readout": "auto",
+    "readout_turn_bias": False,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

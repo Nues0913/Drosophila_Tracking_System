@@ -138,3 +138,43 @@ def test_vector_same_step_preserves_terminal_observation_and_info():
     assert "final_obs" in infos and "final_info" in infos
     assert infos["_final_obs"].all() and infos["_final_info"].all()
     env.close()
+
+
+def test_curved_direction_and_start_offsets_are_opt_in_and_seeded():
+    pytest.importorskip("gymnasium")
+    from flytrack_sim import FlyTrackEnv
+
+    clockwise = TargetTrajectory({"direction": -1}, seed=3)
+    counter = TargetTrajectory({"direction": 1}, seed=3)
+    pose, _ = clockwise.state(0.0)
+    np.testing.assert_allclose(pose[:2], counter.state(0.0)[0][:2])
+    turn = lambda trajectory: np.angle(  # noqa: E731
+        np.exp(1j * (trajectory.state(1.0)[0][2] - trajectory.state(0.0)[0][2]))
+    )
+    assert turn(clockwise) < 0 < turn(counter)
+    with pytest.raises(ValueError, match="direction"):
+        TargetTrajectory({"direction": 0.5})
+
+    def start(**options):
+        env = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1, **options)
+        poses = []
+        for seed in range(12):
+            env.reset(seed=seed)
+            poses.append((env.trajectory.config.direction, *env.agent_pose))
+        env.close()
+        return np.array(poses)
+
+    default = start()
+    assert (default[:, 0] == 1).all()
+    varied = start(
+        randomize_target_direction=True, start_lateral_offset_m=0.5, start_heading_offset_deg=30
+    )
+    assert set(varied[:, 0]) == {-1.0, 1.0}
+    np.testing.assert_array_equal(
+        varied,
+        start(
+            randomize_target_direction=True, start_lateral_offset_m=0.5, start_heading_offset_deg=30
+        ),
+    )
+    with pytest.raises(ValueError, match="start offsets"):
+        FlyTrackEnv(SensorContract(eye_radius=2), start_heading_offset_deg=270)

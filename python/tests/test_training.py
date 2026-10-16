@@ -14,6 +14,7 @@ from flytrack_train.batches import LaneSchedule, reset_state, tensor_observation
 from flytrack_train.distributions import BoundedGaussian, generalized_advantage
 from flytrack_train.es import centered_ranks
 from flytrack_train.evaluation import bootstrap_mean, seed_statistics
+from flytrack_train.imitation import parameter_groups
 from flytrack_train.recovery import Recovery, capture_rng, restore_rng
 
 
@@ -432,3 +433,23 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
         assert expected["dataset_count"] == observed["dataset_count"]
         if algorithm == "pretrain":
             _assert_nested_equal(expected["decoder"], observed["decoder"])
+
+
+def test_bc_parameter_groups_override_core_bias_and_readout_rates():
+    policy = torch.nn.Module()
+    policy.core = torch.nn.Module()
+    policy.core.bias = torch.nn.Parameter(torch.zeros(3))
+    policy.core.raw_alpha = torch.nn.Parameter(torch.zeros(3))
+    policy.readout = torch.nn.Module()
+    policy.readout.turn_weight = torch.nn.Parameter(torch.zeros(2))
+    (single,) = parameter_groups(policy, {"learning_rate": 1e-3})
+    assert single["lr"] == 1e-3 and len(single["params"]) == 3
+    groups = parameter_groups(
+        policy, {"learning_rate": 1e-3, "core_bias_learning_rate": 0, "readout_learning_rate": 1e-2}
+    )
+    by_rate = {group["lr"]: group["params"] for group in groups}
+    assert by_rate[0.0] == [policy.core.bias]
+    assert by_rate[1e-3] == [policy.core.raw_alpha]
+    assert by_rate[1e-2] == [policy.readout.turn_weight]
+    with pytest.raises(ValueError, match="nonnegative"):
+        parameter_groups(policy, {"core_bias_learning_rate": -1})

@@ -20,6 +20,8 @@ class TrajectoryConfig:
     initial_x: float = 0.0
     initial_y: float = 0.0
     heading_rad: float = 0.0
+    # Curved motion only: +1 counter-clockwise (default), -1 clockwise.
+    direction: float = 1.0
     xmin: float = -4.5
     ymin: float = -4.5
     xmax: float = 4.5
@@ -34,6 +36,8 @@ class TrajectoryConfig:
             if field.name != "motion"
         ):
             raise ValueError("trajectory parameters must be finite")
+        if self.direction not in (1.0, -1.0):
+            raise ValueError("curved trajectory direction must be +1 or -1")
         if self.speed_m_s < 0 or self.radius_m <= 0:
             raise ValueError("trajectory speed must be nonnegative and radius positive")
         if self.xmin >= self.xmax or self.ymin >= self.ymax:
@@ -78,15 +82,15 @@ class TargetTrajectory:
             velocity = np.zeros(2)
             heading = c.heading_rad
         elif c.motion == "curved":
-            angle = self.phase + c.speed_m_s * time_s / c.radius_m
+            angle = self.phase + c.direction * c.speed_m_s * time_s / c.radius_m
             xy = np.asarray(
                 [
                     c.center_x + c.radius_m * math.cos(angle),
                     c.center_y + c.radius_m * math.sin(angle),
                 ]
             )
-            velocity = c.speed_m_s * np.asarray([-math.sin(angle), math.cos(angle)])
-            heading = angle + np.pi / 2
+            velocity = c.direction * c.speed_m_s * np.asarray([-math.sin(angle), math.cos(angle)])
+            heading = angle + c.direction * np.pi / 2
         else:
             raw_velocity = c.speed_m_s * np.asarray(
                 [math.cos(c.heading_rad), math.sin(c.heading_rad)]

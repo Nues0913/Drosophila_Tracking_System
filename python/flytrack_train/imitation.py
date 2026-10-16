@@ -117,6 +117,27 @@ def fit_behavior(
     )
 
 
+def parameter_groups(policy, train: dict[str, Any]) -> list[dict[str, Any]]:
+    """Adam groups; ``core_bias_learning_rate``/``readout_learning_rate`` override the base rate.
+
+    A zero rate freezes that group. Without overrides this is one group with every parameter.
+    """
+    base = float(train.get("learning_rate", 1e-3))
+    rates = {
+        "core.bias": train.get("core_bias_learning_rate"),
+        "readout.": train.get("readout_learning_rate"),
+    }
+    if any(rate is not None and float(rate) < 0 for rate in rates.values()):
+        raise ValueError("Group learning rates must be nonnegative")
+    groups: dict[float, list[torch.nn.Parameter]] = {}
+    for name, parameter in policy.named_parameters():
+        rate = next(
+            (r for prefix, r in rates.items() if r is not None and name.startswith(prefix)), base
+        )
+        groups.setdefault(float(rate), []).append(parameter)
+    return [{"params": params, "lr": rate} for rate, params in groups.items()]
+
+
 def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.device) -> None:
     seed_all(seed)
     policy, contract = prepare_policy(config, device)
@@ -137,7 +158,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     dagger_steps = int(train.get("dagger_steps_per_round", 30000))
     if initial_episodes <= 0 or dagger_episodes <= 0 or rounds < 0:
         raise ValueError("BC requires positive episode counts and nonnegative DAgger rounds")
-    optimizer = torch.optim.Adam(policy.parameters(), lr=float(train.get("learning_rate", 1e-3)))
+    optimizer = torch.optim.Adam(parameter_groups(policy, train))
     if teacher_steps <= 0 or dagger_steps <= 0:
         raise ValueError("Fair BC/DAgger budgets must be positive")
     recovery = Recovery(output, config, "bc", seed, device=device)

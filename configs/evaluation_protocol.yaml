@@ -1,10 +1,28 @@
-schema_version: 1
+schema_version: 2
 declared_date: '2026-10-15'
+amended_date: '2026-10-17'
 status: fixed_before_formal_training_and_learned_policy_evaluation
+amendments:
+  - date: '2026-10-17'
+    formal_results_existing_at_amendment: none
+    reason: >-
+      In the declared world (target always circling counter-clockwise, agent
+      starting directly behind it) a blind constant left turn reached 100%
+      success in all four scenarios, identical to the teacher, and the
+      distance-only success rule counted a side-on agent (~94 deg mean bearing
+      error) as tracking. Behaviour cloning learned the mean action and the
+      primary endpoint could not separate tracking from circling. No formal
+      training or learned-policy evaluation had been run.
+    changes:
+      - per-episode layout randomization (flytrack_core.world.layout defaults)
+      - tracked samples must also satisfy |bearing| <= success_bearing_deg (45)
+      - evaluation first audits the world; teacher >= 0.9 and every blind policy <= 0.1 success
+      - teacher calibration repeated in the randomized world on diagnostic seeds
+    evidence: docs/fixes_2026-10-17.md
 sources:
   plan: '果蠅連接體多感官追蹤系統 計劃書.pdf'
   followup: 後續計畫.md
-  teacher_calibration: runs/calibration/teacher.json
+  teacher_calibration: runs/calibration/teacher_20261017.json
   calibration_is_privileged: true
 model_variants: [V, O, VO, VO-late, GRU, RS]
 training_seeds: [0, 1, 2, 3, 4]
@@ -30,12 +48,29 @@ data_splits:
   train_environment_seed_max_exclusive: 1000000000
   decoder_validation_seed_start: 1500000000
   formal_environment_seed_start: 1700000000
+  # Diagnostics only (privileged teacher and blind policies; no learned actor).
+  environment_audit_seed_start: 1620000000
+  teacher_calibration_seed_start: 1650000000
   paired_rule: base_plus_training_seed_times_100000_plus_episode
+environment:
+  layout: randomized per episode (direction, curved radius 1.5-3.5 m, start offsets +/-0.5 m and +/-30 deg)
+  legacy_layout_allowed_for_formal_results: false
+  formal_evaluation_target_motion: curved
+  environment_audit:
+    episodes: 40
+    blind_policies: [stop, straight, left_0.05, left_0.10, left_0.20, right_0.05, right_0.10, right_0.20, teacher_mean]
+    max_blind_success: 0.1
+    min_teacher_success: 0.9
 gates:
   G2:
     teacher_calibration_episodes: 20
     measured_teacher_success_rate: 1.0
-    measured_teacher_mean_bearing_error_deg: 2.550159693451
+    measured_teacher_mean_bearing_error_deg: 2.2155709918152398
+    measured_teacher_bearing_error_range_deg: [1.4819163285797416, 3.207718076322607]
+    calibration_distinct_layouts: 20
+    superseded_calibration: >-
+      2026-10-15 value 2.550159693451 deg came from 20 bitwise-identical
+      episodes of the fixed layout and is no longer used.
     vision_bearing_mae_max_deg: 15.0
     odor_bearing_mae_max_deg: 30.0
     threshold_rationale: >-
@@ -47,6 +82,7 @@ gates:
   G3:
     normal_tracking_success_rate_min: 0.8
     success_distance_m: 2.0
+    success_bearing_deg: 45.0
     success_time_fraction: 0.8
     collision_invalidates_success: true
     gazebo_full_episode_required: true

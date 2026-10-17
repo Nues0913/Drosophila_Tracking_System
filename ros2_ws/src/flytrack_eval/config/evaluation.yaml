@@ -12,4 +12,5 @@ flytrack_evaluator:
     pose_timeout_s: 0.2
     success_distance_m: 2.0
     success_time_fraction: 0.8
+    success_bearing_deg: 45.0
     minimum_sample_coverage: 0.95

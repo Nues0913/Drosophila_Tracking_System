@@ -164,7 +164,8 @@ class FlyTrackEnv(gym.Env):
             self._next_episode_seed = int(seed)
         self._episode_seed = self._next_episode_seed
         self._next_episode_seed += 1
-        config, sampled_agent = sample_episode_layout(
+        initial = (options or {}).get("agent_pose", self.initial_agent_pose)
+        config, initial = sample_episode_layout(
             self._episode_seed,
             self.motion_choices,
             {
@@ -182,13 +183,11 @@ class FlyTrackEnv(gym.Env):
             self.layout,
             self.walls,
             self.agent_radius_m,
+            agent_pose=initial,
         )
         self.episode_trajectory_config = config
         self.trajectory = TargetTrajectory(TrajectoryConfig.from_dict(config), self._episode_seed)
         self.target_pose, self.target_velocity = self.trajectory.state(0.0)
-        initial = (options or {}).get("agent_pose", self.initial_agent_pose)
-        if initial is None:
-            initial = sampled_agent
         self.agent_pose = np.asarray(initial, dtype=np.float64).copy()
         if self.agent_pose.shape != (3,) or not np.all(np.isfinite(self.agent_pose)):
             raise ValueError("initial agent pose must be finite [x,y,yaw]")

@@ -217,6 +217,37 @@ def test_wander_target_is_smooth_bounded_and_seed_reproducible():
     )
 
 
+def test_explicit_agent_pose_skips_the_unused_sampled_start():
+    pytest.importorskip("gymnasium")
+    from flytrack_sim import FlyTrackEnv
+
+    # A stationary target facing -x at x=2.4 in a 6 m arena puts the sampled
+    # "behind the target" start outside the walls; an explicit start must still work.
+    options = dict(
+        arena_size_m=6,
+        target_motion="stationary",
+        trajectory_config={"initial_x": 2.4, "initial_y": 0.0, "heading_rad": np.pi},
+        layout_preset="legacy",
+        episode_seconds=1,
+    )
+    with pytest.raises(ValueError, match="outside the arena"):
+        FlyTrackEnv(SensorContract(eye_radius=2), **options).reset(seed=0)
+    env = FlyTrackEnv(SensorContract(eye_radius=2), initial_agent_pose=[0, 0, 0], **options)
+    env.reset(seed=0)
+    np.testing.assert_array_equal(env.agent_pose, [0, 0, 0])
+    env.reset(seed=1, options={"agent_pose": [0.5, -1.0, 0.25]})
+    np.testing.assert_array_equal(env.agent_pose, [0.5, -1.0, 0.25])
+    np.testing.assert_allclose(env.target_pose[:2], [2.4, 0.0])
+    assert abs(np.cos(env.target_pose[2]) + 1) < 1e-12  # heading pi (wrapped to +-pi)
+    # Layout draws do not depend on the explicit start (direction stays seeded).
+    sampled = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1)
+    pinned = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1)
+    for seed in range(8):
+        sampled.reset(seed=seed)
+        pinned.reset(seed=seed, options={"agent_pose": [0, 0, 0]})
+        assert sampled.trajectory.config == pinned.trajectory.config
+
+
 def test_layout_respects_explicit_trajectory_options_and_motion_mixtures():
     from flytrack_core.world import LayoutConfig, sample_episode_layout
 

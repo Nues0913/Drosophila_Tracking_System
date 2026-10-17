@@ -93,8 +93,13 @@ def sample_episode_layout(
     layout: LayoutConfig,
     walls: np.ndarray,
     agent_radius_m: float,
+    agent_pose: Any = None,
 ) -> tuple[dict[str, Any], np.ndarray]:
     """Return (trajectory config, initial agent pose [x, y, yaw]) for one episode.
+
+    An explicit ``agent_pose`` is used as given (the caller validates its shape);
+    the unused sampled start is then neither computed nor checked against the
+    arena, as before layouts were sampled.
 
     Precedence: ``arena_defaults`` (centre, bounds, speed) < sampled values <
     ``explicit`` user trajectory options, which are deliberate choices (e.g. a
@@ -126,6 +131,8 @@ def sample_episode_layout(
             )
     config = {**arena_defaults, **sampled, **explicit, "motion": chosen}
     trajectory = TrajectoryConfig.from_dict(config)
+    if agent_pose is not None:
+        return config, np.asarray(agent_pose, dtype=np.float64).copy()
     target, _ = TargetTrajectory(trajectory, int(episode_seed)).state(0.0)
     heading = target[2]
     # Behind the target, shifted sideways by `lateral` (positive = left of its heading).

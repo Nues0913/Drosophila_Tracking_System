@@ -135,11 +135,10 @@ class ScenarioManagerNode(WorldNode):
             self.layout,
             walls,
             self.agent_radius_m,
+            agent_pose=self.initial_agent_pose,
         )
         self._trajectory_config = config
         target, _ = TargetTrajectory(config, self._episode_seed).state(0)
-        if self.initial_agent_pose is not None:
-            agent = np.asarray(self.initial_agent_pose, dtype=np.float64)
         if agent.shape != (3,) or not np.all(np.isfinite(agent)):
             raise ValueError("initial_agent_pose_json must be finite [x,y,yaw] or null")
         self._initial_agent, self._initial_target = agent, target

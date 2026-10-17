@@ -1,5 +1,7 @@
 # BC 只學到平均動作：根因與情境測試（2026-10-16～17）
 
+> **後續（2026-10-17）：**第 5 節的建議已在 `integrate/tracking-fixes` 實作並設為預設：隨機化佈局（另加 wander 目標）、成功須朝向目標、BC gate 改用相關／R²／幅度、DN 輸入增益改在初始化設定、讀出 ω 偏置與 BC 分組學習率。環境另加盲目策略審計；conflict 情境的強度已量測。見 [fixes_2026-10-17.md](../fixes_2026-10-17.md)。本文件的數據是當時的設定（選項預設關閉）。重現原環境需在 env 加 `layout_preset: legacy` 與 `success_bearing_deg: null`；本文件的隨機方向環境需加 `randomize_target_layout: false` 與 `success_bearing_deg: null`（`configs/` 下的兩個設定檔已加上）。
+
 接續 [diagnosis_2026-10-16.md](diagnosis_2026-10-16.md)。該文件的結論是「BC 開始時 DN 左右差幅度太小」，建議放大接進 DN 的連結。本文件記錄這個建議的測試，以及後續找到的真正原因。
 
 **結論：主要原因在訓練與評估的環境，不在 DN 的訊號強度。**

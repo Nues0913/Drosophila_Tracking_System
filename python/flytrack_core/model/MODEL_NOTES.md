@@ -88,7 +88,17 @@ motor readout 預設在有左右成對 turn DN 及 forward DN 時使用結構讀
 
 motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新增可訓練參數、不改圖、Dale 號誌、突觸數或 edge mask；GRU 的動態不變。既有 model card 若沒有 `motor_rate_beta`，載入時明確補 `None` 以保留舊 ReLU 語意，不能把舊模型默默當成已修模型。新產物記錄 β；暖啟動舊 artifact 時須在訓練 `model` 明確給 `motor_rate_beta: 10.0` 才會在記憶體切換 rate，之後存出的新 actor 記錄此設定。
 
-活動正則排除運動 DN，定義及限制見 [TRAIN_NOTES.md](../../flytrack_train/TRAIN_NOTES.md)。本次只做單元測試與 CPU 無權重更新探針；端到端訓練與控制能力驗收**待訓練驗證**，數字與風險見 [DN 修正報告](../../../runs/dn_fix/REPORT.md)。
+活動正則排除運動 DN，定義及限制見 [TRAIN_NOTES.md](../../flytrack_train/TRAIN_NOTES.md)。修正報告見 [docs/dn/fix_A_C_2026-10-15.md](../../../docs/dn/fix_A_C_2026-10-15.md)，後續的尺度與環境修正見下一節及 [docs/fixes_2026-10-17.md](../../../docs/fixes_2026-10-17.md)。
+
+## 初始化尺度、DN 輸入增益與讀出偏置（2026-10-17）
+
+**全網譜半徑上限。** 邊值 `s_pre × N_edge × g_edge × softplus(α)` 中，萃取門檻讓 `N_edge ≥ 60`（中位數 92）。固定 `alpha_init=0.01` 時真實圖 `ρ(|W|)≈32`，ReLU 動態每控制步放大約 2×10⁴ 倍，第 9 步溢位。初始化因此取 `α = min(alpha_init, init_spectral_radius / ρ(|N·g|))`，`init_spectral_radius=0.9`，真實圖得 α≈2.56×10⁻⁴。`ρ` 以每輪依目前估計值重新縮放的位移冪迭代求得：舊版固定 `+I` 位移相對於數千的突觸數可忽略，加上高增益列後不收斂（測試圖上把 α 多壓了約 2 倍）；新版在真實圖上與稠密特徵值解一致到 1e-15，約 0.2 秒。
+
+**DN 輸入增益 `motor_input_gain`（預設 100）。** 一刀切的上限把接進 6 個運動 DN 的 147 條邊也壓到 2.6×10⁻⁴，嗅覺預訓練後方位資訊雖已傳到 DN 左右差（R² 0.66），幅度只有約 3×10⁻⁴，BC 的轉向梯度因此極小（[診斷](../../../docs/dn/diagnosis_2026-10-16.md)）。現在每條終點為運動 DN 的邊乘上固定增益 `g_edge=100`（其他邊為 1），依邊的實際終點計算，RS 重連後同樣適用。它是不存入 state_dict 的 buffer，不新增參數，譜半徑上限連同增益一起計算；真實圖上 DN 不在主導迴路上，`ρ` 仍是 3517.85，其他邊的 α 不受影響。增益反事實測試顯示只放大這段時資訊保留、數值穩定（k=100），連上游一層一起放大則破壞資訊、全網放大 1.5 倍即發散。這是**工程上的尺度修正，不是生物測量**。本機限時驗證（視覺 pretrain 60k＋短版 BC 18k）中，DNa01 左右被壓到電位約 −1～−1.7（沉默），DNa02 的左右差平均 −0.8、時間變動約 0.08，短版 BC 未過轉向門檻；增益值需在完整預算下確認（見 [docs/fixes_2026-10-17.md](../../../docs/fixes_2026-10-17.md)）。
+
+**讀出 ω 偏置 `readout_turn_bias`（預設開）。** 連接體左右兩側接進 DN 的連結不對稱，目標在正前方時 DN 左右差也不為 0（k100 起點約 −0.146）。偏置用來抵消這個結構偏差，讓轉向權重只負責依方位調整；在隨機方向的環境中 teacher 平均 ω≈0.011，偏置不代表行為上的轉向偏好。
+
+舊 model card 沒有這兩個鍵時，載入補 `motor_input_gain=1`、`readout_turn_bias=False`，保留原本推論語意。
 
 ## 執行時 lesion 與匯流電流分析
 

@@ -1,8 +1,7 @@
 # Simulation and world adapter notes
 
-This implementation was authored and reviewed by reading source only. No test,
-training, dependency installation, build, import check, or runtime check was run
-in this turn. The tests in `python/tests/test_sensing_world.py` are unexecuted.
+The 2D world and its tests (`python/tests/test_sensing_world.py`) run in CI-style
+`pytest`; ROS adapters are still verified by source reading only (see the end).
 
 ## Shared sensing
 
@@ -40,9 +39,50 @@ measurement and calibration before claiming distribution-identical observations.
 ## World and Gymnasium contract
 
 `TargetTrajectory(TrajectoryConfig|dict,seed).state(time_s)` returns
-`pose[x,y,yaw],velocity[vx,vy]`. Motion choices are `stationary`, `linear` (wall
-reflection) and `curved` (circle). Default arena is centered at (0,0), spanning
-[-5,5] in both axes; targets remain within [-4.5,4.5].
+`pose[x,y,yaw],velocity[vx,vy]` as a pure function of (config, seed, time).
+Motion choices are `stationary`, `linear` (wall reflection), `curved` (circle,
+`direction` +1 CCW / -1 CW) and `wander`: constant speed, an Ornstein-Uhlenbeck
+turn rate (std `wander_turn_rate_std`=0.15 rad/s, correlation
+`wander_turn_tau_s`=2 s, clipped to 0.4 rad/s) plus a soft turn toward the arena
+centre within `wander_wall_margin_m`=1 m of the bounds. Wander integrates on a
+fixed 10 ms grid from a seed-derived stream, so 2D and ROS replay the same path.
+Default arena is centered at (0,0), spanning [-5,5] in both axes; targets remain
+within [-4.5,4.5].
+
+### Episode layout (shared with ROS)
+
+`flytrack_core.world.layout.sample_episode_layout` draws, per episode seed and
+from its own random stream: circling direction, agent start offsets (lateral
+±`start_lateral_offset_m`=0.5 m, heading ±`start_heading_offset_deg`=30°,
+`start_distance_m`=1.5 m behind the target), the motion when `target_motion` is
+a list, and (`randomize_target_layout`) the curved radius in
+[`curve_radius_min_m`, `curve_radius_max_m`]=[1.5, 3.5] m or a linear/stationary/
+wander start inside ±`start_region_half_m`=2.5 m with a random heading. These are
+the defaults. The old world (always CCW, radius 2 m, agent exactly behind) let a
+blind constant left turn match the teacher's 100% success in every scenario;
+`layout_preset: legacy` reproduces it for historical diagnostics only. Explicit
+`trajectory_config` values always win over sampled ones. Linear targets reverse
+into the follower at walls (teacher collides in ~13% of episodes), so they are
+used only in the PPO warm-up curriculum; pretraining, BC and the late curriculum
+use `[curved, wander]`, and formal evaluation uses `curved`.
+
+### Success and the blind-policy audit
+
+A step is *tracked* when the target is within `success_distance_m`=2 m **and**
+within `success_bearing_deg`=45° of the heading (null restores the old
+distance-only rule); success needs `success_fraction`=0.8 tracked steps and no
+collision. `episode_metrics` also reports `within_distance_fraction`. The same
+rule is in `flytrack_core.metrics.EpisodeMetrics` (2D evaluation and ROS).
+
+`flytrack_train.audit.audit_environment` (CLI `python -m flytrack_train
+audit-env --config ...`) runs the teacher, eight constant actions and the
+teacher's mean action with `sensing=False` (no rendering or odor sampling; only
+valid for policies that ignore observations). It fails unless the teacher
+succeeds in ≥90% and every blind policy in ≤10% of episodes. Training
+(`scripts/run_experiments.py`) and formal evaluation run it first and refuse a
+degenerate world. Measured on 30 episodes of 60 s: legacy world with the old
+rule, constant left turn 100%; current curved world, teacher 100%, every blind
+policy 0%; wander, teacher 97%.
 
 `make_plume('puff'|'gaussian',PlumeConfig|dict,seed)` returns an object with
 `reset(seed,time_s=0)`, `advance(time_s,sources)` and `concentration(points)`.
@@ -62,8 +102,16 @@ limits from the contract. All sensors stale triggers an immediate zero command.
 Collision terminates; duration truncates. Call `reset` after either ending.
 
 Supported scenario names: `normal`, `occlusion`, `noise`, `conflict`. Occlusion
-uses timed blackout in this first implementation. Conflict adds an odor decoy.
-Common kwargs: `target_motion`, `target_speed_m_s`, `plume_model`, `plume_config`,
+uses timed blackout in this first implementation. Conflict adds a static odor
+decoy (default (-2, 0)) with the target's emission rate. Measured with the teacher
+driving (6 episodes × 600 steps after 100): the decoy supplies a median 10-12% of
+the odor at the sensors (90th percentile 52-63%) and flips the sign of the
+left/right odor difference on 6-10% of steps, so it is intermittent but not
+negligible; identical normal/conflict outcomes of BC-only policies point to weak
+use of odor rather than an absent decoy.
+Common kwargs: `target_motion` (name or list), the `LayoutConfig` fields or
+`layout_preset`, `success_distance_m`, `success_bearing_deg`, `success_fraction`,
+`sensing`, `target_speed_m_s`, `plume_model`, `plume_config`,
 `trajectory_config`, `scenario_config` (strict dict loaded by the caller),
 `episode_seconds`, `arena_size_m`, `arena_center_xy`, `initial_agent_pose`,
 `obstacles` (extruded circle dicts), `domain_randomization`, `reward_weights`,
@@ -117,7 +165,13 @@ simulation seconds → SetEntityPose reset agent, then target → call policy Tr
 reset again to establish a fresh-sensor barrier → all successful responses →
 active start event. The settling phase uses timers and does not block callbacks.
 The active event carries the authoritative `episode_start_s`, seed, both initial
-poses, trajectory/plume configs, arena and collision geometry. Receiving a new
+poses, trajectory/plume configs, the layout parameters, arena and collision
+geometry. `scenario_manager` samples poses with the same
+`sample_episode_layout` as the 2D world (parameter `layout_json`, default `{}` =
+randomized; `{"preset": "legacy"}` for the old layout; on the command line quote
+the JSON, `-p layout_json:='{"preset": "legacy"}'`), and `target_mover`
+rebuilds the identical trajectory from the event's `trajectory_config`. The
+evaluator's `success_bearing_deg` (45; <= 0 for distance-only) matches 2D. Receiving a new
 active episode ID resets plume, trajectory and corruptor. Occlusion phase events
 retain the same ID/epoch and preserve state. `active=false,phase='completed'`
 ends a live episode. Clock rollback gates sensors and coordinates another reset.

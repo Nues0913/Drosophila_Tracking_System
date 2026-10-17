@@ -1,0 +1,120 @@
+[
+  {
+    "round": 0,
+    "teacher_probability": 1.0,
+    "environment_steps": 12000,
+    "epochs": [
+      {
+        "epoch": 1,
+        "loss": 0.01612056512998319,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.019573452308050993,
+        "best_epoch": 1
+      },
+      {
+        "epoch": 2,
+        "loss": 0.009239225262334864,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.016381771837538844,
+        "best_epoch": 2
+      },
+      {
+        "epoch": 3,
+        "loss": 0.00845093036523873,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.015520537667295062,
+        "best_epoch": 3
+      },
+      {
+        "epoch": 4,
+        "loss": 0.008486362336522066,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.015434110380929747,
+        "best_epoch": 4
+      },
+      {
+        "epoch": 5,
+        "loss": 0.008527386817149818,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.015436936715176623,
+        "best_epoch": 4
+      },
+      {
+        "epoch": 6,
+        "loss": 0.008529820068935422,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.015466743877990857,
+        "best_epoch": 4
+      },
+      {
+        "epoch": 7,
+        "loss": 0.008518468312870123,
+        "updates": 38,
+        "sequences": 342,
+        "validation_loss": 0.015501821456526062,
+        "best_epoch": 4
+      }
+    ]
+  },
+  {
+    "round": 1,
+    "teacher_probability": 0.0,
+    "environment_steps": 18000,
+    "epochs": [
+      {
+        "epoch": 1,
+        "loss": 0.013206466487342064,
+        "updates": 48,
+        "sequences": 534,
+        "validation_loss": 0.023632343331547945,
+        "best_epoch": 1
+      },
+      {
+        "epoch": 2,
+        "loss": 0.009718437169794925,
+        "updates": 48,
+        "sequences": 534,
+        "validation_loss": 0.026571102121746855,
+        "best_epoch": 1
+      },
+      {
+        "epoch": 3,
+        "loss": 0.009912084912078475,
+        "updates": 48,
+        "sequences": 534,
+        "validation_loss": 0.013573323609307408,
+        "best_epoch": 3
+      },
+      {
+        "epoch": 4,
+        "loss": 0.008690791308732801,
+        "updates": 38,
+        "sequences": 534,
+        "validation_loss": 0.017661404808198933,
+        "best_epoch": 3
+      },
+      {
+        "epoch": 5,
+        "loss": 0.013343195905084334,
+        "updates": 48,
+        "sequences": 534,
+        "validation_loss": 0.019683587548666094,
+        "best_epoch": 3
+      },
+      {
+        "epoch": 6,
+        "loss": 0.00984177555227162,
+        "updates": 38,
+        "sequences": 534,
+        "validation_loss": 0.019346420922757762,
+        "best_epoch": 3
+      }
+    ]
+  }
+]

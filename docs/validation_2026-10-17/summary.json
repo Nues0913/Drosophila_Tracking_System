@@ -1,0 +1,36 @@
+{
+ "chain": "VO seed 0: vision pretrain 60k (complete) -> short BC 12k + 1x6k DAgger",
+ "stopped": "odor pretrain (epoch 19 of <=40) and PPO were not run: local runs capped at ~20-30 min",
+ "stages": {
+  "pretrain_vision": {
+   "dn_health": {
+    "passed": true,
+    "omega_correlation_with_teacher": 0.5460143384867796,
+    "omega_r2": -3.065078831688705,
+    "omega_std_ratio": 0.10641404332881138,
+    "eye_swap_median": 0.02964402735233307,
+    "active_motor_count": 4,
+    "core_gradient": 0.05843250440776877
+   },
+   "validate_pretrain": {
+    "modality": "vision",
+    "bearing_mae_deg": 1.163579081973363,
+    "bearing_mae_threshold_deg": 15.0,
+    "passed": true
+   },
+   "training_metrics_rows": 10
+  },
+  "bc_short": {
+   "dn_health": {
+    "passed": false,
+    "omega_correlation_with_teacher": 0.5414296931945224,
+    "omega_r2": -0.032856510627481184,
+    "omega_std_ratio": 0.22342382291325508,
+    "eye_swap_median": 0.06490906327962875,
+    "active_motor_count": 4,
+    "core_gradient": 0.04468246817310361
+   },
+   "training_metrics_rows": 2
+  }
+ }
+}

@@ -2,6 +2,10 @@ env:
   episode_seconds: 60
   plume_model: puff
   randomize_target_direction: true
+  # Pin the 2026-10-17 scenario-test world under the newer defaults
+  # (no radius/start randomization, distance-only success).
+  randomize_target_layout: false
+  success_bearing_deg: null
   scenario: normal
   start_heading_offset_deg: 30
   start_lateral_offset_m: 0.5

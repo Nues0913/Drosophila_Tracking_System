@@ -198,7 +198,12 @@ def load_policy_artifact(
         contract,
         source / "frontend.npz",
         # Old cards must retain their original inference and diagnostic semantics.
-        **{"motor_rate_beta": None, **card["model_config"]},
+        **{
+            "motor_rate_beta": None,
+            "motor_input_gain": 1.0,
+            "readout_turn_bias": False,
+            **card["model_config"],
+        },
     )
     weights = torch.load(source / "weights.pt", map_location="cpu", weights_only=True)
     if not isinstance(weights, dict) or not all(

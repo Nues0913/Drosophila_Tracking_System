@@ -426,7 +426,10 @@ def test_dn_health_does_not_accept_softplus_floor_as_visual_control(dn_health_mo
         "all_motor_silent": False,
         "visual_intervention_applicable": True,
         "eye_swap_abs_omega_delta": {"median": 0.0},
-        "omega_mae_improvement_over_zero": 0.3,
+        "omega_correlation_with_teacher": 0.8,
+        "omega_r2": 0.3,
+        "omega_std": 0.08,
+        "teacher_omega_std": 0.09,
     }
     # Pretraining has no motor target: only DN liveness is required there.
     assert dn_health_module.health_gate(report, "pretrain")["passed"]
@@ -434,8 +437,48 @@ def test_dn_health_does_not_accept_softplus_floor_as_visual_control(dn_health_mo
     assert not dn_health_module.health_gate(report, "ppo")["passed"]
     report["visual_intervention_applicable"] = False  # O suppresses all vision by design.
     assert dn_health_module.health_gate(report, "bc")["passed"]
-    report["omega_mae_improvement_over_zero"] = 0.0
-    assert not dn_health_module.health_gate(report, "bc")["passed"]
+
+
+def test_bc_gate_rejects_fixed_or_attenuated_turning(dn_health_module):
+    rng = np.random.default_rng(0)
+    teacher = 0.05 + 0.1 * rng.standard_normal(4800)
+    statistics = dn_health_module.steering_statistics
+    # A constant turn at the teacher mean beats "zero output" but carries no steering.
+    assert statistics(np.full_like(teacher, teacher.mean()), teacher) == (
+        None,
+        pytest.approx(0, abs=1e-9),
+    )
+    # Right direction, 1/80 amplitude (the frozen-bias offline BC): correlated, R^2 ~ +0.02,
+    # so only the amplitude check rejects it.
+    correlation, r2 = statistics(0.05 + (teacher - 0.05) / 80, teacher)
+    assert correlation == pytest.approx(1) and 0 < r2 < 0.05
+    correlation, r2 = statistics(teacher + 0.05 * rng.standard_normal(4800), teacher)
+    assert correlation > 0.8 and r2 > 0.5
+    report = {
+        "finite": True,
+        "effective_active_motor_count": 6,
+        "gradient_norms": {"core": 0.01},
+        "all_motor_silent": False,
+        "visual_intervention_applicable": True,
+        "eye_swap_abs_omega_delta": {"median": 0.2},
+        "teacher_omega_std": 0.1,
+    }
+    for correlation, r2, std, passed in (
+        (None, 0.0, 0.0, False),  # fixed turn
+        (1.0, -0.9, 0.1, False),  # wrong mean
+        (1.0, 0.02, 0.1 / 80, False),  # attenuated
+        (0.9, 0.6, 0.09, True),
+    ):
+        gate = dn_health_module.health_gate(
+            {
+                **report,
+                "omega_correlation_with_teacher": correlation,
+                "omega_r2": r2,
+                "omega_std": std,
+            },
+            "bc",
+        )
+        assert gate["passed"] is passed
 
 
 @pytest.mark.parametrize("variant", ["VO", "VO-late", "RS", "GRU"])

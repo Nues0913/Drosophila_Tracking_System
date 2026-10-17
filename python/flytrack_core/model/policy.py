@@ -53,20 +53,36 @@ def _inverse_softplus(value: float) -> float:
 
 
 def _abs_spectral_radius(
-    pre: np.ndarray, post: np.ndarray, weight: np.ndarray, n_nodes: int, iterations: int = 500
+    pre: np.ndarray,
+    post: np.ndarray,
+    weight: np.ndarray,
+    n_nodes: int,
+    rounds: int = 4,
+    iterations: int = 800,
 ) -> float:
-    """Perron root of the nonnegative matrix |W| by power iteration on |W| + I."""
+    """Perron root of the nonnegative matrix |W| by shifted power iteration.
+
+    Each round rescales |W| by the current root estimate so the +I shift that
+    removes periodic components stays comparable to the root; a fixed +I is
+    negligible for raw synapse counts and a row-sum scale is dominated by the
+    high-gain DN rows. Matches a dense eigensolve on the real graph to ~1e-15.
+    """
     if not len(pre):
         return 0.0
     weight = np.abs(np.asarray(weight, dtype=np.float64))
+    estimate = float(np.bincount(post, weights=weight, minlength=n_nodes).max())
     vector = np.full(n_nodes, 1 / math.sqrt(n_nodes))
-    growth = 0.0
-    for _ in range(iterations):
-        product = vector.copy()
-        np.add.at(product, post, weight * vector[pre])
-        growth = float(np.linalg.norm(product))
-        vector = product / growth
-    return max(growth - 1, 0.0)
+    for _ in range(rounds):
+        if estimate <= 0:
+            return 0.0
+        scaled = weight / estimate
+        growth = 1.0
+        for _ in range(iterations):
+            product = vector + np.bincount(post, weights=scaled * vector[pre], minlength=n_nodes)
+            growth = float(np.linalg.norm(product))
+            vector = product / growth
+        estimate = max(growth - 1, 0.0) * estimate
+    return estimate
 
 
 class MaskedRateCore(nn.Module):
@@ -116,21 +132,28 @@ class MaskedRateCore(nn.Module):
             )
             self.register_buffer(name, torch.as_tensor(array, dtype=dtype), persistent=False)
         self.n_nodes = graph.n_nodes
-        self.register_buffer(
-            "motor_mask",
-            torch.as_tensor(graph.population("turn") | graph.population("forward")),
-            persistent=False,
-        )
+        motor = graph.population("turn") | graph.population("forward")
+        self.register_buffer("motor_mask", torch.as_tensor(motor), persistent=False)
         self.motor_rate_beta = config["motor_rate_beta"]
+        gain = float(config["motor_input_gain"])
+        if not math.isfinite(gain) or gain <= 0:
+            raise ValueError("motor_input_gain must be positive and finite")
+        # Fixed conductance gain on every edge that ends at a motor DN (the actual
+        # post of RS edges). The global spectral cap below shrinks every synapse to
+        # ~2.6e-4 on the real graph, which left the bearing signal reaching the DN
+        # left/right difference at ~3e-4 and starved BC of a steering gradient.
+        input_gain = np.where(motor[post], gain, 1.0).astype(np.float32)
+        self.register_buffer("input_gain", torch.as_tensor(input_gain), persistent=False)
         alpha_init = float(config["alpha_init"])
         target_radius = config.get("init_spectral_radius")
         if target_radius is not None:
             # Raw synapse counts (>=60 per edge) make a fixed alpha explode the
-            # 1-Lipschitz rate recurrence; cap alpha so |W| starts at this radius.
+            # 1-Lipschitz rate recurrence; cap alpha so |W| (including the DN input
+            # gain) starts at this radius.
             radius = _abs_spectral_radius(
                 pre[enabled_edges],
                 post[enabled_edges],
-                graph.synapse_count[enabled_edges],
+                graph.synapse_count[enabled_edges] * input_gain[enabled_edges],
                 graph.n_nodes,
             )
             if radius > 0:
@@ -202,6 +225,7 @@ class MaskedRateCore(nn.Module):
         return (
             self.sign[self.pre]
             * self.synapse_count
+            * self.input_gain
             * F.softplus(self.raw_alpha[self.edge_label])
             * self.edge_enabled
         )
@@ -909,9 +933,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tau_init": 0.05,
     "bias_init": 0.0,
     "motor_rate_beta": 10.0,
+    # Fixed gain on edges into motor DNs; legacy cards load with 1.0 (no gain).
+    "motor_input_gain": 100.0,
     "dense_threshold": 5000,
     "readout": "auto",
-    "readout_turn_bias": False,
+    # Offsets the DN left/right structural asymmetry; legacy cards load without it.
+    "readout_turn_bias": True,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

@@ -50,6 +50,22 @@ def finite_json(value):
     return None if isinstance(value, float) and not math.isfinite(value) else value
 
 
+# Steering gates compare against the best *constant* omega (R^2 > 0), require
+# co-variation with the teacher and a non-negligible turning amplitude. "Better
+# than zero output" passed policies with a completely fixed turn (the teacher's
+# mean omega is not zero), and correlation alone passed a correctly signed turn
+# at 1/80 of the teacher's amplitude (R^2 of such a policy is only ~+0.02).
+STEERING_THRESHOLDS = {
+    "bc": {
+        "minimum_omega_correlation": 0.5,
+        "minimum_omega_r2_exclusive": 0.0,
+        "minimum_omega_std_ratio": 0.25,
+    },
+    "ppo": {"minimum_omega_correlation": 0.3, "minimum_omega_std_ratio": 0.25},
+    "es": {"minimum_omega_correlation": 0.3, "minimum_omega_std_ratio": 0.25},
+}
+
+
 def health_gate(report, stage):
     """A positive softplus floor alone is insufficient evidence of motor control."""
     checks = {
@@ -62,10 +78,40 @@ def health_gate(report, stage):
     # the readout has been trained (BC onward); earlier stages check DN liveness.
     if report["visual_intervention_applicable"] and stage != "pretrain":
         checks["eye_swap_response"] = report["eye_swap_abs_omega_delta"]["median"] >= 0.05
-    if stage == "bc":
-        improvement = report["omega_mae_improvement_over_zero"]
-        checks["bc_omega_error"] = improvement is not None and improvement >= 0.2
+    thresholds = STEERING_THRESHOLDS.get(stage, {})
+    correlation, r2 = report["omega_correlation_with_teacher"], report["omega_r2"]
+    if "minimum_omega_correlation" in thresholds:
+        checks["omega_correlation"] = (
+            correlation is not None and correlation >= thresholds["minimum_omega_correlation"]
+        )
+    if "minimum_omega_r2_exclusive" in thresholds:
+        checks["omega_r2"] = r2 is not None and r2 > thresholds["minimum_omega_r2_exclusive"]
+    if "minimum_omega_std_ratio" in thresholds:
+        teacher_std = report["teacher_omega_std"]
+        checks["omega_amplitude"] = (
+            teacher_std > 0
+            and report["omega_std"] / teacher_std >= thresholds["minimum_omega_std_ratio"]
+        )
     return {"passed": all(checks.values()), "checks": checks}
+
+
+def steering_statistics(policy_omega, teacher_omega):
+    """Pearson correlation and R^2 of policy omega against teacher omega (None if undefined)."""
+    policy_omega = np.asarray(policy_omega, dtype=np.float64)
+    teacher_omega = np.asarray(teacher_omega, dtype=np.float64)
+    teacher_variance = float(teacher_omega.var())
+    correlation = (
+        float(np.corrcoef(policy_omega, teacher_omega)[0, 1])
+        # A constant omega (std at float rounding level) has no defined correlation.
+        if policy_omega.std() > 1e-9 and teacher_omega.std() > 1e-9
+        else None
+    )
+    r2 = (
+        1 - float(np.mean((policy_omega - teacher_omega) ** 2)) / teacher_variance
+        if teacher_variance > 0
+        else None
+    )
+    return correlation, r2
 
 
 def diagnose(
@@ -73,8 +119,8 @@ def diagnose(
     graph,
     config,
     *,
-    episodes=4,
-    steps=64,
+    episodes=24,
+    steps=200,
     burn_in=16,
     gradient_steps=16,
     rate_threshold=1e-3,
@@ -176,6 +222,7 @@ def diagnose(
     effective_fraction = (rates > rate_threshold).float().mean(0)
     zero_mae = float(target[:, 1].abs().mean())
     omega_mae = float((action[:, 1] - target[:, 1]).abs().mean())
+    correlation, r2 = steering_statistics(action[:, 1].numpy(), target[:, 1].numpy())
     finite = all(
         bool(torch.isfinite(value).all()) for value in (rates, voltages, action, target)
     ) and all(math.isfinite(value) for value in [loss_sum, *norms.values()])
@@ -204,6 +251,11 @@ def diagnose(
         "omega_mae": omega_mae,
         "zero_omega_mae": zero_mae,
         "omega_mae_improvement_over_zero": 1 - omega_mae / zero_mae if zero_mae > 0 else None,
+        "omega_correlation_with_teacher": correlation,
+        "omega_r2": r2,
+        "omega_std": float(action[:, 1].std()),
+        "teacher_omega_mean": float(target[:, 1].mean()),
+        "teacher_omega_std": float(target[:, 1].std()),
         "motor_neurons": [
             {
                 "node_id": int(graph.node_ids[index]),
@@ -223,7 +275,7 @@ def diagnose(
             "minimum_active_fraction": 0.1,
             "minimum_median_eye_swap_omega_delta": 0.05,
             "minimum_core_gradient_norm_exclusive": 1e-6,
-            "minimum_bc_omega_error_improvement": 0.2,
+            "steering": STEERING_THRESHOLDS,
         },
     }
     report.update(health_gate(report, stage))
@@ -235,8 +287,9 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--config", type=Path, help="Otherwise use the artifact's recorded config")
     parser.add_argument("--output", type=Path, help="Optional JSON report; artifact is read-only")
-    parser.add_argument("--episodes", type=int, default=4)
-    parser.add_argument("--steps", type=int, default=64, help="Measured steps per episode")
+    # 24 x 200 steps: at 4 x 64 the same BC model measured -157% and +30% ω-error change.
+    parser.add_argument("--episodes", type=int, default=24)
+    parser.add_argument("--steps", type=int, default=200, help="Measured steps per episode")
     parser.add_argument("--burn-in", type=int, default=16)
     parser.add_argument("--gradient-steps", type=int, default=16)
     parser.add_argument("--rate-threshold", type=float, default=1e-3)

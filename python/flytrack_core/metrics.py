@@ -7,15 +7,25 @@ import numpy as np
 
 class EpisodeMetrics:
     def __init__(
-        self, dt: float = 0.05, distance_threshold: float = 2.0, success_fraction: float = 0.8
+        self,
+        dt: float = 0.05,
+        distance_threshold: float = 2.0,
+        success_fraction: float = 0.8,
+        bearing_threshold_deg: float | None = 45.0,
     ):
+        """A tracked sample is within ``distance_threshold`` and, unless the bearing
+        threshold is None (legacy distance-only definition), faces the target within
+        ``bearing_threshold_deg``; success needs ``success_fraction`` tracked samples."""
         if dt <= 0 or distance_threshold <= 0 or not 0 <= success_fraction <= 1:
             raise ValueError("Invalid sampling interval or tracking success thresholds")
+        if bearing_threshold_deg is not None and not 0 < bearing_threshold_deg <= 180:
+            raise ValueError("bearing_threshold_deg must be in (0,180] or None")
         self.dt, self.distance_threshold, self.success_fraction = (
             dt,
             distance_threshold,
             success_fraction,
         )
+        self.bearing_threshold_deg = bearing_threshold_deg
         self.distances, self.bearings, self.omegas, self.latencies = [], [], [], []
         self.collision = False
         self.previous_occluded = False
@@ -54,7 +64,13 @@ class EpisodeMetrics:
     def result(self) -> dict[str, float]:
         if not self.distances:
             raise ValueError("Cannot report an episode without samples")
-        tracked_fraction = float(np.mean(np.asarray(self.distances) <= self.distance_threshold))
+        near = np.asarray(self.distances) <= self.distance_threshold
+        facing = (
+            np.ones_like(near)
+            if self.bearing_threshold_deg is None
+            else np.asarray(self.bearings) <= self.bearing_threshold_deg
+        )
+        tracked_fraction = float(np.mean(near & facing))
         return {
             "success": float(tracked_fraction >= self.success_fraction and not self.collision),
             "mean_distance_m": float(np.mean(self.distances)),
@@ -73,6 +89,7 @@ class EpisodeMetrics:
             if self.latencies
             else float("nan"),
             "tracked_fraction": tracked_fraction,
+            "within_distance_fraction": float(np.mean(near)),
             "samples": len(self.distances),
             "occlusion_events": self.occlusion_events,
             "completed_recaptures": len(self.recaptures),

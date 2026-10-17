@@ -16,6 +16,7 @@ from flytrack_core.contracts import file_sha256
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_core.model import load_policy_artifact
 
+from .audit import audit_environment
 from .batches import SequenceModel, tensor_observation
 from .config import contract_from_config, make_env, write_json
 from .parallel import EnvPool
@@ -367,6 +368,22 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
         summarize_recorded(config, output, variants, scenarios, seeds, episodes)
         return
     expected_contract = contract_from_config(config)
+    # A blind constant action must not "track" in the evaluated world; otherwise
+    # success rates cannot separate tracking from circling (see audit.py).
+    environment_audit = audit_environment(
+        config,
+        expected_contract,
+        episodes=int(options.get("environment_audit_episodes", 40)),
+        success_distance_m=float(options.get("success_distance_m", 2)),
+        success_fraction=float(options.get("success_time_fraction", 0.8)),
+        success_bearing_deg=options.get("success_bearing_deg", 45.0),
+    )
+    write_json(output / "environment_audit.json", environment_audit)
+    if not environment_audit["passed"] and not options.get("allow_degenerate_environment"):
+        raise ValueError(
+            "Evaluation world is degenerate (a blind policy succeeds): "
+            + "; ".join(environment_audit["failures"])
+        )
     artifact_matrix = validate_artifact_matrix(config, variants, seeds, torch.device("cpu"))
     rows, manifests = [], list(artifact_matrix.values())
     output.mkdir(parents=True, exist_ok=True)
@@ -390,10 +407,12 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
         )
 
     def metrics():
+        bearing = options.get("success_bearing_deg", 45.0)
         return EpisodeMetrics(
             contract.control_dt,
             float(options.get("success_distance_m", 2)),
             float(options.get("success_time_fraction", 0.8)),
+            None if bearing is None else float(bearing),
         )
 
     def record(accumulator, info, action, latency_ms=None):
@@ -523,5 +542,10 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
             "reacquisition_definition": (
                 "completed occlusion events only; censored events reported separately"
             ),
+            "success_definition": (
+                "fraction of samples within success_distance_m and facing the target within "
+                "success_bearing_deg is at least success_time_fraction, without collision"
+            ),
+            "environment_audit": environment_audit,
         },
     )

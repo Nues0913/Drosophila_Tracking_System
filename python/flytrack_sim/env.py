@@ -12,10 +12,13 @@ import numpy as np
 from flytrack_core.contracts import ActionLimits, SensorContract
 from flytrack_core.sensing import HexEye, SensorCorruptor, odor_sensor_positions
 from flytrack_core.world import (
+    LayoutConfig,
     ScenarioSpec,
     TargetTrajectory,
     TrajectoryConfig,
     make_plume,
+    motion_choices,
+    sample_episode_layout,
     wrap_angle,
 )
 
@@ -63,28 +66,36 @@ class FlyTrackEnv(gym.Env):
         self.following_distance_m = float(options.pop("following_distance_m", 1.0))
         self.distance_tolerance_m = float(options.pop("distance_tolerance_m", 0.2))
         self.success_distance_m = float(options.pop("success_distance_m", 2.0))
+        # A tracked step must also face the target: distance alone let a blind
+        # circling policy count as "tracking" with ~94 deg bearing error.
+        bearing_limit = options.pop("success_bearing_deg", 45.0)
+        self.success_bearing_deg = None if bearing_limit is None else float(bearing_limit)
         self.success_fraction = float(options.pop("success_fraction", 0.8))
         self.lost_distance_m = float(options.pop("lost_distance_m", 3.0))
         self.episode_seconds = float(options.pop("episode_seconds", 30.0))
         self.max_steps = int(np.ceil(self.episode_seconds / self.contract.control_dt))
         self.target_motion = options.pop("target_motion", "curved")
+        self.motion_choices = motion_choices(self.target_motion)
         self.target_speed_m_s = float(options.pop("target_speed_m_s", 0.20))
         self.plume_model = options.pop("plume_model", "puff")
         self.plume_config = dict(options.pop("plume_config", {}) or {})
         self.trajectory_config = dict(options.pop("trajectory_config", {}) or {})
         self.scenario_config = dict(options.pop("scenario_config", {}) or {})
         self.initial_agent_pose = options.pop("initial_agent_pose", None)
-        # Optional per-episode diversity; the defaults reproduce the original fixed layout.
-        self.randomize_target_direction = bool(options.pop("randomize_target_direction", False))
-        self.start_lateral_offset_m = float(options.pop("start_lateral_offset_m", 0.0))
-        self.start_heading_offset_deg = float(options.pop("start_heading_offset_deg", 0.0))
-        if not (
-            np.isfinite(self.start_lateral_offset_m)
-            and np.isfinite(self.start_heading_offset_deg)
-            and self.start_lateral_offset_m >= 0
-            and 0 <= self.start_heading_offset_deg <= 180
-        ):
-            raise ValueError("start offsets must be finite, nonnegative and at most 180 degrees")
+        # Per-episode layout diversity is on by default; layout_preset: legacy (or the
+        # individual LayoutConfig keys) reproduces the old fixed layout.
+        layout_options = {
+            name: options.pop(name)
+            for name in list(options)
+            if name in LayoutConfig.__dataclass_fields__
+        }
+        if options.get("layout_preset", "varied") not in ("varied", "legacy"):
+            raise ValueError("layout_preset must be varied or legacy")
+        if options.pop("layout_preset", "varied") == "legacy":
+            layout_options["preset"] = "legacy"
+        self.layout = LayoutConfig.from_dict(layout_options)
+        # Audits of blind fixed-action policies may skip rendering and odor sampling.
+        self.sensing = bool(options.pop("sensing", True))
         self.obstacles = [dict(obstacle) for obstacle in options.pop("obstacles", [])]
         self.subrays = int(options.pop("subrays", 7))
         self.camera_height_m = float(options.pop("camera_height_m", 0.27))
@@ -121,6 +132,8 @@ class FlyTrackEnv(gym.Env):
             raise ValueError("physical sizes and episode duration must be positive")
         if not 0 <= self.success_fraction <= 1:
             raise ValueError("success_fraction must be in [0,1]")
+        if self.success_bearing_deg is not None and not 0 < self.success_bearing_deg <= 180:
+            raise ValueError("success_bearing_deg must be in (0,180] or null")
         self.scenario_spec = ScenarioSpec.from_dict(
             {**self.scenario_config, "duration_s": self.episode_seconds}, name=scenario
         )
@@ -151,36 +164,31 @@ class FlyTrackEnv(gym.Env):
             self._next_episode_seed = int(seed)
         self._episode_seed = self._next_episode_seed
         self._next_episode_seed += 1
-        # A separate stream keeps every other per-episode random draw unchanged.
-        layout = np.random.default_rng([self._episode_seed, 0x1A70])
-        direction = float(layout.choice((-1.0, 1.0))) if self.randomize_target_direction else 1.0
-        lateral = layout.uniform(-1, 1) * self.start_lateral_offset_m
-        yaw_offset = np.deg2rad(layout.uniform(-1, 1) * self.start_heading_offset_deg)
-        config = {
-            "motion": self.target_motion,
-            "direction": direction,
-            "speed_m_s": self.target_speed_m_s,
-            "center_x": self.arena_center[0],
-            "center_y": self.arena_center[1],
-            "initial_x": self.arena_center[0],
-            "initial_y": self.arena_center[1],
-            "xmin": self.walls[0] + 0.5,
-            "ymin": self.walls[1] + 0.5,
-            "xmax": self.walls[2] - 0.5,
-            "ymax": self.walls[3] - 0.5,
-            **self.trajectory_config,
-        }
+        config, sampled_agent = sample_episode_layout(
+            self._episode_seed,
+            self.motion_choices,
+            {
+                "speed_m_s": self.target_speed_m_s,
+                "center_x": self.arena_center[0],
+                "center_y": self.arena_center[1],
+                "initial_x": self.arena_center[0],
+                "initial_y": self.arena_center[1],
+                "xmin": self.walls[0] + 0.5,
+                "ymin": self.walls[1] + 0.5,
+                "xmax": self.walls[2] - 0.5,
+                "ymax": self.walls[3] - 0.5,
+            },
+            self.trajectory_config,
+            self.layout,
+            self.walls,
+            self.agent_radius_m,
+        )
+        self.episode_trajectory_config = config
         self.trajectory = TargetTrajectory(TrajectoryConfig.from_dict(config), self._episode_seed)
         self.target_pose, self.target_velocity = self.trajectory.state(0.0)
         initial = (options or {}).get("agent_pose", self.initial_agent_pose)
         if initial is None:
-            heading = self.target_pose[2]
-            # Behind the target, shifted sideways by `lateral` (positive = left of its heading).
-            initial = [
-                self.target_pose[0] - 1.5 * np.cos(heading) - lateral * np.sin(heading),
-                self.target_pose[1] - 1.5 * np.sin(heading) + lateral * np.cos(heading),
-                float(wrap_angle(heading + yaw_offset)) if yaw_offset else heading,
-            ]
+            initial = sampled_agent
         self.agent_pose = np.asarray(initial, dtype=np.float64).copy()
         if self.agent_pose.shape != (3,) or not np.all(np.isfinite(self.agent_pose)):
             raise ValueError("initial agent pose must be finite [x,y,yaw]")
@@ -198,7 +206,7 @@ class FlyTrackEnv(gym.Env):
         self._next_vision_s = self._next_odor_s = 0.0
         self._previous_distance = np.linalg.norm(self.target_pose[:2] - self.agent_pose[:2])
         self._distance_sum = self._bearing_sum = self._smoothness_sum = 0.0
-        self._tracked_steps = 0
+        self._tracked_steps = self._near_steps = 0
         self._previous_occluded = self.scenario_spec.occluded_at(0)
         self._reacquisition_start_s = None
         self._reacquisition_times: list[float] = []
@@ -224,6 +232,10 @@ class FlyTrackEnv(gym.Env):
         return np.asarray(positions)
 
     def _acquire_vision(self):
+        if not self.sensing:
+            self._sensor_stamps[:2] = self.time_s
+            self._next_vision_s += 1 / self.contract.vision_hz
+            return
         disks = [
             *self.obstacles,
             {
@@ -254,6 +266,10 @@ class FlyTrackEnv(gym.Env):
         self._next_vision_s += 1 / self.contract.vision_hz
 
     def _acquire_odor(self):
+        if not self.sensing:
+            self._sensor_stamps[2] = self.time_s
+            self._next_odor_s += 1 / self.contract.odor_hz
+            return
         positions = odor_sensor_positions(self.agent_pose, self.contract.odor_baseline_m)
         odor, valid = self.corruptor.odor(
             self.plume.concentration(positions), self.scenario_spec.corruption_at(self.time_s)
@@ -313,7 +329,8 @@ class FlyTrackEnv(gym.Env):
             self._move_agent(applied, next_s - self.time_s)
             self.time_s = next_s
             self.target_pose, self.target_velocity = self.trajectory.state(self.time_s)
-            self.plume.advance(self.time_s, self._source_positions)
+            if self.sensing:
+                self.plume.advance(self.time_s, self._source_positions)
             self.collision |= self._has_collision()
             if self._next_vision_s <= self.time_s + 1e-9:
                 self._acquire_vision()
@@ -339,7 +356,12 @@ class FlyTrackEnv(gym.Env):
         self._distance_sum += distance
         self._bearing_sum += abs(bearing)
         self._smoothness_sum += abs(float(action_change[1]))
-        self._tracked_steps += distance <= self.success_distance_m
+        near = distance <= self.success_distance_m
+        self._near_steps += near
+        self._tracked_steps += near and (
+            self.success_bearing_deg is None
+            or abs(math.degrees(bearing)) <= self.success_bearing_deg
+        )
         self._previous_distance = distance
         self.previous_action = applied
         self.step_count += 1
@@ -422,6 +444,7 @@ class FlyTrackEnv(gym.Env):
             if self._reacquisition_times
             else float("nan"),
             "scenario": self.scenario_spec.name,
+            "target_motion": self.trajectory.config.motion,
             "scenario_active": self._running,
             "episode_id": self._episode_id,
             "episode_seed": self._episode_seed,
@@ -438,6 +461,7 @@ class FlyTrackEnv(gym.Env):
         return {
             "success": bool(fraction >= self.success_fraction and not self.collision),
             "tracking_fraction": fraction,
+            "within_distance_fraction": self._near_steps / count,
             "mean_distance_m": self._distance_sum / count,
             "bearing_error_deg": math.degrees(self._bearing_sum / count),
             "smoothness_rad_s": self._smoothness_sum / count,

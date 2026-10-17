@@ -453,3 +453,21 @@ def test_bc_parameter_groups_override_core_bias_and_readout_rates():
     assert by_rate[1e-2] == [policy.readout.turn_weight]
     with pytest.raises(ValueError, match="nonnegative"):
         parameter_groups(policy, {"core_bias_learning_rate": -1})
+
+
+def test_environment_audit_flags_the_blind_circling_world():
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train.audit import audit_environment
+
+    config = {"env": {"episode_seconds": 60, "target_motion": "curved"}}
+    contract = SensorContract(eye_radius=2)
+    # The pre-2026-10-17 world and success rule: a constant left turn "tracks".
+    legacy = audit_environment(
+        config, contract, episodes=4, layout_preset="legacy", success_bearing_deg=None
+    )
+    assert not legacy["passed"]
+    assert legacy["blind_policies"]["left_0.10"]["success_rate"] == 1.0
+    assert legacy["teacher"]["success_rate"] == 1.0
+    varied = audit_environment(config, contract, episodes=4)
+    assert varied["passed"], varied["failures"]
+    assert max(row["success_rate"] for row in varied["blind_policies"].values()) == 0

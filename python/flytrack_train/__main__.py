@@ -50,7 +50,16 @@ def main():
     parser = argparse.ArgumentParser(description="FlyTrack offline learning and evaluation")
     parser.add_argument(
         "command",
-        choices=("pretrain", "bc", "ppo", "es", "evaluate", "export", "validate-pretrain"),
+        choices=(
+            "pretrain",
+            "bc",
+            "ppo",
+            "es",
+            "evaluate",
+            "export",
+            "validate-pretrain",
+            "audit-env",
+        ),
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", help="Override the output directory in YAML")
@@ -114,6 +123,20 @@ def main():
         )
         if not result["passed"]:
             raise SystemExit("Held-out sensory decoding did not pass its preregistered threshold")
+        return
+    if args.command == "audit-env":
+        from .audit import audit_environment
+
+        report = audit_environment(config, contract_from_config(config))
+        if args.output:
+            write_json(Path(args.output), report)
+        name, row = max(report["blind_policies"].items(), key=lambda item: item[1]["success_rate"])
+        print(
+            f"teacher success {report['teacher']['success_rate']:.2f}; "
+            f"best blind policy {name} success {row['success_rate']:.2f}"
+        )
+        if not report["passed"]:
+            raise SystemExit("Degenerate world: " + "; ".join(report["failures"]))
         return
     if args.command == "export":
         source = args.artifact or config.get("artifact")

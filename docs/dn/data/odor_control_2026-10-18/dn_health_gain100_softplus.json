@@ -1,0 +1,368 @@
+{
+  "variant": "VO",
+  "lesion": "none",
+  "motor_rate_beta": 10.0,
+  "stage": "bc",
+  "environment_seeds": [
+    1500000000,
+    1500000001,
+    1500000002,
+    1500000003,
+    1500000004,
+    1500000005,
+    1500000006,
+    1500000007,
+    1500000008,
+    1500000009,
+    1500000010,
+    1500000011,
+    1500000012,
+    1500000013,
+    1500000014,
+    1500000015,
+    1500000016,
+    1500000017,
+    1500000018,
+    1500000019,
+    1500000020,
+    1500000021,
+    1500000022,
+    1500000023
+  ],
+  "measured_steps_per_episode": [
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "burn_in": 16,
+  "gradient_steps_per_episode": 16,
+  "trajectory": "teacher-driven; same original observations with only eye images swapped",
+  "weights_updated": false,
+  "finite": true,
+  "effective_rate_threshold": 0.001,
+  "effective_active_motor_count": 6,
+  "all_motor_silent": false,
+  "visual_intervention_applicable": true,
+  "paired_sensory_code_max_delta": 0.17197564244270325,
+  "eye_swap_abs_omega_delta": {
+    "min": 2.8710579499602318e-05,
+    "p05": 0.015392423747107387,
+    "median": 0.07901378348469734,
+    "p95": 0.14483136013150216,
+    "max": 0.18824726343154907,
+    "mean": 0.07923306695572441
+  },
+  "action_min": [
+    0.15929457545280457,
+    -0.022528860718011856
+  ],
+  "action_max": [
+    0.15929745137691498,
+    0.07836903631687164
+  ],
+  "normalized_action_mse": 0.039370954502373934,
+  "gradient_norms": {
+    "core.raw_alpha": 0.00580034963786602,
+    "core.raw_tau": 8.44189435156295e-06,
+    "core.bias": 0.15585169196128845,
+    "readout.turn_weight": 0.00043943614582531154,
+    "readout.forward_weight": 0.004101647529751062,
+    "readout.forward_bias": 0.05890360847115517,
+    "readout.turn_bias": 0.006833889055997133,
+    "core": 0.15595959096632506,
+    "readout": 0.059442020045901794
+  },
+  "omega_mae": 0.05509655550122261,
+  "zero_omega_mae": 0.05443822965025902,
+  "omega_mae_improvement_over_zero": -0.012093079719767585,
+  "omega_correlation_with_teacher": 0.640491010024548,
+  "omega_r2": 0.06310118465963699,
+  "omega_std": 0.019386762753129005,
+  "teacher_omega_mean": -0.0024510547518730164,
+  "teacher_omega_std": 0.06741033494472504,
+  "motor_neurons": [
+    {
+      "node_id": 10360,
+      "type": "DNa02",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.024797294288873672,
+        "p05": 0.03302075956016779,
+        "median": 0.04288411699235439,
+        "p95": 0.056211105175316335,
+        "max": 0.06381361931562424,
+        "mean": 0.04383628736133687
+      },
+      "voltage_by_branch": [
+        {
+          "min": -0.12678882479667664,
+          "p05": -0.093839081376791,
+          "median": -0.062459707260131836,
+          "p95": -0.028186952415853738,
+          "max": -0.01132251601666212,
+          "mean": -0.06122262080316432
+        }
+      ]
+    },
+    {
+      "node_id": 10442,
+      "type": "DNa01",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.06698156148195267,
+        "p05": 0.06709267050027848,
+        "median": 0.06719793751835823,
+        "p95": 0.06912387497723102,
+        "max": 0.06928444653749466,
+        "mean": 0.06751727303024381
+      },
+      "voltage_by_branch": [
+        {
+          "min": -0.004722054582089186,
+          "p05": -0.004494602535851299,
+          "median": -0.004279343876987696,
+          "p95": -0.00038204779557418075,
+          "max": -6.0551850765477866e-05,
+          "mean": -0.0036330109610510893
+        }
+      ]
+    },
+    {
+      "node_id": 10760,
+      "type": "DNa01",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.06382930278778076,
+        "p05": 0.06403018124401569,
+        "median": 0.0643470287322998,
+        "p95": 0.06480540670454502,
+        "max": 0.06503688544034958,
+        "mean": 0.06433916124670457
+      },
+      "voltage_by_branch": [
+        {
+          "min": -0.011289284564554691,
+          "p05": -0.010863985540345312,
+          "median": -0.010195111855864525,
+          "p95": -0.009231597185134888,
+          "max": -0.008746876381337643,
+          "mean": -0.010212213867149936
+        }
+      ]
+    },
+    {
+      "node_id": 10783,
+      "type": "DNp09",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.06936828792095184,
+        "p05": 0.06936960630118846,
+        "median": 0.06937171518802643,
+        "p95": 0.0693739503622055,
+        "max": 0.06937608867883682,
+        "mean": 0.06937170667418589
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.00010709866182878613,
+          "p05": 0.00010975049626722466,
+          "median": 0.0001139669147960376,
+          "p95": 0.00011842888998216949,
+          "max": 0.00012269619037397206,
+          "mean": 0.00011394763364175256
+        }
+      ]
+    },
+    {
+      "node_id": 11177,
+      "type": "DNp09",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.06986375153064728,
+        "p05": 0.06988122314214706,
+        "median": 0.06988956034183502,
+        "p95": 0.06992468573153018,
+        "max": 0.06994829326868057,
+        "mean": 0.06989510582294316
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.0010950618889182806,
+          "p05": 0.0011298229219391942,
+          "median": 0.0011464062263257802,
+          "p95": 0.0012162420549429954,
+          "max": 0.0012631514109671116,
+          "mean": 0.001157425019070312
+        }
+      ]
+    },
+    {
+      "node_id": 523769,
+      "type": "DNa02",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.001638214336708188,
+        "p05": 0.002378216257784516,
+        "median": 0.004068597219884396,
+        "p95": 0.005257335444912315,
+        "max": 0.007202032022178173,
+        "mean": 0.004082300628700371
+      },
+      "voltage_by_branch": [
+        {
+          "min": -0.41033613681793213,
+          "p05": -0.3726904779672623,
+          "median": -0.3181459903717041,
+          "p95": -0.2919144034385681,
+          "max": -0.259458065032959,
+          "mean": -0.3202504332984487
+        }
+      ]
+    }
+  ],
+  "thresholds": {
+    "minimum_effective_active_motor_count": 4,
+    "minimum_active_fraction": 0.1,
+    "minimum_median_eye_swap_omega_delta": 0.05,
+    "minimum_core_gradient_norm_exclusive": 1e-06,
+    "steering": {
+      "bc": {
+        "minimum_omega_correlation": 0.5,
+        "minimum_omega_r2_exclusive": 0.0,
+        "minimum_omega_std_ratio": 0.25
+      },
+      "ppo": {
+        "minimum_omega_correlation": 0.3,
+        "minimum_omega_std_ratio": 0.25
+      },
+      "es": {
+        "minimum_omega_correlation": 0.3,
+        "minimum_omega_std_ratio": 0.25
+      }
+    }
+  },
+  "passed": true,
+  "checks": {
+    "finite": true,
+    "active_motor_count": true,
+    "central_gradient": true,
+    "not_all_silent": true,
+    "eye_swap_response": true,
+    "omega_correlation": true,
+    "omega_r2": true,
+    "omega_amplitude": true
+  },
+  "source_actor": "runs/odor_control_2026-10-18/gain100_softplus/actor",
+  "source_actor_files": {
+    "frontend.npz": "47cccf33ad8a5ba708d557e500cf48b7f3946be1b0f9f6eecffec6349955ec69",
+    "graph.npz": "a3c70c2759b0c9af179bb40ef0ff6e46ff469c96df0155c8fbe82bc4715f2e71",
+    "sensor_contract.json": "a78efde40508d298f2f1af444e163f0f9b7e46efb12158a642a159d8934dc5d5",
+    "weights.pt": "0c04f66366c0e31983062f864ae1627508abb0b8e460725eda9b1536c186875f"
+  },
+  "counterfactual_rate_override": false,
+  "central_operator": "artifact setting",
+  "diagnostic_config": {
+    "variant": "VO",
+    "seed": 0,
+    "sensor_contract_path": "configs/sensor_contract.json",
+    "graph_path": "data/subgraphs/main/graph.npz",
+    "frontend_path": "artifacts/frontend/frontend.npz",
+    "output": "runs/odor_control_2026-10-18/gain100_softplus",
+    "model": {
+      "alpha_init": 0.01,
+      "init_spectral_radius": 0.9,
+      "tau_init": 0.05,
+      "bias_init": 0.0,
+      "motor_rate_beta": 10.0,
+      "motor_input_gain": 100.0,
+      "dense_threshold": 5000,
+      "readout": "structured",
+      "readout_turn_bias": true,
+      "odor_K": [
+        0.1,
+        0.3,
+        1.0
+      ],
+      "odor_hill_n": 2.0,
+      "odor_adaptation_tau_s": 2.0,
+      "visual_bins": 5,
+      "visual_input_mapping": {},
+      "visual_seed_types": null,
+      "odor_seed_types": null,
+      "allow_unknown_side_mean": false,
+      "random_seed": 0,
+      "random_swaps_per_edge": 10,
+      "hidden_size": 16,
+      "gru_input_size": null,
+      "log_std_init": -0.5,
+      "odor_input_gain": 100.0,
+      "olfactory_rate_beta": 10.0
+    },
+    "env": {
+      "episode_seconds": 60,
+      "scenario": "normal",
+      "target_motion": [
+        "curved",
+        "wander"
+      ],
+      "plume_model": "puff"
+    },
+    "train": {
+      "teacher_steps": 12000,
+      "dagger_steps_per_round": 6000,
+      "dagger_rounds": 1,
+      "dagger_beta": 0.5,
+      "epochs": 30,
+      "batch_episodes": 16,
+      "validation_every": 10,
+      "early_stopping_patience": 3,
+      "sequence_length": 32,
+      "learning_rate": 0.001,
+      "core_bias_learning_rate": 0.0,
+      "readout_learning_rate": 0.01,
+      "early_stopping_min_delta": 0.005,
+      "max_grad_norm": 0.5,
+      "activity_coef": 0.0001
+    },
+    "scenario_configs": {
+      "normal": "configs/scenarios/normal.yaml",
+      "occlusion": "configs/scenarios/occlusion.yaml",
+      "noise": "configs/scenarios/noise.yaml",
+      "conflict": "configs/scenarios/conflict.yaml"
+    }
+  },
+  "diagnostic_seconds": 231.55492868700003
+}

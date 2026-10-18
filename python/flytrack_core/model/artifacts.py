@@ -201,6 +201,7 @@ def load_policy_artifact(
         **{
             "motor_rate_beta": None,
             "motor_input_gain": 1.0,
+            "odor_input_gain": 1.0,
             "readout_turn_bias": False,
             **card["model_config"],
         },

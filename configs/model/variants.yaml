@@ -10,6 +10,9 @@ common:
   # Edges into the six motor DNs keep a fixed x100 conductance gain; the global
   # spectral cap is computed with it (it does not change the radius on the real graph).
   motor_input_gain: 100.0
+  # x100 ORN input drive: without it odor moved omega by ~1/2500 of vision and BC
+  # left the action independent of odor (#4). Recurrent weights are unchanged.
+  odor_input_gain: 100.0
   # Offset for the DN left/right structural asymmetry (not a behavioural turn bias).
   readout_turn_bias: true
   dense_threshold: 5000

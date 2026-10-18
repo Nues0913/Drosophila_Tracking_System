@@ -1,0 +1,146 @@
+{
+ "steps": 200,
+ "seed": 1610000000,
+ "policies": {
+  "runs/smoke_chain/VO/seed_0/pretrain/odor/actor": {
+   "intact_omega_std": 1.6648140836732782e-06,
+   "no_odor": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 2.3603108274983242e-05,
+    "mean": 1.1801554137491622e-07
+   },
+   "odor_to_vision_ratio": 0.0
+  },
+  "runs/smoke_chain/VO/seed_0/bc/actor": {
+   "intact_omega_std": 0.0,
+   "no_odor": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0,
+    "mean": 0.0
+   },
+   "odor_to_vision_ratio": NaN
+  },
+  "init:{}": {
+   "intact_omega_std": 2.3080470808593083e-05,
+   "no_odor": {
+    "max_abs_delta_omega": 6.712798494845629e-06,
+    "mean": 4.081566148670391e-06
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 7.2142574936151505e-06,
+    "mean": 1.4617366832681e-06
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 2.2316817194223404e-07,
+    "mean": 6.669783033430576e-08
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0005565391620621085,
+    "mean": 2.2481222404167057e-05
+   },
+   "odor_to_vision_ratio": 0.012061682182387904
+  },
+  "init:{\"olfactory_rate_beta\": 10}": {
+   "intact_omega_std": 8.10842112682284e-05,
+   "no_odor": {
+    "max_abs_delta_omega": 6.290036253631115e-06,
+    "mean": 3.937218280043453e-06
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 6.2622129917144775e-06,
+    "mean": 1.1055206414312125e-06
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 1.0058283805847168e-07,
+    "mean": 2.6917841751128435e-08
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0005564246966969222,
+    "mean": 7.969692524056881e-06
+   },
+   "odor_to_vision_ratio": 0.011304380073297182
+  },
+  "init:{\"odor_input_gain\": 10}": {
+   "intact_omega_std": 3.737097408110115e-05,
+   "no_odor": {
+    "max_abs_delta_omega": 7.016601739451289e-05,
+    "mean": 4.295126185752452e-05
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 7.35528883524239e-05,
+    "mean": 1.4921397960279137e-05
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 2.2888416424393654e-06,
+    "mean": 6.787986785639078e-07
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0005565391620621085,
+    "mean": 2.2400902234949172e-05
+   },
+   "odor_to_vision_ratio": 0.12607561547786017
+  },
+  "init:{\"odor_input_gain\": 100}": {
+   "intact_omega_std": 0.0002744646663356007,
+   "no_odor": {
+    "max_abs_delta_omega": 0.0006879782304167747,
+    "mean": 0.0004227955282385665
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.0007123332470655441,
+    "mean": 0.0001441119220453402
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 2.2043292119633406e-05,
+    "mean": 6.572585371031892e-06
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0005565391620621085,
+    "mean": 2.1738671866842195e-05
+   },
+   "odor_to_vision_ratio": 1.2361721821473508
+  },
+  "init:{\"odor_input_gain\": 100, \"olfactory_rate_beta\": 10}": {
+   "intact_omega_std": 0.00010854827315774473,
+   "no_odor": {
+    "max_abs_delta_omega": 0.00032030907459557056,
+    "mean": 7.26383454457391e-05
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.000396068615373224,
+    "mean": 8.145740823238156e-05
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 1.3036653399467468e-05,
+    "mean": 3.90596964280121e-06
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.0005564246966969222,
+    "mean": 1.8781594990286974e-05
+   },
+   "odor_to_vision_ratio": 0.5756557473041838
+  }
+ }
+}

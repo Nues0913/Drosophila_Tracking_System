@@ -100,6 +100,22 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 
 舊 model card 沒有這兩個鍵時，載入補 `motor_input_gain=1`、`readout_turn_bias=False`，保留原本推論語意。
 
+**嗅覺通路選項（#4）。** 已訓練的 VO 策略動作完全不受氣味影響：非運動神經元的 ReLU 把氣味訊號截斷，關掉後梯度也是 0，訓練救不回來；BC 之前氣味對 ω 的影響也只有視覺的約 1/2500。兩個可選設定：
+- `olfactory_rate_beta`（預設 `None` = ReLU）：嗅覺 population 中非運動 DN 的節點改用 `softplus(v, beta)`，讓負電位時仍有梯度。和運動 DN 的 softplus 一樣是工程假設，不是生物測量；分支遮罩照常把關閉分支的 rate 設為 0。
+- `odor_input_gain`（預設 100）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以也會受影響。
+
+小預算對照（從初始化開始的短版 BC：teacher 12k 加 DAgger 6k，VO seed 0，GTX 1050）。數值是 BC 後 teacher 駕駛 200 步的最大 |Δω|，單位 rad/s：
+
+| 設定 | 去掉氣味 | 氣味左右交換 | 去掉視覺 | 氣味／視覺 | ω 與 teacher 相關 |
+|---|---|---|---|---|---|
+| 增益 1（舊） | 4.5e-5 | 1.8e-6 | 0.027 | 0.0017 | 0.641 |
+| 增益 100 | 3.6e-3 | 1.1e-4 | 0.027 | 0.134 | 0.638 |
+| 增益 100 加 softplus（β=10） | 9.9e-4 | 2.9e-5 | 0.026 | 0.038 | 0.640 |
+
+三組都通過 DN 健康檢查，視覺行為幾乎相同。初始化時，增益 100 的氣味／視覺比例是 1.24（增益 1 是 0.012）。softplus 在這個預算下反而降低氣味的影響，所以維持可選。注意：氣味左右交換的影響只有去掉氣味的約 1/30，代表氣味主要改變左右共同的部分，還不是轉向線索；normal 情境的任務本身不需要氣味（#4 修正方向 3）。
+
+新 model card 會記錄這兩個值；舊 card 沒有 `odor_input_gain` 時補 1.0，沒有 `olfactory_rate_beta` 時是 `None`，語意不變。`scripts/diagnostics/modality_sensitivity.py` 量測 teacher 駕駛下去掉氣味、氣味 ×10、左右交換、去掉視覺時的最大 |Δω|，以及氣味／視覺比例。
+
 ## 執行時 lesion 與匯流電流分析
 
 `policy.set_lesion("none" | "vision" | "odor")` 不增加、移除或重訓參數。VO/RS 等中央圖策略除了停止該模態的感測和缺失電流，也將該模態獨有中央群的電位與所有輸入／輸出邊靜默；兩路共享群、匯流群及 DN 保留。VO-late 則將對應的整個獨立支路靜默，另一支路照常。GRU 只停止相應輸入，沒有生物神經細胞 lesion。移除 lesion 後使用現有持續狀態，恢復過程本身會有暫態；獨立比較回合應重建 initial_state，不能混用兩種評估口徑。

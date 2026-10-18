@@ -19,6 +19,7 @@ from .config import (
     seed_all,
     write_json,
 )
+from .imitation import parameter_groups
 from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .recovery import Recovery, atomic_torch_save, fit_sequence_epochs, restore_rng
@@ -120,7 +121,16 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
     output_count = 4 if modality == "vision" else 3
     decoder = nn.Linear(int(mask.sum()), output_count).to(device)
     parameters = list(policy.parameters()) + list(decoder.parameters())
-    optimizer = torch.optim.Adam(parameters, lr=float(train.get("learning_rate", 1e-3)))
+    # Same groups as BC (one rate unless overridden). 38 vision updates moved the
+    # neuron-type biases by up to 0.04 and odor's effect on omega fell ~2000x (#4);
+    # restoring the biases brought it back, but freezing them also slowed vision
+    # learning. core_bias_learning_rate: 0 freezes them for such comparisons.
+    optimizer = torch.optim.Adam(
+        [
+            *parameter_groups(policy, train),
+            {"params": list(decoder.parameters()), "lr": float(train.get("learning_rate", 1e-3))},
+        ]
+    )
     recovery = Recovery(output, config, "pretrain", seed, device=device)
     # Pretraining episodes do not depend on the actor: one stream per seed,
     # modality and world is shared by all variants when dataset_cache is set.

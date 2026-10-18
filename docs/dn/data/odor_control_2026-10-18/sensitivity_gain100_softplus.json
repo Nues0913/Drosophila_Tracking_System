@@ -1,0 +1,26 @@
+{
+ "steps": 200,
+ "seed": 1610000000,
+ "policies": {
+  "runs/odor_control_2026-10-18/gain100_softplus/actor": {
+   "intact_omega_std": 0.010653161370462244,
+   "no_odor": {
+    "max_abs_delta_omega": 0.0009896475821733475,
+    "mean": 0.0005549649894237518
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.0007952861487865448,
+    "mean": 0.00011741442140191793
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 2.9394403100013733e-05,
+    "mean": 6.0041062533855435e-06
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.026108901016414165,
+    "mean": 0.015453954766271635
+   },
+   "odor_to_vision_ratio": 0.03790460508280969
+  }
+ }
+}

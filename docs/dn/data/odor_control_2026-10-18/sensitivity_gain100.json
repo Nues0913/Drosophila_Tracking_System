@@ -1,0 +1,26 @@
+{
+ "steps": 200,
+ "seed": 1610000000,
+ "policies": {
+  "runs/odor_control_2026-10-18/gain100/actor": {
+   "intact_omega_std": 0.010939526288412549,
+   "no_odor": {
+    "max_abs_delta_omega": 0.003565879538655281,
+    "mean": 0.002190995318815112
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 0.0036849714815616608,
+    "mean": 0.0007477670721709729
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 0.00011348538100719452,
+    "mean": 3.3841896802186965e-05
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.026634844485670328,
+    "mean": 0.015621206579962745
+   },
+   "odor_to_vision_ratio": 0.13388024625312683
+  }
+ }
+}

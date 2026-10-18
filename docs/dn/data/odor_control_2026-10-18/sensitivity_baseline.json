@@ -1,0 +1,26 @@
+{
+ "steps": 200,
+ "seed": 1610000000,
+ "policies": {
+  "runs/odor_control_2026-10-18/baseline/actor": {
+   "intact_omega_std": 0.010482255466027383,
+   "no_odor": {
+    "max_abs_delta_omega": 4.500243812799454e-05,
+    "mean": 3.0237711034715175e-05
+   },
+   "odor_x10": {
+    "max_abs_delta_omega": 3.871321678161621e-05,
+    "mean": 4.602456465363503e-06
+   },
+   "odor_swap_lr": {
+    "max_abs_delta_omega": 1.7657876014709473e-06,
+    "mean": 1.460779458284378e-07
+   },
+   "no_vision": {
+    "max_abs_delta_omega": 0.026545335538685322,
+    "mean": 0.01595294387836475
+   },
+   "odor_to_vision_ratio": 0.001695304927014809
+  }
+ }
+}

@@ -136,6 +136,15 @@ class MaskedRateCore(nn.Module):
         motor = graph.population("turn") | graph.population("forward")
         self.register_buffer("motor_mask", torch.as_tensor(motor), persistent=False)
         self.motor_rate_beta = config["motor_rate_beta"]
+        # Opt-in softplus on the non-motor olfactory pathway (#4): with ReLU, BC
+        # pushed ORN/PN voltages below zero, which cut the odor signal and its
+        # gradient for good. None keeps ReLU (the default and legacy behaviour).
+        olfactory = graph.population("olfactory") & ~motor
+        self.register_buffer("olfactory_mask", torch.as_tensor(olfactory), persistent=False)
+        beta = config["olfactory_rate_beta"]
+        if beta is not None and (not math.isfinite(beta) or beta <= 0):
+            raise ValueError("olfactory_rate_beta must be positive and finite, or None for ReLU")
+        self.olfactory_rate_beta = beta
         gain = float(config["motor_input_gain"])
         if not math.isfinite(gain) or gain <= 0:
             raise ValueError("motor_input_gain must be positive and finite")
@@ -254,8 +263,13 @@ class MaskedRateCore(nn.Module):
 
         None preserves the ReLU semantics of pre-fix artifacts. Explicit masking
         is necessary because softplus(0) is positive even in a silenced branch.
+        The non-motor olfactory pathway is softplus only with olfactory_rate_beta.
         """
         rates = torch.relu(voltage)
+        if self.olfactory_rate_beta is not None:
+            rates = torch.where(
+                self.olfactory_mask, F.softplus(voltage, beta=self.olfactory_rate_beta), rates
+            )
         if self.motor_rate_beta is not None:
             rates = torch.where(
                 self.motor_mask, F.softplus(voltage, beta=self.motor_rate_beta), rates
@@ -455,7 +469,14 @@ class SensoryEncoder(nn.Module):
                     o_projection[node, eye * len(config["odor_K"]) + odor_channel] = 1 / len(eyes)
                 availability[node, 2] = 1
         self.register_buffer("visual_projection", torch.as_tensor(v_projection), persistent=False)
-        self.register_buffer("odor_projection", torch.as_tensor(o_projection), persistent=False)
+        # odor_input_gain scales the ORN drive only (#4: odor reached the turn DNs at
+        # ~1/2500 of vision before any training); 1.0 is the legacy projection.
+        gain = float(config["odor_input_gain"])
+        if not math.isfinite(gain) or gain <= 0:
+            raise ValueError("odor_input_gain must be positive and finite")
+        self.register_buffer(
+            "odor_projection", torch.as_tensor(o_projection * gain), persistent=False
+        )
         self.register_buffer(
             "availability_projection", torch.as_tensor(availability), persistent=False
         )
@@ -647,6 +668,7 @@ class ConnectomePolicy(nn.Module):
                 "late-fusion output averages active branch rates"
             ),
             "motor_rate_beta": self.core.motor_rate_beta,
+            "olfactory_rate_beta": self.core.olfactory_rate_beta,
             "current_contributions": (
                 "sum of absolute incoming edge currents, grouped by presynaptic path membership; "
                 "observational, not causal"
@@ -936,6 +958,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "motor_rate_beta": 10.0,
     # Fixed gain on edges into motor DNs; legacy cards load with 1.0 (no gain).
     "motor_input_gain": 100.0,
+    # Odor pathway options (#4), opt-in: x100 ORN drive diverged the odor-pretrain
+    # decoder, and vision pretraining alone cut odor's effect ~150x.
+    "olfactory_rate_beta": None,
+    "odor_input_gain": 1.0,
     "dense_threshold": 5000,
     "readout": "auto",
     # Offsets the DN left/right structural asymmetry; legacy cards load without it.

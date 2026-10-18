@@ -28,9 +28,19 @@
 
 `configs/train/smoke.yaml` 的 PPO 在第一個 rollout 即因策略輸出 NaN 失敗。根因：邊權重 = 號誌 × 突觸數（萃取門檻 60，中位數 92）× α，固定 `alpha_init=0.01` 使真實圖的遞迴矩陣譜半徑約 32，ReLU 動態每控制步放大約 2×10⁴ 倍，第 9 步溢位。修正：新增 `init_spectral_radius`（預設 0.9），初始化時以冪迭代求 |W| 的 Perron 根，α 取 `min(alpha_init, 0.9/ρ)`；真實圖得 α≈2.56×10⁻⁴。參數數不變；六個變體同規則各自計算（RS 依其重連後的圖）。回歸測試 `test_initial_recurrence_is_contractive_for_large_synapse_counts`。
 
+### 2026-10-17 整合修正：環境退化、成功判定、DN 尺度與 BC 驗收
+
+分支 `integrate/tracking-fixes`（基於 `fix/motor-dn-diagnosis`）。完整問題對照、數據與待決事項見 [fixes_2026-10-17.md](fixes_2026-10-17.md)。執行環境同上（GTX 1050 3 GB、i7-9700）。
+
+- 環境審計（`python -m flytrack_train audit-env`，60 秒回合）：舊世界＋舊判定中固定左轉 100% 成功（與教師相同）；新世界 curved 教師 100%、所有盲目策略 0%；BC 世界 `[curved, wander]` 教師 95%、盲目策略 0%，教師平均 ω 由 0.081 變為 −0.001。
+- 教師校準重做（`runs/calibration/teacher_20261017.json`，種子 1.65e9 起）：20/20 成功，平均方位誤差 2.22°（1.48°～3.21°），20 個回合佈局不同。
+- 譜半徑估計改為逐輪重新縮放的位移冪迭代，與稠密特徵值解差異約 1e-15；DN 輸入增益 100 下真實圖 ρ 不變（3517.85）。
+- ROS：在 `flytrack-ros:0.1` 映像（Python 3.14、rclpy）掛載新程式做節點層級煙霧測試，佈局、事件、`target_mover` 軌跡重建與 legacy 參數均通過；Gazebo 閉環未執行。
+- 小規模端到端驗證（VO seed 0，`runs/validation_20261017/`）：結果見 fixes 文件。
+
 ### 已知限制
 
-- 教師校準（`runs/calibration/teacher.json`）20 回合結果逐位相同：`evaluate.yaml` 關閉 domain randomization，圓形軌跡只有起始相位不同，幾何上等價。這份資料不能用來校準方位解碼門檻，需改用有變異的校準情境。
+- ~~教師校準 20 回合結果逐位相同~~：2026-10-17 已在隨機化世界重做（見上）。
 - 正式訓練預算：PPO 在本機 CPU 實測約 25 步／秒，2M 步約 22 小時；GTX 1050 3 GB 在 PPO 更新時 OOM，30 個訓練（6 變體 × 5 種子）不適合在本機單機完成；需使用者決定 GPU 主機或縮減預算。
 
 測試或長工作只能依實際輸出更新為通過；啟動命令與程序存在不等同驗收完成。每階段後續成果需補入本表及 `requirements_traceability.md`。

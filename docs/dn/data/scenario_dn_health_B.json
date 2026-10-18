@@ -1,0 +1,346 @@
+{
+  "variant": "VO",
+  "lesion": "none",
+  "motor_rate_beta": 10.0,
+  "stage": "bc",
+  "environment_seeds": [
+    1500000000,
+    1500000001,
+    1500000002,
+    1500000003,
+    1500000004,
+    1500000005,
+    1500000006,
+    1500000007,
+    1500000008,
+    1500000009,
+    1500000010,
+    1500000011,
+    1500000012,
+    1500000013,
+    1500000014,
+    1500000015,
+    1500000016,
+    1500000017,
+    1500000018,
+    1500000019,
+    1500000020,
+    1500000021,
+    1500000022,
+    1500000023
+  ],
+  "measured_steps_per_episode": [
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "burn_in": 16,
+  "gradient_steps_per_episode": 16,
+  "trajectory": "teacher-driven; same original observations with only eye images swapped",
+  "weights_updated": false,
+  "finite": true,
+  "effective_rate_threshold": 0.001,
+  "effective_active_motor_count": 6,
+  "all_motor_silent": false,
+  "visual_intervention_applicable": true,
+  "paired_sensory_code_max_delta": 0.15398763120174408,
+  "eye_swap_abs_omega_delta": {
+    "min": 0.0032292306423187256,
+    "p05": 0.09485205933451653,
+    "median": 0.2565494477748871,
+    "p95": 0.447238527238369,
+    "max": 0.539518415927887,
+    "mean": 0.2692807664142068
+  },
+  "action_min": [
+    0.16857962310314178,
+    -0.12494859099388123
+  ],
+  "action_max": [
+    0.16857962310314178,
+    0.20542597770690918
+  ],
+  "normalized_action_mse": 0.03439870515527824,
+  "gradient_norms": {
+    "core.raw_alpha": 0.050539642572402954,
+    "core.raw_tau": 1.52254960994469e-05,
+    "core.bias": 0.3772125840187073,
+    "readout.turn_weight": 0.0024107645731419325,
+    "readout.forward_weight": 0.00593664450570941,
+    "readout.forward_bias": 0.05673134699463844,
+    "readout.turn_bias": 0.019145013764500618,
+    "core": 0.3805832224957273,
+    "readout": 0.06021654936712396
+  },
+  "omega_mae": 0.04077378287911415,
+  "zero_omega_mae": 0.05359785258769989,
+  "omega_mae_improvement_over_zero": 0.23926461769344698,
+  "motor_neurons": [
+    {
+      "node_id": 10360,
+      "type": "DNa02",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.07987002283334732,
+        "p05": 0.10604129657149315,
+        "median": 0.13623663038015366,
+        "p95": 0.17116647586226463,
+        "max": 0.1872183233499527,
+        "mean": 0.13628050286788493
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.020102063193917274,
+          "p05": 0.06352865993976593,
+          "median": 0.10665792971849442,
+          "p95": 0.15125245824456215,
+          "max": 0.1705198436975479,
+          "mean": 0.10560853572135481
+        }
+      ]
+    },
+    {
+      "node_id": 10442,
+      "type": "DNa01",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.7421296834945679,
+        "p05": 0.7421296834945679,
+        "median": 0.7421296834945679,
+        "p95": 0.7421296834945679,
+        "max": 0.7421296834945679,
+        "mean": 0.7421296834945679
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.7420698404312134,
+          "p05": 0.7420698404312134,
+          "median": 0.7420698404312134,
+          "p95": 0.7420698404312134,
+          "max": 0.7420698404312134,
+          "mean": 0.7420698404312134
+        }
+      ]
+    },
+    {
+      "node_id": 10760,
+      "type": "DNa01",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.6770647168159485,
+        "p05": 0.6770662069320679,
+        "median": 0.6770676374435425,
+        "p95": 0.6770693063735962,
+        "max": 0.677073061466217,
+        "mean": 0.6770676909759641
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.6769499182701111,
+          "p05": 0.6769514679908752,
+          "median": 0.6769528985023499,
+          "p95": 0.6769545078277588,
+          "max": 0.6769582629203796,
+          "mean": 0.6769529163713256
+        }
+      ]
+    },
+    {
+      "node_id": 10783,
+      "type": "DNp09",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.10464326292276382,
+        "p05": 0.10464330017566681,
+        "median": 0.10464346408843994,
+        "p95": 0.10464350134134293,
+        "max": 0.10464359819889069,
+        "mean": 0.1046434356442963
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.0613819882273674,
+          "p05": 0.061382029205560684,
+          "median": 0.06138228625059128,
+          "p95": 0.06138234585523605,
+          "max": 0.061382491141557693,
+          "mean": 0.061382246379119654
+        }
+      ]
+    },
+    {
+      "node_id": 11177,
+      "type": "DNp09",
+      "side": 1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.10464630275964737,
+        "p05": 0.10464630275964737,
+        "median": 0.10464630275964737,
+        "p95": 0.10464630275964737,
+        "max": 0.10464630275964737,
+        "mean": 0.10464630275964737
+      },
+      "voltage_by_branch": [
+        {
+          "min": 0.061386674642562866,
+          "p05": 0.061386674642562866,
+          "median": 0.061386674642562866,
+          "p95": 0.061386674642562866,
+          "max": 0.061386674642562866,
+          "mean": 0.061386674642562866
+        }
+      ]
+    },
+    {
+      "node_id": 523769,
+      "type": "DNa02",
+      "side": -1,
+      "positive_rate_fraction": 1.0,
+      "effective_active_fraction": 1.0,
+      "rate": {
+        "min": 0.005065028555691242,
+        "p05": 0.0057376422453671696,
+        "median": 0.011486202478408813,
+        "p95": 0.016338162124156952,
+        "max": 0.020184945315122604,
+        "mean": 0.011443886201401863
+      },
+      "voltage_by_branch": [
+        {
+          "min": -0.2957378327846527,
+          "p05": -0.28292964994907377,
+          "median": -0.21060430258512497,
+          "p95": -0.17288637831807135,
+          "max": -0.1497611254453659,
+          "mean": -0.21489842096033196
+        }
+      ]
+    }
+  ],
+  "thresholds": {
+    "minimum_effective_active_motor_count": 4,
+    "minimum_active_fraction": 0.1,
+    "minimum_median_eye_swap_omega_delta": 0.05,
+    "minimum_core_gradient_norm_exclusive": 1e-06,
+    "minimum_bc_omega_error_improvement": 0.2
+  },
+  "passed": true,
+  "checks": {
+    "finite": true,
+    "active_motor_count": true,
+    "central_gradient": true,
+    "not_all_silent": true,
+    "eye_swap_response": true,
+    "bc_omega_error": true
+  },
+  "source_actor": "<runs>/scenario_test/bc_B/actor",
+  "source_actor_files": {
+    "frontend.npz": "47cccf33ad8a5ba708d557e500cf48b7f3946be1b0f9f6eecffec6349955ec69",
+    "graph.npz": "a3c70c2759b0c9af179bb40ef0ff6e46ff469c96df0155c8fbe82bc4715f2e71",
+    "sensor_contract.json": "a78efde40508d298f2f1af444e163f0f9b7e46efb12158a642a159d8934dc5d5",
+    "weights.pt": "faa50026ec234da08d0b06ec5190a937d9c1c21d9982994d2814da5ac8fd6f5f"
+  },
+  "counterfactual_rate_override": false,
+  "central_operator": "artifact setting",
+  "diagnostic_config": {
+    "env": {
+      "episode_seconds": 60,
+      "plume_model": "puff",
+      "randomize_target_direction": true,
+      "scenario": "normal",
+      "start_heading_offset_deg": 30,
+      "start_lateral_offset_m": 0.5,
+      "target_motion": "curved"
+    },
+    "frontend_path": "artifacts/frontend/frontend.npz",
+    "graph_path": "data/subgraphs/main/graph.npz",
+    "init_artifact": "<runs>/scenario_test/start_B/actor",
+    "model": {
+      "allow_unknown_side_mean": false,
+      "alpha_init": 0.01,
+      "bias_init": 0.0,
+      "budget_target": 6794,
+      "dense_threshold": 5000,
+      "gru_input_size": null,
+      "hidden_size": 16,
+      "init_spectral_radius": 0.9,
+      "log_std_init": -0.5,
+      "motor_rate_beta": 10.0,
+      "odor_K": [
+        0.1,
+        0.3,
+        1.0
+      ],
+      "odor_adaptation_tau_s": 2.0,
+      "odor_hill_n": 2.0,
+      "odor_seed_types": null,
+      "random_seed": 0,
+      "random_swaps_per_edge": 10,
+      "readout": "structured",
+      "readout_turn_bias": true,
+      "tau_init": 0.05,
+      "visual_bins": 5,
+      "visual_input_mapping": {},
+      "visual_seed_types": null
+    },
+    "output": "<runs>/scenario_test/bc_B",
+    "scenario_configs": {
+      "conflict": "configs/scenarios/conflict.yaml",
+      "noise": "configs/scenarios/noise.yaml",
+      "normal": "configs/scenarios/normal.yaml",
+      "occlusion": "configs/scenarios/occlusion.yaml"
+    },
+    "seed": 0,
+    "sensor_contract_path": "configs/sensor_contract.json",
+    "train": {
+      "activity_coef": 0.0001,
+      "batch_episodes": 16,
+      "core_bias_learning_rate": 0.0,
+      "dagger_beta": 0.5,
+      "dagger_rounds": 2,
+      "dagger_steps_per_round": 15000,
+      "early_stopping_min_delta": 0.005,
+      "early_stopping_patience": 3,
+      "epochs": 30,
+      "learning_rate": 0.001,
+      "max_grad_norm": 0.5,
+      "readout_learning_rate": 0.01,
+      "sequence_length": 32,
+      "teacher_steps": 30000,
+      "validation_every": 10
+    },
+    "variant": "VO"
+  },
+  "diagnostic_seconds": 270.94798045399875
+}

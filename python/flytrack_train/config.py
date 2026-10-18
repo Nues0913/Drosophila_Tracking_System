@@ -20,7 +20,9 @@ from flytrack_core.model import (
     save_policy_artifact,
     transplant_pretrained_modalities,
 )
-from flytrack_sim.env import FlyTrackEnv
+from flytrack_core.model.policy import ConnectomePolicy
+
+from .worlds import make_env  # noqa: F401 - re-exported for trainers
 
 TRAIN_ENVIRONMENT_SEED_LIMIT = 1_000_000_000
 TRAIN_ENVIRONMENT_SEED_POLICY = {
@@ -70,26 +72,6 @@ def contract_from_config(config: dict[str, Any]) -> SensorContract:
     return SensorContract.from_dict(config.get("sensor_contract", {}))
 
 
-def make_env(config: dict[str, Any], contract: SensorContract, **overrides: Any) -> FlyTrackEnv:
-    options = dict(config.get("env", {}))
-    options.update(overrides)
-    scenario = options.get("scenario", "normal")
-    source = config.get("scenario_configs", {}).get(scenario)
-    if source is not None:
-        with Path(source).open(encoding="utf-8") as stream:
-            scenario_config = yaml.safe_load(stream)
-        if not isinstance(scenario_config, dict):
-            raise ValueError("Scenario configuration must be a YAML mapping")
-        scenario_config = dict(scenario_config)
-        declared_name = scenario_config.pop("name", scenario)
-        if declared_name != scenario:
-            raise ValueError(
-                f"Scenario file name {declared_name} does not match requested scenario {scenario}"
-            )
-        options["scenario_config"] = {**scenario_config, **options.get("scenario_config", {})}
-    return FlyTrackEnv(contract=contract, **options)
-
-
 def prepare_policy(config: dict[str, Any], device: torch.device):
     contract = contract_from_config(config)
     if config.get("init_artifact"):
@@ -110,6 +92,10 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             raise ValueError(
                 "Initial artifact graph/frontend differs from configured training sources"
             )
+        if isinstance(policy, ConnectomePolicy) and "motor_rate_beta" in config.get("model", {}):
+            # Explicit warm-start migration; ordinary loading preserves old card semantics.
+            policy.core.motor_rate_beta = config["model"]["motor_rate_beta"]
+            policy.model_config["motor_rate_beta"] = policy.core.motor_rate_beta
     else:
         policy = build_policy(
             config.get("variant", "VO"),

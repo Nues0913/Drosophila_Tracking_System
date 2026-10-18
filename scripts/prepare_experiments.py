@@ -29,6 +29,14 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=list(range(5)))
     parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--jobs", type=int, default=3, help="Concurrent (variant, seed) chains in run_all.sh"
+    )
+    parser.add_argument(
+        "--dataset-cache",
+        default="runs/datasets",
+        help="Pretraining episode streams shared by all variants of a seed",
+    )
     args = parser.parse_args()
     if not args.seeds or len(set(args.seeds)) != len(args.seeds) or min(args.seeds) < 0:
         parser.error("seeds must be distinct nonnegative integers")
@@ -67,11 +75,6 @@ def main():
         )
         + "\n"
     )
-    commands = [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        "# Run from the project root after reviewing budgets.",
-    ]
     for variant, model_config in configs.items():
         for seed in args.seeds:
             chain = (
@@ -94,6 +97,8 @@ def main():
                     frontend_path=str(args.frontend),
                     sensor_contract_path=str(args.sensor_contract),
                 )
+                if modality:
+                    config["dataset_cache"] = args.dataset_cache
                 config["scenario_configs"] = {
                     name: f"configs/scenarios/{name}.yaml"
                     for name in ("normal", "occlusion", "noise", "conflict")
@@ -115,13 +120,17 @@ def main():
                 config_file.write_text(
                     yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
                 )
-                command = "pretrain" if modality else template_name
-                commands.append(
-                    f"python -m flytrack_train {command} "
-                    f"--config {shlex.quote(str(config_file))} "
-                    f"--device {shlex.quote(args.device)}"
-                )
                 previous = output / "actor"
+    # Stages of a chain stay ordered; independent chains share the GPU/CPUs.
+    # Extra arguments (e.g. --seeds 2, --variants VO) are passed through.
+    commands = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "# Run from the project root after reviewing budgets.",
+        f"python scripts/run_experiments.py --configs {shlex.quote(str(args.output))} "
+        f"--algorithm {args.algorithm} --device {shlex.quote(args.device)} "
+        f'--jobs {args.jobs} "$@"',
+    ]
     (args.output / "run_all.sh").write_text("\n".join(commands) + "\n", encoding="utf-8")
     print(f"Resolved actor counts: {counts}; review {args.output / 'run_all.sh'} before running")
 

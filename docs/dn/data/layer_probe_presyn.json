@@ -1,0 +1,434 @@
+[
+ {
+  "artifact": "<validation>/fixed/runs/pretrain/odor/actor",
+  "samples": 4800,
+  "visible_fraction": 1.0,
+  "probe_R2": {
+   "sensory_code": {
+    "dims_varying": 80,
+    "teacher_omega": 0.8679484629245503,
+    "teacher_omega_visible_only": 0.8679484629245503,
+    "sin_bearing": 0.86794378338267,
+    "sin_bearing_visible_only": 0.86794378338267
+   },
+   "seed_external": {
+    "dims_varying": 465,
+    "teacher_omega": 0.4830647178114019,
+    "teacher_omega_visible_only": 0.4830647178114019,
+    "sin_bearing": 0.4831086555738662,
+    "sin_bearing_visible_only": 0.4831086555738662
+   },
+   "visual_seed": {
+    "dims_varying": 465,
+    "teacher_omega": 0.510113467603262,
+    "teacher_omega_visible_only": 0.510113467603262,
+    "sin_bearing": 0.5101574860910989,
+    "sin_bearing_visible_only": 0.5101574860910989,
+    "nodes": 465
+   },
+   "visual_other": {
+    "dims_varying": 120,
+    "teacher_omega": 0.7323147163445213,
+    "teacher_omega_visible_only": 0.7323147163445213,
+    "sin_bearing": 0.7324009026685434,
+    "sin_bearing_visible_only": 0.7324009026685434,
+    "nodes": 1489
+   },
+   "convergence": {
+    "dims_varying": 2,
+    "teacher_omega": 0.6312512660223786,
+    "teacher_omega_visible_only": 0.6312512660223786,
+    "sin_bearing": 0.631320043780598,
+    "sin_bearing_visible_only": 0.631320043780598,
+    "nodes": 4
+   },
+   "other_central": {
+    "dims_varying": 0,
+    "teacher_omega": -0.0005730109695818442,
+    "teacher_omega_visible_only": -0.0005730109695818442,
+    "sin_bearing": -0.0005731709088163672,
+    "sin_bearing_visible_only": -0.0005731709088163672,
+    "nodes": 0
+   },
+   "DN_presyn": {
+    "dims_varying": 11,
+    "teacher_omega": 0.6762707791963456,
+    "teacher_omega_visible_only": 0.6762707791963456,
+    "sin_bearing": 0.6763423569909175,
+    "sin_bearing_visible_only": 0.6763423569909175,
+    "nodes": 129
+   },
+   "motor_DN": {
+    "dims_varying": 3,
+    "teacher_omega": -0.005470898114863898,
+    "teacher_omega_visible_only": -0.005470898114863898,
+    "sin_bearing": -0.0054636927250399925,
+    "sin_bearing_visible_only": -0.0054636927250399925,
+    "nodes": 6
+   },
+   "all_central": {
+    "dims_varying": 999,
+    "teacher_omega": 0.932234044825061,
+    "teacher_omega_visible_only": 0.932234044825061,
+    "sin_bearing": 0.9322504170350128,
+    "sin_bearing_visible_only": 0.9322504170350128,
+    "nodes": 2569
+   },
+   "DN_LR_difference": {
+    "dims_varying": 2,
+    "teacher_omega": 0.6557944298560374,
+    "teacher_omega_visible_only": 0.6557944298560374,
+    "sin_bearing": 0.6558576565937491,
+    "sin_bearing_visible_only": 0.6558576565937491
+   },
+   "policy_omega": {
+    "dims_varying": 1,
+    "teacher_omega": 0.00994170763255664,
+    "teacher_omega_visible_only": 0.00994170763255664,
+    "sin_bearing": 0.009940994622379962,
+    "sin_bearing_visible_only": 0.009940994622379962
+   }
+  },
+  "layer_rate": {
+   "visual_seed": {
+    "mean": 0.11879834532737732,
+    "temporal_std": 0.002119251061230898,
+    "silent_fraction": 0.0
+   },
+   "visual_other": {
+    "mean": 0.002828367752954364,
+    "temporal_std": 2.5966864996007644e-05,
+    "silent_fraction": 0.8703828072531901
+   },
+   "convergence": {
+    "mean": 0.08182331174612045,
+    "temporal_std": 0.00011206441558897495,
+    "silent_fraction": 0.5
+   },
+   "other_central": {
+    "mean": NaN,
+    "temporal_std": NaN,
+    "silent_fraction": NaN
+   },
+   "DN_presyn": {
+    "mean": 0.008816980756819248,
+    "temporal_std": 8.520492701791227e-05,
+    "silent_fraction": 0.8294573643410853
+   },
+   "motor_DN": {
+    "mean": 0.10487810522317886,
+    "temporal_std": 5.81518943363335e-05,
+    "silent_fraction": 0.0
+   },
+   "all_central": {
+    "mean": 0.06665095686912537,
+    "temporal_std": 0.017139673233032227,
+    "silent_fraction": 0.5815492409497859
+   }
+  },
+  "eye_swap_relative": {
+   "sensory_code": 3.1474249362945557,
+   "visual_seed": 4.499746799468994,
+   "visual_other": 3.0826430320739746,
+   "convergence": 0.0,
+   "other_central": NaN,
+   "DN_presyn": 3.9958791732788086,
+   "motor_DN": 5.6288275718688965,
+   "all_central": 0.10327526181936264,
+   "policy_omega": 6.156755713538797
+  },
+  "policy_omega": {
+   "mean": -0.00020063643828204173,
+   "std": 4.784885944178063e-05,
+   "corr_with_teacher": 0.1156929404564822
+  },
+  "teacher_omega": {
+   "mean": 0.05319992018863559,
+   "std": 0.022004329466901937
+  },
+  "DN_LR_difference": {
+   "mean": [
+    0.0004006474919151515,
+    -0.0017382241785526276
+   ],
+   "std": [
+    2.424736749162548e-07,
+    0.00031898770248517394
+   ],
+   "corr_with_teacher": [
+    0.8209895855550373,
+    0.11507057318783798
+   ]
+  },
+  "readout": {
+   "turn_weight": [
+    0.10000000149011612,
+    0.10000000149011612
+   ],
+   "forward_weight": [
+    0.10000000149011612
+   ],
+   "forward_bias": 0.0
+  },
+  "DN_rates": [
+   {
+    "type": "DNa02",
+    "side": 1,
+    "mean": 0.11291606724262238,
+    "std": 0.0001108123833546415,
+    "corr_teacher": -0.32988819887204285
+   },
+   {
+    "type": "DNa01",
+    "side": -1,
+    "mean": 0.09778904169797897,
+    "std": 7.450580596923828e-09,
+    "corr_teacher": NaN
+   },
+   {
+    "type": "DNa01",
+    "side": 1,
+    "mean": 0.0973883867263794,
+    "std": 2.4247623287010356e-07,
+    "corr_teacher": -0.820989585555036
+   },
+   {
+    "type": "DNp09",
+    "side": -1,
+    "mean": 0.1049986407160759,
+    "std": 9.497663988611293e-09,
+    "corr_teacher": 1.1323699866594368e-16
+   },
+   {
+    "type": "DNp09",
+    "side": 1,
+    "mean": 0.10499865561723709,
+    "std": 7.450580596923828e-09,
+    "corr_teacher": NaN
+   },
+   {
+    "type": "DNa02",
+    "side": -1,
+    "mean": 0.11117785423994064,
+    "std": 0.00023783210781402886,
+    "corr_teacher": 0.0006323925104925373
+   }
+  ]
+ },
+ {
+  "artifact": "<validation>/fixed/runs/bc/actor",
+  "samples": 4800,
+  "visible_fraction": 1.0,
+  "probe_R2": {
+   "sensory_code": {
+    "dims_varying": 80,
+    "teacher_omega": 0.8679490787891081,
+    "teacher_omega_visible_only": 0.8679490787891081,
+    "sin_bearing": 0.8679443993674223,
+    "sin_bearing_visible_only": 0.8679443993674223
+   },
+   "seed_external": {
+    "dims_varying": 465,
+    "teacher_omega": 0.4830637191465328,
+    "teacher_omega_visible_only": 0.4830637191465328,
+    "sin_bearing": 0.4831076569747398,
+    "sin_bearing_visible_only": 0.4831076569747398
+   },
+   "visual_seed": {
+    "dims_varying": 261,
+    "teacher_omega": 0.41886918942381224,
+    "teacher_omega_visible_only": 0.41886918942381224,
+    "sin_bearing": 0.41893316882239984,
+    "sin_bearing_visible_only": 0.41893316882239984,
+    "nodes": 465
+   },
+   "visual_other": {
+    "dims_varying": 53,
+    "teacher_omega": 0.5502731765362974,
+    "teacher_omega_visible_only": 0.5502731765362974,
+    "sin_bearing": 0.5503076770318356,
+    "sin_bearing_visible_only": 0.5503076770318356,
+    "nodes": 1489
+   },
+   "convergence": {
+    "dims_varying": 0,
+    "teacher_omega": -0.0005730109695818442,
+    "teacher_omega_visible_only": -0.0005730109695818442,
+    "sin_bearing": -0.0005731709088163672,
+    "sin_bearing_visible_only": -0.0005731709088163672,
+    "nodes": 4
+   },
+   "other_central": {
+    "dims_varying": 0,
+    "teacher_omega": -0.0005730109695818442,
+    "teacher_omega_visible_only": -0.0005730109695818442,
+    "sin_bearing": -0.0005731709088163672,
+    "sin_bearing_visible_only": -0.0005731709088163672,
+    "nodes": 0
+   },
+   "DN_presyn": {
+    "dims_varying": 16,
+    "teacher_omega": 0.45897207860201217,
+    "teacher_omega_visible_only": 0.45897207860201217,
+    "sin_bearing": 0.45902401481487753,
+    "sin_bearing_visible_only": 0.45902401481487753,
+    "nodes": 129
+   },
+   "motor_DN": {
+    "dims_varying": 4,
+    "teacher_omega": 0.2954329727980577,
+    "teacher_omega_visible_only": 0.2954329727980577,
+    "sin_bearing": 0.2954416109544048,
+    "sin_bearing_visible_only": 0.2954416109544048,
+    "nodes": 6
+   },
+   "all_central": {
+    "dims_varying": 460,
+    "teacher_omega": 0.4869462119290834,
+    "teacher_omega_visible_only": 0.4869462119290834,
+    "sin_bearing": 0.4870120712263303,
+    "sin_bearing_visible_only": 0.4870120712263303,
+    "nodes": 2569
+   },
+   "DN_LR_difference": {
+    "dims_varying": 2,
+    "teacher_omega": 0.037377414344552884,
+    "teacher_omega_visible_only": 0.037377414344552884,
+    "sin_bearing": 0.037379922939628885,
+    "sin_bearing_visible_only": 0.037379922939628885
+   },
+   "policy_omega": {
+    "dims_varying": 1,
+    "teacher_omega": 0.012605770599757982,
+    "teacher_omega_visible_only": 0.012605770599757982,
+    "sin_bearing": 0.012605006047728629,
+    "sin_bearing_visible_only": 0.012605006047728629
+   }
+  },
+  "layer_rate": {
+   "visual_seed": {
+    "mean": 0.021217092871665955,
+    "temporal_std": 0.001213592360727489,
+    "silent_fraction": 0.43870967741935485
+   },
+   "visual_other": {
+    "mean": 0.013659240677952766,
+    "temporal_std": 4.6587469114456326e-05,
+    "silent_fraction": 0.9187374076561451
+   },
+   "convergence": {
+    "mean": 0.0,
+    "temporal_std": 0.0,
+    "silent_fraction": 1.0
+   },
+   "other_central": {
+    "mean": NaN,
+    "temporal_std": NaN,
+    "silent_fraction": NaN
+   },
+   "DN_presyn": {
+    "mean": 0.060209568589925766,
+    "temporal_std": 0.0004201098927296698,
+    "silent_fraction": 0.7906976744186046
+   },
+   "motor_DN": {
+    "mean": 0.49781692028045654,
+    "temporal_std": 0.0007869717665016651,
+    "silent_fraction": 0.0
+   },
+   "all_central": {
+    "mean": 0.013048499822616577,
+    "temporal_std": 0.0007655814406462014,
+    "silent_fraction": 0.7866874270144025
+   }
+  },
+  "eye_swap_relative": {
+   "sensory_code": 3.1474251747131348,
+   "visual_seed": 4.7750163078308105,
+   "visual_other": 3.631554126739502,
+   "convergence": 0.0,
+   "other_central": NaN,
+   "DN_presyn": 3.8438198566436768,
+   "motor_DN": 5.8736348152160645,
+   "all_central": 1.5070769786834717,
+   "policy_omega": 5.888495952516143
+  },
+  "policy_omega": {
+   "mean": 0.09025328368103752,
+   "std": 0.0033396964202441716,
+   "corr_with_teacher": 0.12452899335077679
+  },
+  "teacher_omega": {
+   "mean": 0.05319992018863559,
+   "std": 0.022004329466901937
+  },
+  "DN_LR_difference": {
+   "mean": [
+    0.0787561759352684,
+    0.051971424371004105
+   ],
+   "std": [
+    2.2006345261615934e-06,
+    0.004712552763521671
+   ],
+   "corr_with_teacher": [
+    0.17161930061653677,
+    0.12454401479412906
+   ]
+  },
+  "readout": {
+   "turn_weight": [
+    0.45210000872612,
+    0.4740999937057495
+   ],
+   "forward_weight": [
+    -0.4871000051498413
+   ],
+   "forward_bias": -0.40529999136924744
+  },
+  "DN_rates": [
+   {
+    "type": "DNa02",
+    "side": 1,
+    "mean": 0.5179871916770935,
+    "std": 0.0020996842067688704,
+    "corr_teacher": -0.16964999228390867
+   },
+   {
+    "type": "DNa01",
+    "side": -1,
+    "mean": 0.449916273355484,
+    "std": 1.2245500613516924e-07,
+    "corr_teacher": 0.38373454995188944
+   },
+   {
+    "type": "DNa01",
+    "side": 1,
+    "mean": 0.3711622357368469,
+    "std": 2.0375986764520349e-07,
+    "corr_teacher": 0.09214421070838943
+   },
+   {
+    "type": "DNp09",
+    "side": -1,
+    "mean": 0.5389387011528015,
+    "std": 0.0,
+    "corr_teacher": NaN
+   },
+   {
+    "type": "DNp09",
+    "side": 1,
+    "mean": 0.5389387011528015,
+    "std": 0.0,
+    "corr_teacher": NaN
+   },
+   {
+    "type": "DNa02",
+    "side": -1,
+    "mean": 0.5699586272239685,
+    "std": 0.0026218199636787176,
+    "corr_teacher": 0.08799553326776835
+   }
+  ]
+ }
+]

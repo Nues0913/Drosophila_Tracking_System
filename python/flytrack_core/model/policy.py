@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import math
 from pathlib import Path
@@ -52,20 +53,36 @@ def _inverse_softplus(value: float) -> float:
 
 
 def _abs_spectral_radius(
-    pre: np.ndarray, post: np.ndarray, weight: np.ndarray, n_nodes: int, iterations: int = 500
+    pre: np.ndarray,
+    post: np.ndarray,
+    weight: np.ndarray,
+    n_nodes: int,
+    rounds: int = 4,
+    iterations: int = 800,
 ) -> float:
-    """Perron root of the nonnegative matrix |W| by power iteration on |W| + I."""
+    """Perron root of the nonnegative matrix |W| by shifted power iteration.
+
+    Each round rescales |W| by the current root estimate so the +I shift that
+    removes periodic components stays comparable to the root; a fixed +I is
+    negligible for raw synapse counts and a row-sum scale is dominated by the
+    high-gain DN rows. Matches a dense eigensolve on the real graph to ~1e-15.
+    """
     if not len(pre):
         return 0.0
     weight = np.abs(np.asarray(weight, dtype=np.float64))
+    estimate = float(np.bincount(post, weights=weight, minlength=n_nodes).max())
     vector = np.full(n_nodes, 1 / math.sqrt(n_nodes))
-    growth = 0.0
-    for _ in range(iterations):
-        product = vector.copy()
-        np.add.at(product, post, weight * vector[pre])
-        growth = float(np.linalg.norm(product))
-        vector = product / growth
-    return max(growth - 1, 0.0)
+    for _ in range(rounds):
+        if estimate <= 0:
+            return 0.0
+        scaled = weight / estimate
+        growth = 1.0
+        for _ in range(iterations):
+            product = vector + np.bincount(post, weights=scaled * vector[pre], minlength=n_nodes)
+            growth = float(np.linalg.norm(product))
+            vector = product / growth
+        estimate = max(growth - 1, 0.0) * estimate
+    return estimate
 
 
 class MaskedRateCore(nn.Module):
@@ -115,15 +132,28 @@ class MaskedRateCore(nn.Module):
             )
             self.register_buffer(name, torch.as_tensor(array, dtype=dtype), persistent=False)
         self.n_nodes = graph.n_nodes
+        motor = graph.population("turn") | graph.population("forward")
+        self.register_buffer("motor_mask", torch.as_tensor(motor), persistent=False)
+        self.motor_rate_beta = config["motor_rate_beta"]
+        gain = float(config["motor_input_gain"])
+        if not math.isfinite(gain) or gain <= 0:
+            raise ValueError("motor_input_gain must be positive and finite")
+        # Fixed conductance gain on every edge that ends at a motor DN (the actual
+        # post of RS edges). The global spectral cap below shrinks every synapse to
+        # ~2.6e-4 on the real graph, which left the bearing signal reaching the DN
+        # left/right difference at ~3e-4 and starved BC of a steering gradient.
+        input_gain = np.where(motor[post], gain, 1.0).astype(np.float32)
+        self.register_buffer("input_gain", torch.as_tensor(input_gain), persistent=False)
         alpha_init = float(config["alpha_init"])
         target_radius = config.get("init_spectral_radius")
         if target_radius is not None:
             # Raw synapse counts (>=60 per edge) make a fixed alpha explode the
-            # ReLU recurrence; cap alpha so |W| starts with the given spectral radius.
+            # 1-Lipschitz rate recurrence; cap alpha so |W| (including the DN input
+            # gain) starts at this radius.
             radius = _abs_spectral_radius(
                 pre[enabled_edges],
                 post[enabled_edges],
-                graph.synapse_count[enabled_edges],
+                graph.synapse_count[enabled_edges] * input_gain[enabled_edges],
                 graph.n_nodes,
             )
             if radius > 0:
@@ -136,15 +166,66 @@ class MaskedRateCore(nn.Module):
         self.dt = contract.neural_dt
         self.substeps = round(contract.control_dt / self.dt)
         self.dense = graph.n_nodes < config["dense_threshold"]
+        self._adjacency_cache: list[tuple[Tensor | None, bool, Tensor]] | None = None
+
+    @contextlib.contextmanager
+    def adjacency_cache(self):
+        """Reuse the assembled adjacency while parameters are known not to change.
+
+        Only valid inside one forward graph (a TBPTT window, a no-grad rollout);
+        callers must exit before any optimizer step.
+        """
+        previous = self._adjacency_cache
+        self._adjacency_cache = []
+        try:
+            yield
+        finally:
+            self._adjacency_cache = previous
+
+    def _dynamics(self, active: Tensor | None) -> tuple[Tensor, Tensor, Tensor]:
+        """Recurrent operator, per-node ratio dt/tau and resting bias.
+
+        Inside adjacency_cache() these are assembled once per forward graph
+        instead of once per control step.
+        """
+        if self._adjacency_cache is not None:
+            grad = torch.is_grad_enabled()
+            for key, key_grad, value in self._adjacency_cache:
+                if key_grad == grad and (
+                    (key is None and active is None)
+                    or (key is not None and active is not None and torch.equal(key, active))
+                ):
+                    return value
+        matrix = self.adjacency(active)
+        # Dense: keep W^T as one view so autograd sees a single transpose per graph.
+        value = (
+            matrix.T if self.dense else matrix,
+            self.dt / self.tau[self.type_index],
+            self.bias[self.type_index],
+        )
+        if self._adjacency_cache is not None:
+            self._adjacency_cache.append((active, torch.is_grad_enabled(), value))
+        return value
 
     @property
     def tau(self) -> Tensor:
         return 2 * self.dt + F.softplus(self.raw_tau)
 
+    @property
+    def motor_rate_beta(self) -> float | None:
+        return self._motor_rate_beta
+
+    @motor_rate_beta.setter
+    def motor_rate_beta(self, beta: float | None) -> None:
+        if beta is not None and (not math.isfinite(beta) or beta <= 0):
+            raise ValueError("motor_rate_beta must be positive and finite, or None for legacy ReLU")
+        self._motor_rate_beta = beta
+
     def edge_weights(self) -> Tensor:
         return (
             self.sign[self.pre]
             * self.synapse_count
+            * self.input_gain
             * F.softplus(self.raw_alpha[self.edge_label])
             * self.edge_enabled
         )
@@ -167,18 +248,35 @@ class MaskedRateCore(nn.Module):
     def initial_state(self, batch_size: int, device: str | torch.device) -> Tensor:
         return self.bias[self.type_index].to(device).expand(batch_size, -1).clone()
 
+    def rates(self, voltage: Tensor, active: Tensor | None = None) -> Tensor:
+        """DN softplus and non-DN ReLU, shared by recurrence, activity and readout.
+
+        None preserves the ReLU semantics of pre-fix artifacts. Explicit masking
+        is necessary because softplus(0) is positive even in a silenced branch.
+        """
+        rates = torch.relu(voltage)
+        if self.motor_rate_beta is not None:
+            rates = torch.where(
+                self.motor_mask, F.softplus(voltage, beta=self.motor_rate_beta), rates
+            )
+        return rates if active is None else rates * active
+
     def forward(self, external: Tensor, voltage: Tensor, active: Tensor | None = None) -> Tensor:
-        matrix = self.adjacency(active)
-        ratio = self.dt / self.tau[self.type_index]
-        bias = self.bias[self.type_index]
+        operator, ratio, bias = self._dynamics(active)
         if active is not None:
             voltage = voltage * active
             external = external * active
             bias = bias * active
+        drive = bias + external
         for _ in range(self.substeps):
-            rates = torch.relu(voltage)
-            recurrent = rates @ matrix.T if self.dense else torch.sparse.mm(matrix, rates.T).T
-            voltage = voltage + ratio * (-voltage + bias + recurrent + external)
+            rates = self.rates(voltage, active)
+            # Euler step v + r(-v + bias + W rates(v) + ext) == lerp(v, drive + W rates(v), r):
+            # Preserve fused dense current assembly and Euler interpolation.
+            if self.dense:
+                target = torch.addmm(drive, rates, operator)
+            else:
+                target = drive + torch.sparse.mm(operator, rates.T).T
+            voltage = torch.lerp(voltage, target, ratio)
             if active is not None:
                 voltage = voltage * active
         return voltage
@@ -187,7 +285,14 @@ class MaskedRateCore(nn.Module):
 class MotorReadout(nn.Module):
     """Structured DN left/right differences, with an explicit linear fallback."""
 
-    def __init__(self, graph: Graph, contract: SensorContract, mode: str, branches: int = 1):
+    def __init__(
+        self,
+        graph: Graph,
+        contract: SensorContract,
+        mode: str,
+        branches: int = 1,
+        turn_bias: bool = False,
+    ):
         super().__init__()
         turns, forward = graph.population("turn"), graph.population("forward")
         motor = turns | forward
@@ -228,6 +333,8 @@ class MotorReadout(nn.Module):
             self.turn_weight = nn.Parameter(torch.full((len(pairs) * branches,), 0.1))
             self.forward_weight = nn.Parameter(torch.full((len(forward_types) * branches,), 0.1))
             self.forward_bias = nn.Parameter(torch.zeros(()))
+            # Optional: lets the mean turn rate come from a bias instead of the DN difference.
+            self.turn_bias = nn.Parameter(torch.zeros(())) if turn_bias else None
 
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
@@ -248,7 +355,10 @@ class MotorReadout(nn.Module):
         return torch.stack(
             (
                 self.v_max * torch.sigmoid(forward @ self.forward_weight + self.forward_bias),
-                self.omega_max * torch.tanh(turns @ self.turn_weight),
+                self.omega_max
+                * torch.tanh(
+                    turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
+                ),
             ),
             dim=-1,
         )
@@ -364,15 +474,29 @@ class SensoryEncoder(nn.Module):
         self.odor_state_size = 2 * len(config["odor_K"])
         self.state_size = self.frontend_state_size + self.odor_state_size
         self.feature_size = len(self.seed_indices) + 3
+        # Compact frozen sensory code: pooled flyvis features, ORN responses, validity.
+        self.visual_code_size = 2 * n_features
+        self.code_size = self.visual_code_size + self.odor_state_size + 3
 
     def initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         k = self.odor_baseline.to(device).expand(batch_size, 2, -1).clone().flatten(1)
         return torch.cat((self.frontend.initial_state(batch_size, device), k), dim=1)
 
-    @torch.no_grad()
     def forward(
         self, obs: dict[str, Tensor], state: Tensor, variant: str, lesion: str = "none"
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        code, new_state = self.sense(obs, state, variant, lesion)
+        return (*self.project(code), new_state)
+
+    @torch.no_grad()
+    def sense(
+        self, obs: dict[str, Tensor], state: Tensor, variant: str, lesion: str = "none"
+    ) -> tuple[Tensor, Tensor]:
+        """Frozen sensory dynamics only; no trainable parameter is reachable from here.
+
+        The returned code depends only on the observation history, variant and
+        lesion, so it can be computed once per recorded sequence and reused.
+        """
         if set(obs) != {"vision", "odor", "valid"}:
             raise ValueError(
                 "Policy accepts only vision, odor and valid; privileged state is prohibited"
@@ -415,15 +539,25 @@ class SensoryEncoder(nn.Module):
             k + min(self.control_dt / self.adaptation_tau, 1) * (concentration - k)
         ).clamp_min(1e-4)
         new_k = torch.where(valid[:, 2, None, None], evolved_k, k)
-        v_flat, o_flat = visual.flatten(1), response.flatten(1)
+        code = torch.cat((visual.flatten(1), response.flatten(1), valid.to(vision.dtype)), dim=1)
+        new_state = torch.cat((visual_state, new_k.flatten(1)), dim=1)
+        return code, new_state
+
+    @torch.no_grad()
+    def project(self, code: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        if code.ndim != 2 or code.shape[1] != self.code_size:
+            raise ValueError("Incorrect sensory code shape")
+        split = self.visual_code_size + self.odor_state_size
+        v_flat = code[:, : self.visual_code_size]
+        o_flat = code[:, self.visual_code_size : split]
+        valid = code[:, split:]
         external = v_flat @ self.visual_projection.T + o_flat @ self.odor_projection.T
         # Explicit missingness is injected only at corresponding sensory seeds.
-        missing = (1 - valid.to(vision.dtype)) @ self.availability_projection.T
+        missing = (1 - valid) @ self.availability_projection.T
         # Every policy sees the same fixed LC/ORN seed projection. Giving GRU
         # all pre-projection channels would expose a richer observation stream.
-        features = torch.cat((external[:, self.seed_indices], valid.to(vision.dtype)), dim=1)
-        new_state = torch.cat((visual_state, new_k.flatten(1)), dim=1)
-        return external, features, missing, new_state
+        features = torch.cat((external[:, self.seed_indices], valid), dim=1)
+        return external, features, missing
 
 
 class ConnectomePolicy(nn.Module):
@@ -482,7 +616,9 @@ class ConnectomePolicy(nn.Module):
             odor = graph.population("olfactory") | motor
             self.register_buffer("visual_active", torch.as_tensor(visual), persistent=False)
             self.register_buffer("odor_active", torch.as_tensor(odor), persistent=False)
-        self.readout = MotorReadout(graph, contract, config["readout"], self.branches)
+        self.readout = MotorReadout(
+            graph, contract, config["readout"], self.branches, bool(config["readout_turn_bias"])
+        )
         self.model_config["readout"] = self.readout.mode
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
@@ -506,8 +642,10 @@ class ConnectomePolicy(nn.Module):
             "readout": self.readout.mode,
             "frontend": self.frontend.metadata,
             "activity_semantics": (
-                "central rectified rates; late-fusion output averages active branch rates"
+                "motor DN softplus (legacy: ReLU), other central ReLU rates; "
+                "late-fusion output averages active branch rates"
             ),
+            "motor_rate_beta": self.core.motor_rate_beta,
             "current_contributions": (
                 "sum of absolute incoming edge currents, grouped by presynaptic path membership; "
                 "observational, not causal"
@@ -579,23 +717,38 @@ class ConnectomePolicy(nn.Module):
             central[1] = central[1] * self.odor_active.to(device)
         return torch.cat((sensory, *central), dim=1)
 
+    def central_initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
+        return self.initial_state(batch_size, device)[:, self.encoder.state_size :]
+
+    def adjacency_cache(self):
+        return self.core.adjacency_cache()
+
+    def sense(self, obs: dict[str, Tensor], sensory_state: Tensor) -> tuple[Tensor, Tensor]:
+        return self.encoder.sense(obs, sensory_state, self.variant, self.lesion)
+
     def forward(self, obs: dict[str, Tensor], state: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if state.shape != (len(obs["vision"]), self.state_size):
             raise ValueError("Incorrect policy recurrent state size")
-        external, _, missing, sensory = self.encoder(
-            obs, state[:, : self.encoder.state_size], self.variant, self.lesion
-        )
+        code, sensory = self.sense(obs, state[:, : self.encoder.state_size])
+        action, central, activity = self.forward_code(code, state[:, self.encoder.state_size :])
+        return action, torch.cat((sensory, central), dim=1), activity
+
+    def forward_code(self, code: Tensor, initial: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Trainable dynamics from a precomputed sensory code and central state."""
+        if initial.shape != (len(code), self.state_size - self.encoder.state_size):
+            raise ValueError("Incorrect central recurrent state size")
+        external, _, missing = self.encoder.project(code)
         external = external + missing * self.missing_bias[self.node_missing_index]
         if self.lesion == "vision":
             external = external * ~self.encoder.visual_inputs
         elif self.lesion == "odor":
             external = external * ~self.encoder.odor_inputs
-        initial = state[:, self.encoder.state_size :]
         if self.branches == 1:
-            central = self.core(external, initial, self._active_for_lesion())
-            activity = torch.relu(central)
+            active = self._active_for_lesion()
+            central = self.core(external, initial, active)
+            activity = self.core.rates(central, active)
             action = self.readout([activity])
-            return action, torch.cat((sensory, central), dim=1), activity
+            return action, central, activity
         # Only input seeds of the relevant modality can receive external currents.
         v_external = external * self.encoder.visual_inputs
         o_external = external * self.encoder.odor_inputs
@@ -607,7 +760,8 @@ class ConnectomePolicy(nn.Module):
         )
         visual = self.core(v_external, initial[:, : self.n_nodes], visual_active)
         odor = self.core(o_external, initial[:, self.n_nodes :], odor_active)
-        rates_v, rates_o = torch.relu(visual), torch.relu(odor)
+        rates_v = self.core.rates(visual, visual_active)
+        rates_o = self.core.rates(odor, odor_active)
         action = self.readout([rates_v, rates_o])
         denominator = (visual_active.to(external.dtype) + odor_active.to(external.dtype)).clamp_min(
             1
@@ -618,7 +772,7 @@ class ConnectomePolicy(nn.Module):
             (rates_o.detach(), odor_active),
         ]
         self._last_merged_activity = activity.detach()
-        return action, torch.cat((sensory, visual, odor), dim=1), activity
+        return action, torch.cat((visual, odor), dim=1), activity
 
 
 class GRUPolicy(nn.Module):
@@ -636,7 +790,9 @@ class GRUPolicy(nn.Module):
         hidden = config["hidden_size"]
         target = config["budget_target"]
         projected = config["gru_input_size"]
-        if target is not None:
+        # A resolved gru_input_size (as written by prepare_experiments) already fixes
+        # hidden_size; re-deriving hidden from the direct formula would break reloads.
+        if target is not None and projected is None:
             dim = self.encoder.feature_size
             continuous = (-(3 * dim + 8) + math.sqrt((3 * dim + 8) ** 2 + 12 * (target - 4))) / 6
             candidates = {max(1, int(math.floor(continuous))), max(1, int(math.ceil(continuous)))}
@@ -738,13 +894,28 @@ class GRUPolicy(nn.Module):
             dim=1,
         )
 
+    def central_initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
+        return torch.zeros(batch_size, self.gru.hidden_size, device=device)
+
+    def adjacency_cache(self):
+        return contextlib.nullcontext()
+
+    def sense(self, obs: dict[str, Tensor], sensory_state: Tensor) -> tuple[Tensor, Tensor]:
+        return self.encoder.sense(obs, sensory_state, "GRU", self.lesion)
+
     def forward(self, obs: dict[str, Tensor], state: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         if state.shape != (len(obs["vision"]), self.state_size):
             raise ValueError("Incorrect GRU state size")
-        _, features, _, sensory = self.encoder(
-            obs, state[:, : self.encoder.state_size], "GRU", self.lesion
-        )
-        hidden = self.gru(self.input_projection(features), state[:, self.encoder.state_size :])
+        code, sensory = self.sense(obs, state[:, : self.encoder.state_size])
+        action, hidden, activity = self.forward_code(code, state[:, self.encoder.state_size :])
+        return action, torch.cat((sensory, hidden), dim=1), activity
+
+    def forward_code(self, code: Tensor, initial: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Trainable dynamics from a precomputed sensory code and GRU state."""
+        if initial.shape != (len(code), self.gru.hidden_size):
+            raise ValueError("Incorrect GRU state size")
+        _, features, _ = self.encoder.project(code)
+        hidden = self.gru(self.input_projection(features), initial)
         latent = self.readout(hidden)
         action = torch.stack(
             (
@@ -753,7 +924,7 @@ class GRUPolicy(nn.Module):
             ),
             dim=-1,
         )
-        return action, torch.cat((sensory, hidden), dim=1), hidden[:, self.diagnostic_channels]
+        return action, hidden, hidden[:, self.diagnostic_channels]
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -761,8 +932,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "init_spectral_radius": 0.9,
     "tau_init": 0.05,
     "bias_init": 0.0,
+    "motor_rate_beta": 10.0,
+    # Fixed gain on edges into motor DNs; legacy cards load with 1.0 (no gain).
+    "motor_input_gain": 100.0,
     "dense_threshold": 5000,
     "readout": "auto",
+    # Offsets the DN left/right structural asymmetry; legacy cards load without it.
+    "readout_turn_bias": True,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

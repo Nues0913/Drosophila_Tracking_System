@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the complete generated six-variant, five-seed stage matrix sequentially."""
+"""Run the complete generated six-variant, five-seed stage matrix.
+
+Stages of one (variant, seed) chain always run in order; ``--jobs`` chains run
+concurrently (they share the GPU and split the CPU environment workers).
+"""
 
 from __future__ import annotations
 
@@ -8,12 +12,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
 from flytrack_core.contracts import file_sha256
-from flytrack_train.config import read_config, write_json
+from flytrack_train.audit import audit_environment
+from flytrack_train.config import contract_from_config, read_config, write_json
 from flytrack_train.recovery import Recovery
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
@@ -44,6 +51,55 @@ def completed(config, command, device):
     return True
 
 
+def check_dn_health(python, config_path, destination, stage, environment):
+    """Run a fresh read-only gate, including when a completed stage is resumed."""
+    command = [
+        python,
+        str(Path(__file__).with_name("dn_health.py")),
+        "--artifact",
+        str(destination / "actor"),
+        "--config",
+        str(config_path),
+        "--stage",
+        stage,
+        "--episodes",
+        "24",
+        "--steps",
+        "200",
+        "--output",
+        str(destination / "dn_health" / "metrics.json"),
+        "--require-healthy",
+    ]
+    with (destination / "dn_health.log").open("a", buffering=1) as log:
+        result = subprocess.run(
+            command, stdout=log, stderr=subprocess.STDOUT, env=environment, check=False
+        )
+    return result.returncode
+
+
+def audit_worlds(plan, destination):
+    """Refuse to train in a world where a blind constant action can "track".
+
+    Every chain shares the stage templates, so auditing the distinct BC and
+    final-algorithm worlds once covers the whole matrix.
+    """
+    reports, seen = [], set()
+    for row in plan:
+        if row["command"] not in ("bc", "ppo", "es"):
+            continue
+        config = read_config(row["path"])
+        key = json.dumps(config.get("env", {}), sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        report = audit_environment(config, contract_from_config(config))
+        reports.append({"stage": row["stage"], "config": row["path"], **report})
+    write_json(destination, reports)
+    failures = [f"{r['stage']}: {'; '.join(r['failures'])}" for r in reports if not r["passed"]]
+    if failures:
+        raise SystemExit(f"Degenerate training world (see {destination}): " + " | ".join(failures))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configs", type=Path, default=Path("runs/experiment_configs"))
@@ -52,7 +108,17 @@ def main():
     parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--jobs", type=int, default=1, help="Concurrent (variant, seed) chains")
+    parser.add_argument(
+        "--workers", default="auto", help="Environment worker processes per job (auto splits CPUs)"
+    )
+    parser.add_argument("--tf32", action="store_true", help="Pass --tf32 to every stage")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--skip-environment-audit",
+        action="store_true",
+        help="Do not refuse worlds in which a blind constant action succeeds (diagnostics only)",
+    )
     args = parser.parse_args()
     device = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -61,6 +127,13 @@ def main():
     )
     if len(set(args.seeds)) != len(args.seeds) or not args.seeds or min(args.seeds) < 0:
         parser.error("Seeds must be distinct nonnegative integers")
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
+    workers = (
+        max(1, min(8, ((os.cpu_count() or 2) - 1) // args.jobs))
+        if args.workers == "auto"
+        else int(args.workers)
+    )
     plan = []
     for variant in args.variants:
         stages = (
@@ -99,9 +172,20 @@ def main():
     if args.dry_run:
         print(json.dumps(manifest, indent=2))
         return
-    write_json(args.configs / "execution_plan.json", manifest)
+    if not args.skip_environment_audit:
+        audit_worlds(plan, args.configs / "environment_audit.json")
+    lock = threading.Lock()
+    failures: list[str] = []
+
+    def commit():
+        with lock:
+            write_json(args.configs / "execution_plan.json", manifest)
+
+    commit()
     environment = {**os.environ, "PYTHON_DOTENV_DISABLED": "1", "PYTHONUNBUFFERED": "1"}
-    for index, row in enumerate(plan):
+    extra = ["--workers", str(workers), *(["--tf32"] if args.tf32 else [])]
+
+    def run_stage(index, row):
         config = read_config(row["path"])
         destination = Path(row["output"])
         if completed(config, row["command"], device):
@@ -117,11 +201,12 @@ def main():
                 row["path"],
                 "--device",
                 str(device),
+                *extra,
             ]
             if (destination / "training_checkpoint.pt").is_file():
                 command.append("--resume")
             row["status"] = "running"
-            write_json(args.configs / "execution_plan.json", manifest)
+            commit()
             with (destination / "execution.log").open("a", buffering=1) as log:
                 print(
                     f"[{index + 1}/{len(plan)}] {row['variant']} seed={row['seed']} "
@@ -133,11 +218,21 @@ def main():
                 )
             if result.returncode:
                 row.update(status="failed", exit_code=result.returncode)
-                write_json(args.configs / "execution_plan.json", manifest)
-                raise SystemExit(f"Stage failed; inspect {destination / 'execution.log'}")
+                commit()
+                raise RuntimeError(f"Stage failed; inspect {destination / 'execution.log'}")
             if not completed(config, row["command"], device):
                 raise RuntimeError(f"Stage exited without a verified actor artifact: {destination}")
             status = "complete"
+        if row["variant"] != "GRU":
+            exit_code = check_dn_health(
+                args.python, row["path"], destination, row["command"], environment
+            )
+            if exit_code:
+                row.update(status="dn_health_failed", exit_code=exit_code)
+                commit()
+                raise RuntimeError(
+                    f"DN health gate failed; inspect {destination / 'dn_health.log'}"
+                )
         if row["command"] == "pretrain":
             validation = destination / "validation"
             metrics = validation / "metrics.json"
@@ -157,6 +252,7 @@ def main():
                     str(validation),
                     "--device",
                     str(device),
+                    *extra,
                 ]
                 with (destination / "validation.log").open("a", buffering=1) as log:
                     result = subprocess.run(
@@ -164,10 +260,31 @@ def main():
                     )
                 if result.returncode:
                     row.update(status="heldout_validation_failed", exit_code=result.returncode)
-                    write_json(args.configs / "execution_plan.json", manifest)
-                    raise SystemExit(f"Held-out decoding gate failed; inspect {validation}")
+                    commit()
+                    raise RuntimeError(f"Held-out decoding gate failed; inspect {validation}")
         row.update(status=status, finished_unix_s=time.time())
-        write_json(args.configs / "execution_plan.json", manifest)
+        commit()
+
+    chains: dict[tuple[str, int], list[int]] = {}
+    for index, row in enumerate(plan):
+        chains.setdefault((row["variant"], row["seed"]), []).append(index)
+
+    def run_chain(indices):
+        for index in indices:
+            if failures:
+                return
+            try:
+                run_stage(index, plan[index])
+            except Exception as error:  # noqa: BLE001 - reported after other chains stop
+                with lock:
+                    failures.append(str(error))
+                print(error, flush=True)
+                return
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        list(executor.map(run_chain, chains.values()))
+    if failures:
+        raise SystemExit("; ".join(failures))
     manifest["completed_unix_s"] = time.time()
     write_json(args.configs / "execution_plan.json", manifest)
 

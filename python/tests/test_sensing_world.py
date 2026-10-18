@@ -138,3 +138,175 @@ def test_vector_same_step_preserves_terminal_observation_and_info():
     assert "final_obs" in infos and "final_info" in infos
     assert infos["_final_obs"].all() and infos["_final_info"].all()
     env.close()
+
+
+def test_layout_is_varied_by_default_seeded_and_legacy_reproducible():
+    pytest.importorskip("gymnasium")
+    from flytrack_sim import FlyTrackEnv
+
+    clockwise = TargetTrajectory({"direction": -1}, seed=3)
+    counter = TargetTrajectory({"direction": 1}, seed=3)
+    pose, _ = clockwise.state(0.0)
+    np.testing.assert_allclose(pose[:2], counter.state(0.0)[0][:2])
+    turn = lambda trajectory: np.angle(  # noqa: E731
+        np.exp(1j * (trajectory.state(1.0)[0][2] - trajectory.state(0.0)[0][2]))
+    )
+    assert turn(clockwise) < 0 < turn(counter)
+    with pytest.raises(ValueError, match="direction"):
+        TargetTrajectory({"direction": 0.5})
+
+    def start(**options):
+        env = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1, **options)
+        poses = []
+        for seed in range(16):
+            env.reset(seed=seed)
+            config = env.trajectory.config
+            poses.append((config.direction, config.radius_m, *env.target_pose, *env.agent_pose))
+        env.close()
+        return np.array(poses)
+
+    default = start()
+    # Both circling directions, several radii and offset starts: no constant turn fits.
+    assert set(default[:, 0]) == {-1.0, 1.0}
+    assert np.ptp(default[:, 1]) > 1.0 and (1.5 <= default[:, 1]).all()
+    assert (default[:, 1] <= 3.5).all()
+    np.testing.assert_array_equal(default, start())
+    legacy = start(layout_preset="legacy")
+    assert (legacy[:, 0] == 1).all() and (legacy[:, 1] == 2.0).all()
+    # Legacy: agent exactly 1.5 m behind the target, aligned with its heading.
+    target, agent = legacy[:, 2:5], legacy[:, 5:8]
+    behind = target[:, :2] - 1.5 * np.stack((np.cos(target[:, 2]), np.sin(target[:, 2])), axis=1)
+    np.testing.assert_allclose(agent[:, :2], behind, atol=1e-12)
+    np.testing.assert_allclose(agent[:, 2], target[:, 2], atol=1e-12)
+    # The 2026-10-17 scenario-test world (direction + offsets, fixed radius) is unchanged.
+    scenario_test = start(
+        randomize_target_direction=True,
+        start_lateral_offset_m=0.5,
+        start_heading_offset_deg=30,
+        randomize_target_layout=False,
+    )
+    assert set(scenario_test[:, 0]) == {-1.0, 1.0} and (scenario_test[:, 1] == 2.0).all()
+    with pytest.raises(ValueError, match="layout"):
+        FlyTrackEnv(SensorContract(eye_radius=2), start_heading_offset_deg=270)
+    with pytest.raises(ValueError, match="layout_preset"):
+        FlyTrackEnv(SensorContract(eye_radius=2), layout_preset="fixed")
+
+
+def test_wander_target_is_smooth_bounded_and_seed_reproducible():
+    from flytrack_core.world.trajectories import WANDER_DT_S
+
+    config = {"motion": "wander", "initial_x": 3.5, "initial_y": -3.0, "heading_rad": 0.3}
+    trajectory = TargetTrajectory(config, seed=11)
+    times = np.arange(0, 600, 0.05)
+    poses = np.array([trajectory.state(time)[0] for time in times])
+    assert (np.abs(poses[:, :2]) <= 4.5 + 1e-9).all()
+    # Constant speed and a turn rate bounded by the maximum, wall avoidance included
+    # (an unbounded wall term made 0.2 m U-turns back into the follower).
+    step = np.linalg.norm(np.diff(poses[:, :2], axis=0), axis=1)
+    np.testing.assert_allclose(step, 0.2 * 0.05, rtol=0.05)
+    turn = np.abs(np.angle(np.exp(1j * np.diff(poses[:, 2])))) / 0.05
+    assert turn.max() <= 0.4 + 1e-6
+    assert np.ptp(poses[:, 0]) > 4 and np.ptp(poses[:, 1]) > 4
+    # Pure function of (config, seed, time): query order and a fresh object agree.
+    replay = TargetTrajectory(config, seed=11)
+    np.testing.assert_allclose(replay.state(300.0)[0], trajectory.state(300.0)[0])
+    np.testing.assert_allclose(replay.state(1.234)[0], trajectory.state(1.234)[0])
+    other = TargetTrajectory(config, seed=12)
+    assert np.linalg.norm(other.state(60.0)[0][:2] - trajectory.state(60.0)[0][:2]) > 0.1
+    assert trajectory.state(WANDER_DT_S / 2)[0][0] == pytest.approx(
+        3.5 + 0.2 * np.cos(0.3) * WANDER_DT_S / 2, abs=1e-3
+    )
+
+
+def test_explicit_agent_pose_skips_the_unused_sampled_start():
+    pytest.importorskip("gymnasium")
+    from flytrack_sim import FlyTrackEnv
+
+    # A stationary target facing -x at x=2.4 in a 6 m arena puts the sampled
+    # "behind the target" start outside the walls; an explicit start must still work.
+    options = dict(
+        arena_size_m=6,
+        target_motion="stationary",
+        trajectory_config={"initial_x": 2.4, "initial_y": 0.0, "heading_rad": np.pi},
+        layout_preset="legacy",
+        episode_seconds=1,
+    )
+    with pytest.raises(ValueError, match="outside the arena"):
+        FlyTrackEnv(SensorContract(eye_radius=2), **options).reset(seed=0)
+    env = FlyTrackEnv(SensorContract(eye_radius=2), initial_agent_pose=[0, 0, 0], **options)
+    env.reset(seed=0)
+    np.testing.assert_array_equal(env.agent_pose, [0, 0, 0])
+    env.reset(seed=1, options={"agent_pose": [0.5, -1.0, 0.25]})
+    np.testing.assert_array_equal(env.agent_pose, [0.5, -1.0, 0.25])
+    np.testing.assert_allclose(env.target_pose[:2], [2.4, 0.0])
+    assert abs(np.cos(env.target_pose[2]) + 1) < 1e-12  # heading pi (wrapped to +-pi)
+    # Layout draws do not depend on the explicit start (direction stays seeded).
+    sampled = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1)
+    pinned = FlyTrackEnv(SensorContract(eye_radius=2), episode_seconds=0.1)
+    for seed in range(8):
+        sampled.reset(seed=seed)
+        pinned.reset(seed=seed, options={"agent_pose": [0, 0, 0]})
+        assert sampled.trajectory.config == pinned.trajectory.config
+
+
+def test_layout_respects_explicit_trajectory_options_and_motion_mixtures():
+    from flytrack_core.world import LayoutConfig, sample_episode_layout
+
+    walls = np.asarray([-5.0, -5.0, 5.0, 5.0])
+    defaults = {"xmin": -4.5, "ymin": -4.5, "xmax": 4.5, "ymax": 4.5}
+    motions, agents = set(), []
+    for seed in range(200):
+        config, agent = sample_episode_layout(
+            seed, ["curved", "wander"], defaults, {"radius_m": 2.0}, LayoutConfig(), walls, 0.18
+        )
+        motions.add(config["motion"])
+        agents.append(agent)
+        if config["motion"] == "curved":
+            assert config["radius_m"] == 2.0  # explicit options are never resampled
+    assert motions == {"curved", "wander"}
+    assert (np.abs(np.asarray(agents)[:, :2]) < 5 - 0.18).all()
+    with pytest.raises(ValueError, match="target_motion"):
+        sample_episode_layout(0, [], defaults, {}, LayoutConfig(), walls, 0.18)
+
+
+def test_success_requires_facing_the_target():
+    from flytrack_core.metrics import EpisodeMetrics
+
+    sideways = EpisodeMetrics()
+    legacy = EpisodeMetrics(bearing_threshold_deg=None)
+    for metrics in (sideways, legacy):
+        for _ in range(100):
+            metrics.append(1.2, np.deg2rad(94), 0.1, False)
+    # The constant left turn of the old world: within 2 m but side-on to the target.
+    assert sideways.result()["success"] == 0 and sideways.result()["within_distance_fraction"] == 1
+    assert legacy.result()["success"] == 1
+    # Offline evaluators take the thresholds from the env options, null included.
+    assert EpisodeMetrics.from_env_options(0.05, {}).bearing_threshold_deg == 45
+    configured = EpisodeMetrics.from_env_options(
+        0.05, {"success_bearing_deg": None, "success_distance_m": 1.5, "success_fraction": 0.6}
+    )
+    assert configured.bearing_threshold_deg is None
+    assert (configured.distance_threshold, configured.success_fraction) == (1.5, 0.6)
+
+
+def test_teacher_steps_aside_from_a_target_driving_at_it():
+    from flytrack_sim.teacher import teacher_action
+
+    contract = SensorContract(eye_radius=2)
+    agent, still = np.asarray([0.0, 0.0, 0.0]), np.zeros(2, np.float32)
+    # Target 1 m ahead, slightly to the agent's right, heading straight back at it:
+    # the agent is right of the target's path and turns left (+y) off it.
+    oncoming = teacher_action(
+        agent, [1.0, -0.2, np.pi], still, contract, target_velocity=np.asarray([-0.2, 0.0])
+    )
+    assert oncoming[1] > 0
+    mirrored = teacher_action(
+        agent, [1.0, 0.2, np.pi], still, contract, target_velocity=np.asarray([-0.2, 0.0])
+    )
+    assert mirrored[1] == pytest.approx(-oncoming[1])
+    # A target moving away, or passing beyond the clearance, is followed as before.
+    for pose, velocity in (([1.0, 0.0, 0.0], [0.2, 0.0]), ([1.0, 0.8, np.pi], [-0.2, 0.0])):
+        np.testing.assert_array_equal(
+            teacher_action(agent, pose, still, contract, target_velocity=np.asarray(velocity)),
+            teacher_action(agent, pose, still, contract),
+        )

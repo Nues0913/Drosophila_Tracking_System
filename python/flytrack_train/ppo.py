@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .batches import reset_state, tensor_observation
+from .batches import SequenceModel, reset_state, tensor_observation
 from .config import (
     TRAIN_ENVIRONMENT_SEED_LIMIT,
     make_env,
@@ -20,6 +21,8 @@ from .config import (
     write_json,
 )
 from .distributions import BoundedGaussian, generalized_advantage
+from .losses import activity_penalty
+from .parallel import EnvPool
 from .recovery import Recovery, restore_rng
 
 
@@ -61,16 +64,21 @@ def curriculum_stage(train: dict[str, Any], progress: float) -> dict[str, Any]:
                 "plume_model": "gaussian",
                 "scenario": "normal",
             },
-            {"until": 0.6, "target_motion": "curved", "plume_model": "puff", "scenario": "normal"},
+            {
+                "until": 0.6,
+                "target_motion": ["curved", "wander"],
+                "plume_model": "puff",
+                "scenario": "normal",
+            },
             {
                 "until": 0.85,
-                "target_motion": "curved",
+                "target_motion": ["curved", "wander"],
                 "plume_model": "puff",
                 "scenario": "occlusion",
             },
             {
                 "until": 1.0,
-                "target_motion": "curved",
+                "target_motion": ["curved", "wander"],
                 "plume_model": "puff",
                 "scenario": "conflict",
             },
@@ -126,8 +134,10 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     ):
         raise ValueError("Invalid PPO optimization or discount settings")
     output.mkdir(parents=True, exist_ok=True)
-    envs, observations, infos = [], [], []
-    state = policy.initial_state(n_envs, device)
+    observations, infos = [], []
+    pool = None
+    model = SequenceModel(policy, device)
+    sensory, state = model.initial(n_envs)
     episode_start = torch.ones(n_envs, device=device, dtype=torch.bool)
     rng = np.random.default_rng(seed)
     recovery = Recovery(output, config, "ppo", seed, device=device)
@@ -149,19 +159,21 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         episode_returns = checkpoint["episode_returns"]
         running_returns = checkpoint["running_returns"].numpy().copy()
         state = checkpoint["recurrent_state"].to(device)
+        if checkpoint.get("sensory_state") is not None:
+            sensory = checkpoint["sensory_state"].to(device)
         episode_start = checkpoint["episode_start"].to(device)
         env_seeds, env_stages = checkpoint["env_seeds"], checkpoint["env_stages"]
         action_histories = checkpoint["action_histories"]
         elapsed_offset = float(checkpoint["elapsed_s"])
+    # Curriculum of the world each slot currently holds (changes only at resets).
+    env_curricula = [dict(item) for item in env_stages]
     try:
+        pool = EnvPool([partial(make_env, config, contract, **item) for item in env_stages])
         for index in range(n_envs):
-            env = make_env(config, contract, **env_stages[index])
-            env._training_curriculum = env_stages[index]
-            envs.append(env)
-            observation, info = env.reset(seed=env_seeds[index])
-            for action in action_histories[index]:
-                observation, _, terminated, truncated, info = env.step(
-                    np.asarray(action, dtype=np.float32)
+            observation, info = pool.reset(index, env_seeds[index])
+            if action_histories[index]:
+                observation, _, terminated, truncated, info = pool.replay(
+                    index, action_histories[index]
                 )
                 if terminated or truncated:
                     raise ValueError("Recovery replay crossed an unrecorded episode reset")
@@ -184,8 +196,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     raise ValueError(
                         "Recovery reset boundary differs from recorded recurrent state"
                     )
-                env._episode_id = checkpoint["env_episode_ids"][index]
-                info["episode_id"] = env._episode_id
+                pool.set(index, "_episode_id", checkpoint["env_episode_ids"][index])
+                info["episode_id"] = checkpoint["env_episode_ids"][index]
             observations.append(observation)
             infos.append(info)
         if checkpoint is not None:
@@ -205,7 +217,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
             buffer = {
                 key: []
                 for key in (
-                    "obs",
+                    "inputs",
                     "privileged",
                     "state",
                     "start",
@@ -219,12 +231,17 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 )
             }
             policy.train()
+            initial_sensory, initial_central = model.initial(n_envs)
             for _ in range(steps):
                 batch_obs = tensor_observation(observations, device)
                 privileged = _privileged(infos, device)
-                state = reset_state(state, episode_start, policy.initial_state(n_envs, device))
-                with torch.no_grad():
-                    mean, next_state, _ = policy(batch_obs, state)
+                state = reset_state(state, episode_start, initial_central)
+                if sensory is not None:
+                    sensory = reset_state(sensory, episode_start, initial_sensory)
+                with torch.no_grad(), model.cache():
+                    # The frozen sensory code is stored and reused by every update.
+                    inputs, next_sensory = model.observe(batch_obs, sensory)
+                    mean, next_state, _ = model.step(inputs, state)
                     distribution = BoundedGaussian(
                         mean, policy.log_std, contract.v_max, contract.omega_max
                     )
@@ -232,10 +249,10 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     value = critic(privileged)
                 rewards, terminated, truncated, final_infos = [], [], [], []
                 next_observations, next_infos = [], []
-                for index, env in enumerate(envs):
-                    observation, reward, terminal, timeout, info = env.step(
-                        actions[index].cpu().numpy()
-                    )
+                host_actions = actions.cpu().numpy()
+                results = pool.step({index: host_actions[index] for index in range(n_envs)})
+                for index in range(n_envs):
+                    observation, reward, terminal, timeout, info = results[index]
                     action_histories[index].append(actions[index].detach().cpu().tolist())
                     final_infos.append(info)  # Always the actual final state, before any reset.
                     rewards.append(reward)
@@ -249,21 +266,19 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                             train, min(1, (consumed + n_envs) / total_steps)
                         )
                         # Curriculum changes only at episode boundaries, never mid-episode.
-                        if current_stage != getattr(env, "_training_curriculum", stage):
-                            env.close()
-                            env = make_env(config, contract, **current_stage)
-                            env._training_curriculum = current_stage
-                            envs[index] = env
+                        if current_stage != env_curricula[index]:
+                            pool.remake(index, partial(make_env, config, contract, **current_stage))
+                            env_curricula[index] = dict(current_stage)
                         env_seeds[index] = int(rng.integers(0, TRAIN_ENVIRONMENT_SEED_LIMIT))
                         env_stages[index] = current_stage
                         action_histories[index] = []
-                        observation, info = env.reset(seed=env_seeds[index])
+                        observation, info = pool.reset(index, env_seeds[index])
                     next_observations.append(observation)
                     next_infos.append(info)
                 with torch.no_grad():
                     final_values = critic(_privileged(final_infos, device))
                 row = {
-                    "obs": batch_obs,
+                    "inputs": inputs,
                     "privileged": privileged,
                     "state": state.detach(),
                     "start": episode_start,
@@ -278,6 +293,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 for key, value in row.items():
                     buffer[key].append(value)
                 observations, infos, state = next_observations, next_infos, next_state.detach()
+                sensory = next_sensory
                 episode_start = row["terminated"] | row["truncated"]
                 consumed += n_envs
                 recovery.progress(
@@ -286,9 +302,10 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     total_steps=total_steps,
                     iteration=iteration,
                 )
-            data = {key: torch.stack(values) for key, values in buffer.items() if key != "obs"}
-            data["obs"] = {
-                key: torch.stack([obs[key] for obs in buffer["obs"]]) for key in buffer["obs"][0]
+            data = {key: torch.stack(values) for key, values in buffer.items() if key != "inputs"}
+            data["inputs"] = {
+                key: torch.stack([item[key] for item in buffer["inputs"]])
+                for key in buffer["inputs"][0]
             }
             advantage, returns = generalized_advantage(
                 data["reward"],
@@ -320,26 +337,26 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                         env_indices = torch.tensor([e for _, e, _ in selected], device=device)
                         chunk_state = data["state"][starts, env_indices].detach()
                         logprobs, entropies, activities = [], [], []
-                        for offset in range(length):
-                            times = starts + offset
-                            chunk_state = reset_state(
-                                chunk_state,
-                                data["start"][times, env_indices],
-                                policy.initial_state(len(selected), device),
-                            )
-                            obs = {
-                                key: values[times, env_indices]
-                                for key, values in data["obs"].items()
-                            }
-                            mean, chunk_state, activity = policy(obs, chunk_state)
-                            dist = BoundedGaussian(
-                                mean, policy.log_std, contract.v_max, contract.omega_max
-                            )
-                            logprobs.append(
-                                dist.log_prob_latent(data["latent"][times, env_indices])
-                            )
-                            entropies.append(dist.entropy())
-                            activities.append(activity.square().mean())
+                        _, chunk_initial = model.initial(len(selected))
+                        with model.cache():
+                            for offset in range(length):
+                                times = starts + offset
+                                chunk_state = reset_state(
+                                    chunk_state, data["start"][times, env_indices], chunk_initial
+                                )
+                                inputs = {
+                                    key: values[times, env_indices]
+                                    for key, values in data["inputs"].items()
+                                }
+                                mean, chunk_state, activity = model.step(inputs, chunk_state)
+                                dist = BoundedGaussian(
+                                    mean, policy.log_std, contract.v_max, contract.omega_max
+                                )
+                                logprobs.append(
+                                    dist.log_prob_latent(data["latent"][times, env_indices])
+                                )
+                                entropies.append(dist.entropy())
+                                activities.append(activity_penalty(policy, activity).mean())
                         times = starts.unsqueeze(0) + torch.arange(length, device=device).unsqueeze(
                             1
                         )
@@ -420,6 +437,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 episode_returns=episode_returns,
                 running_returns=torch.as_tensor(running_returns),
                 recurrent_state=state.detach().cpu(),
+                sensory_state=None if sensory is None else sensory.detach().cpu(),
                 episode_start=episode_start.cpu(),
                 observations={
                     k: v.cpu() for k, v in tensor_observation(observations, device).items()
@@ -428,7 +446,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 env_seeds=env_seeds,
                 env_stages=env_stages,
                 action_histories=action_histories,
-                env_episode_ids=[env._episode_id for env in envs],
+                env_episode_ids=[pool.get(index, "_episode_id") for index in range(n_envs)],
                 elapsed_s=elapsed_offset + time.perf_counter() - start_time,
             )
             recovery.progress(
@@ -457,5 +475,5 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
             force=True, phase="complete", environment_steps=consumed, total_steps=total_steps
         )
     finally:
-        for env in envs:
-            env.close()
+        if pool is not None:
+            pool.close()

@@ -15,11 +15,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/train/evaluate.yaml"))
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--seed-start", type=int, default=9_000_000)
+    # Diagnostic range [1.6e9, 1.7e9): disjoint from training [0, 1e9), decoder
+    # validation [1.5e9, 1.6e9) and formal evaluation [1.7e9, ...).
+    parser.add_argument("--seed-start", type=int, default=1_650_000_000)
     parser.add_argument("--output", type=Path, default=Path("runs/calibration/teacher.json"))
     args = parser.parse_args()
-    if args.episodes < 1 or args.seed_start < 0:
-        parser.error("episodes must be positive and seed-start nonnegative")
+    if args.episodes < 1 or not 1_600_000_000 <= args.seed_start < 1_700_000_000 - args.episodes:
+        parser.error(
+            "episodes must be positive and seeds inside the diagnostic range [1.6e9,1.7e9)"
+        )
     config = read_config(args.config)
     contract = contract_from_config(config)
     env = make_env(config, contract, scenario="normal")
@@ -29,7 +33,7 @@ def main():
         for episode in range(args.episodes):
             seed = args.seed_start + episode
             _, info = env.reset(seed=seed)
-            metrics = EpisodeMetrics(contract.control_dt)
+            metrics = EpisodeMetrics.from_env_options(contract.control_dt, config.get("env", {}))
             while True:
                 _, _, terminated, truncated, info = env.step(info["teacher_action"])
                 metrics.append(
@@ -41,7 +45,16 @@ def main():
                 )
                 if terminated or truncated:
                     break
-            rows.append({"seed": seed, **metrics.result()})
+            trajectory = env.trajectory.config
+            rows.append(
+                {
+                    "seed": seed,
+                    "target_motion": trajectory.motion,
+                    "direction": trajectory.direction,
+                    "radius_m": trajectory.radius_m,
+                    **metrics.result(),
+                }
+            )
             report = {
                 "purpose": "calibration only; privileged teacher, never a sensory baseline",
                 "scenario": "normal",
@@ -54,6 +67,11 @@ def main():
                 "mean_bearing_error_deg": float(
                     np.mean([row["mean_bearing_error_deg"] for row in rows])
                 ),
+                "bearing_error_deg_range": [
+                    float(np.min([row["mean_bearing_error_deg"] for row in rows])),
+                    float(np.max([row["mean_bearing_error_deg"] for row in rows])),
+                ],
+                "distinct_layouts": len({(row["direction"], row["radius_m"]) for row in rows}),
                 "config": config,
             }
             write_json(args.output, report)

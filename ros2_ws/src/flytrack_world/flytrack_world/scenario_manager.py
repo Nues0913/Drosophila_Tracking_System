@@ -6,10 +6,14 @@ A second reset after pose changes establishes the fresh-sensor barrier.
 """
 
 import json
-import math
 
 import numpy as np
-from flytrack_core.world import ScenarioSpec, TargetTrajectory
+from flytrack_core.world import (
+    LayoutConfig,
+    ScenarioSpec,
+    TargetTrajectory,
+    sample_episode_layout,
+)
 from flytrack_interfaces.msg import ScenarioEvent
 from geometry_msgs.msg import PoseStamped, Twist
 from ros_gz_interfaces.srv import SetEntityPose
@@ -39,6 +43,9 @@ class ScenarioManagerNode(WorldNode):
         self.initial_agent_pose = json.loads(param(self, "initial_agent_pose_json", "null"))
         self.obstacles = json.loads(param(self, "obstacles_json", "[]"))
         self.trajectory_config = json.loads(param(self, "trajectory_config_json", "{}"))
+        # Same per-episode layout sampler as the 2D world (randomized by default;
+        # {"preset": "legacy"} reproduces the fixed counter-clockwise layout).
+        self.layout = LayoutConfig.from_dict(json.loads(param(self, "layout_json", "{}")))
         self.plume_config = json.loads(param(self, "plume_config_json", "{}"))
         spec = {
             **self.scenario_spec.to_dict(),
@@ -102,28 +109,36 @@ class ScenarioManagerNode(WorldNode):
     def _prepare_poses(self):
         self._episode_seed = self.base_seed + self._episode_index
         half = self.arena_size_m / 2 - 0.5
-        config = {
-            "motion": self.target_motion,
-            "speed_m_s": self.target_speed_m_s,
-            "center_x": self.arena_center_x,
-            "center_y": self.arena_center_y,
-            "initial_x": self.arena_center_x,
-            "initial_y": self.arena_center_y,
-            "xmin": self.arena_center_x - half,
-            "xmax": self.arena_center_x + half,
-            "ymin": self.arena_center_y - half,
-            "ymax": self.arena_center_y + half,
-            **self.trajectory_config,
-        }
+        walls = np.asarray(
+            [
+                self.arena_center_x - self.arena_size_m / 2,
+                self.arena_center_y - self.arena_size_m / 2,
+                self.arena_center_x + self.arena_size_m / 2,
+                self.arena_center_y + self.arena_size_m / 2,
+            ]
+        )
+        config, agent = sample_episode_layout(
+            self._episode_seed,
+            self.target_motion,
+            {
+                "speed_m_s": self.target_speed_m_s,
+                "center_x": self.arena_center_x,
+                "center_y": self.arena_center_y,
+                "initial_x": self.arena_center_x,
+                "initial_y": self.arena_center_y,
+                "xmin": self.arena_center_x - half,
+                "xmax": self.arena_center_x + half,
+                "ymin": self.arena_center_y - half,
+                "ymax": self.arena_center_y + half,
+            },
+            self.trajectory_config,
+            self.layout,
+            walls,
+            self.agent_radius_m,
+            agent_pose=self.initial_agent_pose,
+        )
         self._trajectory_config = config
         target, _ = TargetTrajectory(config, self._episode_seed).state(0)
-        if self.initial_agent_pose is None:
-            yaw = target[2]
-            agent = np.asarray(
-                [target[0] - 1.5 * math.cos(yaw), target[1] - 1.5 * math.sin(yaw), yaw]
-            )
-        else:
-            agent = np.asarray(self.initial_agent_pose, dtype=np.float64)
         if agent.shape != (3,) or not np.all(np.isfinite(agent)):
             raise ValueError("initial_agent_pose_json must be finite [x,y,yaw] or null")
         self._initial_agent, self._initial_target = agent, target
@@ -136,12 +151,13 @@ class ScenarioManagerNode(WorldNode):
             "episode_start_s": self.started_at_s,
             "occluded": active and self.scenario_spec.occluded_at(now - self.started_at_s),
             "collision": self._collision,
-            "target_motion": self.target_motion,
+            "target_motion": self._trajectory_config["motion"],
             "training_seed": self.training_seed,
             "environment_seed": self._episode_seed,
             "plume_model": self.plume_model,
             "plume_config": self.plume_config,
             "trajectory_config": self._trajectory_config,
+            "layout": self.layout.to_dict(),
             "arena_size_m": self.arena_size_m,
             "arena_center_x": self.arena_center_x,
             "arena_center_y": self.arena_center_y,

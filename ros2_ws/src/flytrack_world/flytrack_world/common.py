@@ -27,6 +27,7 @@ PROTOCOL_FIELDS = {
     "plume_model",
     "plume_config",
     "trajectory_config",
+    "layout",
     "arena_size_m",
     "arena_center_x",
     "arena_center_y",

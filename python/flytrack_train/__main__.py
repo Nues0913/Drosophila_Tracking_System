@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import torch
 from flytrack_core.model import load_policy_artifact
 
 from .config import contract_from_config, read_config, write_json
+from .parallel import set_default_workers
 
 
 def export_actor(config, source: Path, destination: Path):
@@ -48,7 +50,16 @@ def main():
     parser = argparse.ArgumentParser(description="FlyTrack offline learning and evaluation")
     parser.add_argument(
         "command",
-        choices=("pretrain", "bc", "ppo", "es", "evaluate", "export", "validate-pretrain"),
+        choices=(
+            "pretrain",
+            "bc",
+            "ppo",
+            "es",
+            "evaluate",
+            "export",
+            "validate-pretrain",
+            "audit-env",
+        ),
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", help="Override the output directory in YAML")
@@ -62,6 +73,16 @@ def main():
         "--resume",
         action="store_true",
         help="Resume the same stage from its source-bound recovery checkpoint",
+    )
+    parser.add_argument(
+        "--workers",
+        default="auto",
+        help="Environment worker processes; 0 keeps worlds in-process; auto = CPUs - 1 (max 8)",
+    )
+    parser.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Allow TF32 CUDA matmuls (faster, ~1e-3 relative precision)",
     )
     parser.add_argument(
         "--variant",
@@ -83,6 +104,13 @@ def main():
         if args.device == "auto"
         else torch.device(args.device)
     )
+    workers = (
+        max(1, min(8, (os.cpu_count() or 2) - 1)) if args.workers == "auto" else int(args.workers)
+    )
+    set_default_workers(workers)
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     if args.command == "validate-pretrain":
         from .validation import validate_pretraining
 
@@ -95,6 +123,20 @@ def main():
         )
         if not result["passed"]:
             raise SystemExit("Held-out sensory decoding did not pass its preregistered threshold")
+        return
+    if args.command == "audit-env":
+        from .audit import audit_environment
+
+        report = audit_environment(config, contract_from_config(config))
+        if args.output:
+            write_json(Path(args.output), report)
+        name, row = max(report["blind_policies"].items(), key=lambda item: item[1]["success_rate"])
+        print(
+            f"teacher success {report['teacher']['success_rate']:.2f}; "
+            f"best blind policy {name} success {row['success_rate']:.2f}"
+        )
+        if not report["passed"]:
+            raise SystemExit("Degenerate world: " + "; ".join(report["failures"]))
         return
     if args.command == "export":
         source = args.artifact or config.get("artifact")

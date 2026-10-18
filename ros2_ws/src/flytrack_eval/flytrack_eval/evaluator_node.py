@@ -69,6 +69,8 @@ class EvaluatorNode(Node):
         self.declare_parameter("pose_timeout_s", 0.2)
         self.declare_parameter("success_distance_m", 2.0)
         self.declare_parameter("success_time_fraction", 0.8)
+        # Tracked samples must also face the target; <= 0 restores distance-only success.
+        self.declare_parameter("success_bearing_deg", 45.0)
         self.declare_parameter("minimum_sample_coverage", 0.95)
         self.output = Path(str(self.get_parameter("output_dir").value))
         self.output.mkdir(parents=True, exist_ok=True)
@@ -185,10 +187,12 @@ class EvaluatorNode(Node):
             self.inference_latencies = []
             self.causal_latency = CausalLatency()
             self.omega = 0.0
+            bearing = float(self.get_parameter("success_bearing_deg").value)
             self.accumulator = EpisodeMetrics(
                 float(self.get_parameter("control_dt").value),
                 float(self.get_parameter("success_distance_m").value),
                 float(self.get_parameter("success_time_fraction").value),
+                bearing if bearing > 0 else None,
             )
         elif self.event is not None and message.episode_id == self.event.episode_id:
             try:

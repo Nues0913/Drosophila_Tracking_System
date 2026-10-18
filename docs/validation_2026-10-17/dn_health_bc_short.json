@@ -1,0 +1,116 @@
+{
+ "stage": "bc",
+ "passed": false,
+ "checks": {
+  "finite": true,
+  "active_motor_count": true,
+  "central_gradient": true,
+  "not_all_silent": true,
+  "eye_swap_response": true,
+  "omega_correlation": true,
+  "omega_r2": false,
+  "omega_amplitude": false
+ },
+ "effective_active_motor_count": 4,
+ "eye_swap_abs_omega_delta": {
+  "min": 0.0009535700082778931,
+  "p05": 0.015955643728375435,
+  "median": 0.06490906327962875,
+  "p95": 0.11539123430848122,
+  "max": 0.15765033662319183,
+  "mean": 0.0653404285106808
+ },
+ "omega_correlation_with_teacher": 0.5414296931945224,
+ "omega_r2": -0.032856510627481184,
+ "omega_std": 0.015024329535663128,
+ "teacher_omega_mean": -0.003963035997003317,
+ "teacher_omega_std": 0.06724587082862854,
+ "omega_mae": 0.05120556429028511,
+ "zero_omega_mae": 0.05453654006123543,
+ "action_min": [
+  0.1592300981283188,
+  -0.08007623255252838
+ ],
+ "action_max": [
+  0.1592300981283188,
+  0.00691022677347064
+ ],
+ "environment_seeds": [
+  1500000000,
+  1500000001,
+  1500000002,
+  1500000003,
+  1500000004,
+  1500000005,
+  1500000006,
+  1500000007,
+  1500000008,
+  1500000009,
+  1500000010,
+  1500000011,
+  1500000012,
+  1500000013,
+  1500000014,
+  1500000015,
+  1500000016,
+  1500000017,
+  1500000018,
+  1500000019,
+  1500000020,
+  1500000021,
+  1500000022,
+  1500000023
+ ],
+ "measured_steps_per_episode": [
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200,
+  200
+ ],
+ "thresholds": {
+  "minimum_effective_active_motor_count": 4,
+  "minimum_active_fraction": 0.1,
+  "minimum_median_eye_swap_omega_delta": 0.05,
+  "minimum_core_gradient_norm_exclusive": 1e-06,
+  "steering": {
+   "bc": {
+    "minimum_omega_correlation": 0.5,
+    "minimum_omega_r2_exclusive": 0.0,
+    "minimum_omega_std_ratio": 0.25
+   },
+   "ppo": {
+    "minimum_omega_correlation": 0.3,
+    "minimum_omega_std_ratio": 0.25
+   },
+   "es": {
+    "minimum_omega_correlation": 0.3,
+    "minimum_omega_std_ratio": 0.25
+   }
+  }
+ },
+ "diagnostic_seconds": 168.3941900810005,
+ "gradient_norms": {
+  "core": 0.04468246817310361,
+  "readout": 0.07484298459788095
+ }
+}

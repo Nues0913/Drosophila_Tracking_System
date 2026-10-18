@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
 from flytrack_core.model import load_policy_artifact
 
-from .batches import tensor_observation
+from .batches import SequenceModel, tensor_observation
 from .config import make_env, project_source_fingerprint, write_json
+from .parallel import EnvPool
 from .recovery import Recovery
 
 
@@ -45,8 +47,6 @@ def validate_pretraining(
     if seed < 0 or seed_base + episodes >= 1_700_000_000:
         raise ValueError("Validation seed plus training-seed offset exceeds its held-out range")
     threshold = float(validation.get("bearing_mae_deg", 15.0 if modality == "vision" else 30.0))
-    reports = []
-    env = make_env(config, contract)
     progress = Recovery(
         output,
         {"validation": validation, "source": str(source)},
@@ -54,30 +54,48 @@ def validate_pretraining(
         seed,
         device=device,
     )
+    odor_threshold = float(config.get("train", {}).get("odor_presence_threshold", 0.01))
+    lanes = min(episodes, int(validation.get("batch_episodes", 32)))
+    model = SequenceModel(policy, device)
+    queue = list(range(episodes))
+    running: dict[int, dict] = {}
+    observations, infos, finished = {}, {}, {}
+    sensory, central = model.initial(lanes)
+    initial_sensory, initial_central = model.initial(1)
+    pool = EnvPool([partial(make_env, config, contract) for _ in range(lanes)])
     try:
-        with torch.no_grad():
-            for episode in range(episodes):
-                observation, info = env.reset(seed=seed_base + episode)
-                state = policy.initial_state(1, device)
-                (
-                    errors,
-                    presence_correct,
-                    presence_count,
-                    true_positive,
-                    false_positive,
-                    false_negative,
-                ) = [], 0, 0, 0, 0, 0
-                while True:
+        with torch.no_grad(), model.cache():
+            while queue or running:
+                for slot in range(lanes):
+                    if slot in running or not queue:
+                        continue
+                    episode = queue.pop(0)
+                    observations[slot], infos[slot] = pool.reset(slot, seed_base + episode)
+                    if sensory is not None:
+                        sensory[slot] = initial_sensory[0]
+                    central[slot] = initial_central[0]
+                    running[slot] = {
+                        "episode": episode,
+                        "errors": [],
+                        "presence_correct": 0,
+                        "presence_count": 0,
+                        "true_positive": 0,
+                        "false_positive": 0,
+                        "false_negative": 0,
+                    }
+                active = sorted(running)
+                masked_batch, presence = [], []
+                for slot in active:
+                    observation, info = observations[slot], infos[slot]
                     masked = {
                         key: np.array(observation[key], copy=True)
                         for key in ("vision", "odor", "valid")
                     }
-                    present = (
+                    presence.append(
                         bool(info["target_visible"])
                         if modality == "vision"
                         else bool(
-                            np.max(observation["odor"])
-                            > float(config.get("train", {}).get("odor_presence_threshold", 0.01))
+                            np.max(observation["odor"]) > odor_threshold
                             and observation["valid"][2] > 0
                         )
                     )
@@ -87,52 +105,70 @@ def validate_pretraining(
                     else:
                         masked["vision"][:] = 0
                         masked["valid"][:2] = 0
-                    _, state, activity = policy(tensor_observation([masked], device), state)
-                    prediction = decoder(activity[:, mask])[0]
-                    if not bool(torch.isfinite(prediction).all()):
-                        raise FloatingPointError("Held-out decoder produced nonfinite values")
+                    masked_batch.append(masked)
+                index = torch.tensor(active, device=device)
+                inputs, new_sensory = model.observe(
+                    tensor_observation(masked_batch, device),
+                    None if sensory is None else sensory[index],
+                )
+                _, new_central, activity = model.step(inputs, central[index])
+                if sensory is not None:
+                    sensory[index] = new_sensory
+                central[index] = new_central
+                predictions = decoder(activity[:, mask])
+                if not bool(torch.isfinite(predictions).all()):
+                    raise FloatingPointError("Held-out decoder produced nonfinite values")
+                predictions = predictions.cpu().numpy()
+                actions = {}
+                for row, slot in enumerate(active):
+                    entry, info, present = running[slot], infos[slot], presence[row]
+                    prediction = predictions[row]
                     predicted_present = bool(prediction[2] >= 0)
-                    presence_count += 1
-                    presence_correct += predicted_present == present
-                    true_positive += predicted_present and present
-                    false_positive += predicted_present and not present
-                    false_negative += not predicted_present and present
+                    entry["presence_count"] += 1
+                    entry["presence_correct"] += predicted_present == present
+                    entry["true_positive"] += predicted_present and present
+                    entry["false_positive"] += predicted_present and not present
+                    entry["false_negative"] += not predicted_present and present
                     if present:
-                        predicted_bearing = float(torch.atan2(prediction[0], prediction[1]))
+                        predicted_bearing = float(np.arctan2(prediction[0], prediction[1]))
                         difference = predicted_bearing - float(info["target_bearing_rad"])
-                        errors.append(
+                        entry["errors"].append(
                             abs(float(np.arctan2(np.sin(difference), np.cos(difference))))
                             * 180
                             / np.pi
                         )
-                    observation, _, terminated, truncated, info = env.step(
-                        np.asarray(info["teacher_action"], np.float32)
-                    )
-                    progress.progress(
-                        phase="validation",
-                        episode=episode + 1,
-                        total_episodes=episodes,
-                        steps=presence_count,
-                    )
+                    actions[slot] = np.asarray(info["teacher_action"], np.float32)
+                for slot, (observation, _, terminated, truncated, info) in pool.step(
+                    actions
+                ).items():
+                    observations[slot], infos[slot] = observation, info
                     if terminated or truncated:
-                        break
-                reports.append(
-                    {
-                        "episode": episode,
-                        "environment_seed": seed_base + episode,
-                        "bearing_mae_deg": float(np.mean(errors)) if errors else None,
-                        "bearing_error_sum_deg": float(np.sum(errors)),
-                        "present_steps": len(errors),
-                        "presence_correct": presence_correct,
-                        "steps": presence_count,
-                        "presence_tp": true_positive,
-                        "presence_fp": false_positive,
-                        "presence_fn": false_negative,
-                    }
+                        entry = running.pop(slot)
+                        finished[entry["episode"]] = entry
+                progress.progress(
+                    phase="validation", episodes_done=len(finished), total_episodes=episodes
                 )
-                write_json(output / "episodes.json", reports)
     finally:
-        env.close()
+        pool.close()
+    reports = []
+    for episode in range(episodes):
+        entry = finished[episode]
+        errors = entry["errors"]
+        reports.append(
+            {
+                "episode": episode,
+                "environment_seed": seed_base + episode,
+                "bearing_mae_deg": float(np.mean(errors)) if errors else None,
+                "bearing_error_sum_deg": float(np.sum(errors)),
+                "present_steps": len(errors),
+                "presence_correct": entry["presence_correct"],
+                "steps": entry["presence_count"],
+                "presence_tp": entry["true_positive"],
+                "presence_fp": entry["false_positive"],
+                "presence_fn": entry["false_negative"],
+            }
+        )
+    write_json(output / "episodes.json", reports)
     count = sum(row["present_steps"] for row in reports)
     mae = sum(row["bearing_error_sum_deg"] for row in reports) / count if count else None
     summary = {

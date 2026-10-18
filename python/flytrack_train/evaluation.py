@@ -6,6 +6,7 @@ import csv
 import glob
 import json
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,10 @@ from flytrack_core.contracts import file_sha256
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_core.model import load_policy_artifact
 
-from .batches import tensor_observation
+from .audit import audit_environment
+from .batches import SequenceModel, tensor_observation
 from .config import contract_from_config, make_env, write_json
+from .parallel import EnvPool
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
@@ -365,33 +368,81 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
         summarize_recorded(config, output, variants, scenarios, seeds, episodes)
         return
     expected_contract = contract_from_config(config)
+    # A blind constant action must not "track" in the evaluated world; otherwise
+    # success rates cannot separate tracking from circling (see audit.py).
+    environment_audit = audit_environment(
+        config,
+        expected_contract,
+        episodes=int(options.get("environment_audit_episodes", 40)),
+        success_distance_m=float(options.get("success_distance_m", 2)),
+        success_fraction=float(options.get("success_time_fraction", 0.8)),
+        success_bearing_deg=options.get("success_bearing_deg", 45.0),
+    )
+    write_json(output / "environment_audit.json", environment_audit)
+    if not environment_audit["passed"] and not options.get("allow_degenerate_environment"):
+        raise ValueError(
+            "Evaluation world is degenerate (a blind policy succeeds): "
+            + "; ".join(environment_audit["failures"])
+        )
     artifact_matrix = validate_artifact_matrix(config, variants, seeds, torch.device("cpu"))
     rows, manifests = [], list(artifact_matrix.values())
     output.mkdir(parents=True, exist_ok=True)
-    for variant in variants:
-        for seed in seeds:
-            path = artifact_matrix[(variant, seed)]["artifact"]
-            policy, contract, card = load_policy_artifact(path, device=str(device))
-            if policy.variant != variant or contract.sha256() != expected_contract.sha256():
-                raise ValueError(f"Artifact {path} has incompatible variant/sensor contract")
-            policy.eval()
-            for scenario in scenarios:
-                env = make_env(config, contract, scenario=scenario)
-                try:
-                    for episode in range(episodes):
-                        # Identical seed/episode environments are paired across all variants.
-                        env_seed = (
-                            int(options.get("environment_seed", 1700000000))
-                            + seed * 100000
-                            + episode
-                        ) % (2**31 - 1)
-                        observation, _ = env.reset(seed=env_seed)
+    latency_episodes = min(int(options.get("latency_episodes", 1)), episodes)
+    lanes = int(options.get("batch_episodes", 32))
+    if latency_episodes < 0 or lanes <= 0:
+        raise ValueError("latency_episodes must be nonnegative and batch_episodes positive")
+    # One pool for the whole matrix: `lanes` slots per scenario world.
+    pool = EnvPool(
+        [
+            partial(make_env, config, expected_contract, scenario=scenario)
+            for scenario in scenarios
+            for _ in range(lanes)
+        ]
+    )
+
+    def environment_seed(seed, episode):
+        # Identical seed/episode environments are paired across all variants.
+        return (int(options.get("environment_seed", 1700000000)) + seed * 100000 + episode) % (
+            2**31 - 1
+        )
+
+    def metrics():
+        bearing = options.get("success_bearing_deg", 45.0)
+        return EpisodeMetrics(
+            contract.control_dt,
+            float(options.get("success_distance_m", 2)),
+            float(options.get("success_time_fraction", 0.8)),
+            None if bearing is None else float(bearing),
+        )
+
+    def record(accumulator, info, action, latency_ms=None):
+        accumulator.append(
+            info["target_distance_m"],
+            info["target_bearing_rad"],
+            info.get("applied_action", action)[1],
+            info["collision"],
+            info.get("occluded", False),
+            info.get("time_s"),
+            latency_ms,
+        )
+
+    try:
+        for variant in variants:
+            for seed in seeds:
+                path = artifact_matrix[(variant, seed)]["artifact"]
+                policy, contract, card = load_policy_artifact(path, device=str(device))
+                if policy.variant != variant or contract.sha256() != expected_contract.sha256():
+                    raise ValueError(f"Artifact {path} has incompatible variant/sensor contract")
+                policy.eval()
+                model = SequenceModel(policy, device)
+                for scenario_index, scenario in enumerate(scenarios):
+                    slots = list(range(scenario_index * lanes, (scenario_index + 1) * lanes))
+                    results = {}
+                    # Deployment latency: one actor call per control step, as on the robot.
+                    for episode in range(latency_episodes):
+                        observation, _ = pool.reset(slots[0], environment_seed(seed, episode))
                         state = policy.initial_state(1, device)
-                        accumulator = EpisodeMetrics(
-                            contract.control_dt,
-                            float(options.get("success_distance_m", 2)),
-                            float(options.get("success_time_fraction", 0.8)),
-                        )
+                        accumulator = metrics()
                         with torch.no_grad():
                             while True:
                                 if device.type == "cuda":
@@ -404,35 +455,75 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
                                 if device.type == "cuda":
                                     torch.cuda.synchronize(device)
                                 latency_ms = (time.perf_counter() - started) * 1000
-                                observation, _, terminated, truncated, info = env.step(
-                                    physical_action
-                                )
-                                accumulator.append(
-                                    info["target_distance_m"],
-                                    info["target_bearing_rad"],
-                                    info.get("applied_action", physical_action)[1],
-                                    info["collision"],
-                                    info.get("occluded", False),
-                                    info.get("time_s"),
-                                    latency_ms,
-                                )
+                                observation, _, terminated, truncated, info = pool.step(
+                                    {slots[0]: physical_action}
+                                )[slots[0]]
+                                record(accumulator, info, physical_action, latency_ms)
                                 if terminated or truncated:
                                     break
+                        results[episode] = accumulator.result()
+                    # Remaining episodes: identical worlds and actor, batched across slots.
+                    queue = list(range(latency_episodes, episodes))
+                    running: dict[int, tuple[int, EpisodeMetrics]] = {}
+                    observations: dict[int, dict] = {}
+                    sensory, central = model.initial(lanes)
+                    initial_sensory, initial_central = model.initial(1)
+                    with torch.no_grad(), model.cache():
+                        while queue or running:
+                            for row, slot in enumerate(slots):
+                                if slot in running or not queue:
+                                    continue
+                                episode = queue.pop(0)
+                                observations[slot], _ = pool.reset(
+                                    slot, environment_seed(seed, episode)
+                                )
+                                if sensory is not None:
+                                    sensory[row] = initial_sensory[0]
+                                central[row] = initial_central[0]
+                                running[slot] = (episode, metrics())
+                            active = [row for row, slot in enumerate(slots) if slot in running]
+                            index = torch.tensor(active, device=device)
+                            obs = tensor_observation(
+                                [observations[slots[row]] for row in active], device
+                            )
+                            inputs, new_sensory = model.observe(
+                                obs, None if sensory is None else sensory[index]
+                            )
+                            action, new_central, _ = model.step(inputs, central[index])
+                            if sensory is not None:
+                                sensory[index] = new_sensory
+                            central[index] = new_central
+                            host = action.cpu().numpy()
+                            stepped = pool.step(
+                                {slots[row]: host[i] for i, row in enumerate(active)}
+                            )
+                            for i, row in enumerate(active):
+                                slot = slots[row]
+                                observation, _, terminated, truncated, info = stepped[slot]
+                                episode, accumulator = running[slot]
+                                record(accumulator, info, host[i])
+                                observations[slot] = observation
+                                if terminated or truncated:
+                                    results[episode] = accumulator.result()
+                                    del running[slot]
+                    for episode in range(episodes):
                         rows.append(
                             {
                                 "variant": variant,
                                 "scenario": scenario,
                                 "seed": seed,
                                 "episode": episode,
-                                "environment_seed": env_seed,
+                                "environment_seed": environment_seed(seed, episode),
                                 "model_card_sha256": artifact_matrix[(variant, seed)][
                                     "model_card_sha256"
                                 ],
-                                **accumulator.result(),
+                                "latency_measured": episode < latency_episodes,
+                                **results[episode],
                             }
                         )
-                finally:
-                    env.close()
+                del policy, model
+    finally:
+        pool.close()
     _write_reports(output, rows, options)
     write_json(
         output / "evaluation_manifest.json",
@@ -441,7 +532,8 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
             "artifacts": manifests,
             "latency_definition": (
                 "2D wall time from sensor tensor assembly through actor output CPU transfer; "
-                "excludes rendering"
+                "excludes rendering; measured on the first latency_episodes episodes of each "
+                "cell, run one actor call per control step; batched episodes report no latency"
             ),
             "statistics": (
                 "seed-level nonparametric bootstrap; "
@@ -450,5 +542,10 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
             "reacquisition_definition": (
                 "completed occlusion events only; censored events reported separately"
             ),
+            "success_definition": (
+                "fraction of samples within success_distance_m and facing the target within "
+                "success_bearing_deg is at least success_time_fraction, without collision"
+            ),
+            "environment_audit": environment_audit,
         },
     )

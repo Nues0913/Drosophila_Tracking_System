@@ -1,6 +1,6 @@
 # 訓練與評估實作契約
 
-本輪只新增程式碼及文件，未執行測試、訓練、推論、ROS build 或依賴安裝。以下指令供後续流程使用，不能視為已通過驗證。
+本文描述訓練介面；以下訓練指令供後續流程使用。2026-10-15 的 DN 修正只執行單元測試、lint、設定產生與無權重更新的 CPU 診斷，沒有執行實際訓練或 validate-pretrain；證據見 [DN 修正報告](../../runs/dn_fix/REPORT.md)。
 
 ## 責任與介面
 
@@ -49,7 +49,10 @@ python -m flytrack_train export --config configs/train/ppo.yaml --artifact runs/
 train:
   modality: vision
   total_steps: 120000
-  epochs: 20
+  epochs: 20                  # 上限；提早停止決定實際 epoch 數
+  batch_episodes: 16
+  validation_every: 10
+  early_stopping_patience: 3
   sequence_length: 32
   learning_rate: 0.001
   exploration_probability: 0.2
@@ -59,11 +62,35 @@ train:
   max_grad_norm: 0.5
 ```
 
-collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。監督式 TBPTT 隨機排列回合，保持每回合窗口順序；完整記憶在窗口間持續，但梯度在邊界 detach，避免每個窗口重算整段前綴的二次複雜度。窗口之間更新權重，保留上一窗口產生的 detached state，這是串流 TBPTT 的近似。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助头。
+collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
+
+**平行收集。** 環境放在 `--workers` 個子行程（`parallel.EnvPool`），trainer 仍決定每次 reset 與動作。第 `i` 個回合的環境種子與私有亂數只由 `SeedSequence([seed, stream, i])` 決定，回合依編號提交，跨過預算的那個回合被截斷，所以資料與 worker 數、排程時序無關，和單一序列收集器的語意相同。預訓練資料不依賴 actor，設定 `dataset_cache` 時同一種子／模態／世界的回合流只收集一次，所有變體讀取自己預算需要的前綴（檔案鎖保護同時執行）。
+
+**凍結感覺快取。** flyvis 前端與 ORN 適應沒有可訓練參數，`policy.sense()` 輸出的感覺碼只取決於觀測歷史，因此每個收集到的步只算一次，所有 epoch 與 PPO 更新重用；可訓練部分走 `policy.forward_code()`。`policy(obs, state)` 仍是兩者的組合，部署行為不變。同一個前向圖（一個 TBPTT 窗口、一次 no-grad rollout）內，`adjacency_cache()` 只組一次連接矩陣。
+
+**批次 TBPTT。** `batch_episodes`（預設 16）條回合平行前進，每條在自己的 lane 依時間順序走 `sequence_length` 窗口並延續自己的遞迴狀態；一次 optimizer step 平均各 lane 的單窗口損失（每 lane 的損失定義與單回合時完全相同）。梯度在窗口邊界 detach，回合開頭的初始狀態每窗口重建，梯度照常流到靜息 bias。
+
+**提早停止。** 每第 `validation_every`（預設 10）個回合保留為驗證集，不參與擬合；每個 epoch 後計算驗證損失，連續 `early_stopping_patience`（預設 3）個 epoch 沒有相對改善 `early_stopping_min_delta` 就停止，最後還原驗證損失最佳的參數與 optimizer 狀態。`epochs` 是上限。回合數少於 `validation_every` 時不保留驗證集，跑滿 `epochs`。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助头。
 
 正式公平流程可讓 V/O 各用 240000 步，VO/VO-late/GRU/RS 各先視覺 120000 步，再以該次 `actor/` 作 `init_artifact` 做嗅覺 120000 步。模型各自暖啟動，可避免從生物模型替基準模型挑選較好的初始權重。
 
 另有選配 `pretrained_artifacts: {vision: PATH, odor: PATH}`，按模態移植連接體 type / type-pair 參數，交集平均，保留新任務 motor readout。限連接體 family、要求相同圖與前端來源；不能與 `init_artifact` 同時使用，也不能套到 GRU。
+
+## DN 活動正則與階段診斷
+
+pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連接體策略的 `activity_coef` 只乘上非運動 DN 神經元的平方活性平均，分母是非 DN 數量；保留時間／批次軸供原本的 lane／step mask 彙總。全為運動 DN 時回傳可微的零。GRU 保留全部診斷 hidden channels 的平方平均。DN 仍可能透過對其他神經元的回饋受到間接梯度；這不是證明活動正則造成先前沉默的消融結果。
+
+所有新連接體模型使用 `motor_rate_beta=10.0` 的 DN softplus（其他神經元維持 ReLU），完整定義見 [MODEL_NOTES.md](../flytrack_core/model/MODEL_NOTES.md)。舊 artifact 缺少 β 時保留 ReLU；若要暖啟動並切換為新規則，須明確設定 `model: {motor_rate_beta: 10.0}`，新生成的六變體設定已包含此鍵。單純讀取 artifact 不會修改它。
+
+`scripts/dn_health.py --artifact PATH` 是 CPU 唯讀診斷：使用 model card 記錄的世界設定（或 `--config`）與 held-out 種子 `[1.5e9,1.7e9)`，以教師駕駛世界，重播原始與只交換左右眼影像的配對序列。預設 24 回合，各 burn-in 16 步、量 200 步（4×64 步時同一個 BC 模型曾量得 −157% 與 +30% 兩種結果），從量測段前 16 步計算教師動作的尺度正規化 MSE 梯度；回合提早結束會如實記錄實際步數。沒有 optimizer、參數更新或預訓練 decoder。輸出每個 DN 的正活性比例、有效活性比例與 rate 分布、各支路電位分位數、換眼角速度差、`core.*`／`readout.*` 及其群組梯度範數、角速度誤差與固定零轉向基準。
+
+softplus 的正值靜息項不能當作運動控制證據。除原始 `rate>0` 比例，診斷另用 `rate>1e-3` 計算有效活性，要求至少 4 個 DN 在 ≥10% 步數有效、中央梯度範數 >1e-6、視覺換眼角速度差中位數 ≥0.05 rad/s，所有數值有限。BC 階段另要求策略 ω 與教師 ω 的相關 ≥0.5、R²>0（勝過最佳常數）且 ω 標準差 ≥ 教師的 25%；PPO／ES 要求相關 ≥0.3 與同樣的幅度條件。原本的「MAE 比固定零輸出低 20%」會讓完全固定轉向的模型通過（教師平均 ω 不為零），只看相關則會讓方向正確但幅度只有 1/80 的模型通過（其 R² 約 +0.02）。O 變體依設計完全遮蔽視覺，所以不套視覺換眼門檻；GRU 沒有生物 DN 對應，略過 DN gate。診斷不能取代正式 held-out 評估或 validate-pretrain。
+
+`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷；未通過寫入 `dn_health_failed` 並停止後續鏈；不得為了繼續訓練而默默放寬門檻。
+
+## 環境退化檢查
+
+`scripts/run_experiments.py` 在任何階段開始前，對 BC 與 PPO／ES 的世界各跑一次 `flytrack_train.audit.audit_environment`（40 回合）：教師成功率須 ≥90%，八種固定動作與教師平均動作的成功率都須 ≤10%，否則拒絕訓練並寫出 `environment_audit.json`；`--skip-environment-audit` 只供診斷。正式評估也先對評估世界做同樣檢查並把結果存入報告。舊世界（永遠逆時針繞圈、果蠅從正後方出發、成功只看距離）中固定左轉成功率 100%，與教師相同，這是 BC 只學到平均動作的主因。
 
 ## BC 與 DAgger
 
@@ -74,14 +101,19 @@ train:
   dagger_steps_per_round: 30000
   dagger_rounds: 3
   dagger_beta: 0.5
-  epochs: 10
+  epochs: 30
   sequence_length: 32
   learning_rate: 0.001
+  core_bias_learning_rate: 0.0
+  readout_learning_rate: 0.01
+  early_stopping_min_delta: 0.005
   max_grad_norm: 0.5
   activity_coef: 0.0001
 ```
 
-先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
+`imitation.parameter_groups` 依名稱分組：`core.bias`（神經元型別偏置）在 BC 固定，`readout.*` 以 1e-2 學習，其餘用 `learning_rate`。離線 BC 顯示偏置的梯度比連結強度大 30～1000 倍，優化器先調偏置去配合平均動作，同時把已傳到 DN 的方位資訊破壞（DN 左右差 R² 0.67→−0.12）；固定偏置則保留。GRU 沒有連接體偏置，只套用讀出學習率。`early_stopping_min_delta` 為相對改善門檻，0 時驗證損失每 epoch 只降 0.1% 也永不停止。
+
+先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
 ## Recurrent PPO
 
@@ -106,7 +138,7 @@ train:
   target_kl: 0.03
 ```
 
-多個 scalar 環境由 trainer 擁有，逐一取得終局 info 後手動 reset，無 Gymnasium autoreset 覆寫終局觀測的風險。`total_steps` 必須是 `num_envs` 的倍數；最後 rollout 可縮短。每個 TBPTT minibatch 保留連續時間窗口，不以任意單步打散遞迴；窗口初始 state 是該 rollout 的 detached behavior state，窗口內按 episode-start reset。
+多個 scalar 環境由 trainer 擁有（在 `EnvPool` 子行程中同時 step），逐一取得終局 info 後手動 reset，無 Gymnasium autoreset 覆寫終局觀測的風險。`total_steps` 必須是 `num_envs` 的倍數；最後 rollout 可縮短。每個 TBPTT minibatch 保留連續時間窗口，不以任意單步打散遞迴；窗口初始 state 是該 rollout 的 detached behavior state，窗口內按 episode-start reset。
 
 策略先把 actor 物理均值 `[v,omega]` 轉為 `atanh([2v/v_max-1,omega/omega_max])`，再從 latent Gaussian 抽樣，經 tanh 與物理 affine transform 還原。這保留正向速度 sigmoid readout 的含義，log probability 包含 tanh 與物理縮放的 Jacobian。存 latent sample，避免接近界限時對實際動作做不穩定反算。
 
@@ -158,7 +190,7 @@ evaluation:
 
 invalid 回合仍以 success=false 納入成功率；距離、方位、重新捕獲、平滑度與碰撞摘要只使用有效完整回合，完整原始部分資料保留在 episodes 報表，另提供 valid_episode / sample_coverage 的種子摘要。模型 walltime 不依賴真值覆蓋率，仍可用於診斷。
 
-2D latency 是 sensor tensor 組装至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
+2D 評估把每格（變體／種子／情境）的回合分散到 `batch_episodes` 個平行世界，actor 批次推論；每格前 `latency_episodes`（預設 1）個回合仍以部署方式每步單筆呼叫完整 `policy(obs, state)` 並量 latency，其餘回合的 latency 欄位為空，種子平均只用量過的回合。2D latency 是 sensor tensor 組装至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
 
 策略另發布 `/fly/inference_latency_ms`（std_msgs/Float64），ROS evaluator 在 JSON/CSV 的 `inference_wall_p50_ms` / `inference_wall_p95_ms` 保留真正 perf-counter 模型推論處理時間，含 tensor 準備與 CPU materialization，排除感測生成、DDS 與等待控制 timer。兩組 latency 指標不可混用。
 

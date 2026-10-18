@@ -76,6 +76,10 @@ collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
 
 另有選配 `pretrained_artifacts: {vision: PATH, odor: PATH}`，按模態移植連接體 type / type-pair 參數，交集平均，保留新任務 motor readout。限連接體 family、要求相同圖與前端來源；不能與 `init_artifact` 同時使用，也不能套到 GRU。
 
+## Pretrain decoder 輸入尺度
+
+- `train.decoder_input_scale`：`none`（預設，原始線性 decoder）或 `population_rms`；以更新前 intact policy 的第一批完整已編碼 episodes 的全部有效時間步計算兩個族群純量 `sqrt(mean(rate²))`（排除 padding／held-out，RMS ≥ 1e-3）：該模態的 visual／olfactory 去除 convergence，以及 convergence；輸入只除以各族群 RMS，不減平均。統計只算一次，research／recovery checkpoint 的 `decoder` 保存 `input_rms`、`input_convergence`、`input_initialized`，resume 原樣沿用；讀取使用 `PopulationRMSDecoder`（`validate-pretrain` 依 checkpoint 是否含 `input_rms` 自動選用）。此模式 decoder weight／bias 初始化為 0（仍照常消耗 `nn.Linear` 的隨機抽樣）：未減平均的單位 RMS 輸入配上隨機 head 起始 loss 達 9–15，零初始化起始約 1 + ln 2。舊 `decoder_input_standardize` 已移除，舊標準化研究 decoder 不相容；已匯出的 actor 不受影響。
+
 ## DN 活動正則與階段診斷
 
 pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連接體策略的 `activity_coef` 只乘上非運動 DN 神經元的平方活性平均，分母是非 DN 數量；保留時間／批次軸供原本的 lane／step mask 彙總。全為運動 DN 時回傳可微的零。GRU 保留全部診斷 hidden channels 的平方平均。DN 仍可能透過對其他神經元的回饋受到間接梯度；這不是證明活動正則造成先前沉默的消融結果。

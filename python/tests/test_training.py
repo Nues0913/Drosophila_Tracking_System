@@ -1,6 +1,8 @@
 """Algorithmic checks to run later; no downloaded data or trained artifact required."""
 
+import hashlib
 import importlib.util
+import json
 import math
 import random
 from pathlib import Path
@@ -369,6 +371,8 @@ def _assert_nested_equal(left, right):
         ("es", None),
         ("pretrain", "collect"),
         ("pretrain", "fit"),
+        ("pretrain_population_rms", "collect"),
+        ("pretrain_population_rms", "fit"),
         ("bc", "collect"),
         ("bc", "fit"),
     ],
@@ -379,6 +383,9 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     from flytrack_core.contracts import SensorContract
     from flytrack_train import es, imitation, ppo, pretrain
 
+    scaled = algorithm == "pretrain_population_rms"
+    if scaled:
+        algorithm = "pretrain"
     module = {"ppo": ppo, "es": es, "pretrain": pretrain, "bc": imitation}[algorithm]
     monkeypatch.setattr(
         module,
@@ -407,6 +414,8 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
             "dagger_rounds": 2,
         }
     }
+    if scaled:
+        config["train"]["decoder_input_scale"] = "population_rms"
     run = {
         "ppo": ppo.train_ppo,
         "es": es.train_es,
@@ -419,8 +428,10 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
 
     def stop_after_first_checkpoint(self, rng, **state):
         original_save(self, rng, **state)
-        if self.output == interrupted and (
-            interrupt_phase is None or state.get("phase") == interrupt_phase
+        if (
+            self.output == interrupted
+            and (interrupt_phase is None or state.get("phase") == interrupt_phase)
+            and (not scaled or interrupt_phase != "fit" or state.get("fit_state") is not None)
         ):
             raise InterruptedError("simulated process interruption after committed checkpoint")
 
@@ -428,6 +439,16 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     with pytest.raises(InterruptedError):
         run(config, interrupted, 11, torch.device("cpu"))
     monkeypatch.setattr(Recovery, "save", original_save)
+    if scaled and interrupt_phase == "fit":
+        original_initialize = pretrain.initialize_decoder_inputs
+
+        def require_saved_statistics(decoder, *args):
+            assert bool(decoder.input_initialized)
+            original_initialize(decoder, *args)
+
+        saved = torch.load(interrupted / "training_checkpoint.pt", weights_only=True)
+        assert bool(saved["decoder"]["input_initialized"])
+        monkeypatch.setattr(pretrain, "initialize_decoder_inputs", require_saved_statistics)
     run({**config, "resume": True}, interrupted, 11, torch.device("cpu"))
     expected = torch.load(full / "training_checkpoint.pt", weights_only=True)
     observed = torch.load(interrupted / "training_checkpoint.pt", weights_only=True)
@@ -450,6 +471,12 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
         assert expected["dataset_count"] == observed["dataset_count"]
         if algorithm == "pretrain":
             _assert_nested_equal(expected["decoder"], observed["decoder"])
+            if scaled:
+                research = torch.load(interrupted / "pretraining_checkpoint.pt", weights_only=True)
+                for key in ("input_rms", "input_convergence", "input_initialized"):
+                    assert torch.equal(research["decoder"][key], observed["decoder"][key])
+                    if interrupt_phase == "fit":
+                        assert torch.equal(saved["decoder"][key], observed["decoder"][key])
 
 
 def test_bc_parameter_groups_override_core_bias_and_readout_rates():
@@ -596,3 +623,241 @@ def test_runner_failed_chain_stops_others_unless_keep_going(tmp_path, monkeypatc
         runner.main()
     v_stages = [output for output in launched if "/V/" in output]
     assert len(v_stages) == (3 if keep_going else 0)
+
+
+def _patch_small_pretrain(monkeypatch):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import pretrain
+
+    class BiasedPolicy(_RecoveryPolicy):
+        def __init__(self):
+            super().__init__()
+            self.core = torch.nn.Module()
+            self.core.bias = torch.nn.Parameter(torch.full((2,), 0.1))
+
+        def initial_state(self, batch, device):
+            return self.core.bias.expand(batch, -1).clone()
+
+    monkeypatch.setattr(
+        pretrain, "prepare_policy", lambda *args: (BiasedPolicy(), SensorContract())
+    )
+    monkeypatch.setattr(pretrain, "make_env", lambda *args: _RecoveryEnv())
+    monkeypatch.setattr(pretrain, "save_actor", lambda *args, **kwargs: None)
+    return pretrain, {
+        "train": {
+            "modality": "vision",
+            "total_steps": 6,
+            "epochs": 1,
+            "sequence_length": 2,
+            "batch_episodes": 2,
+        }
+    }
+
+
+@pytest.mark.parametrize("value", ["standardize", "POPULATION_RMS", True, 1, None, []])
+def test_pretrain_decoder_scale_rejects_invalid_options(tmp_path, monkeypatch, value):
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    config["train"]["decoder_input_scale"] = value
+    with pytest.raises(ValueError, match="decoder_input_scale"):
+        pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
+
+
+def test_pretrain_rejects_removed_standardization_setting(tmp_path, monkeypatch):
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    config["train"]["decoder_input_standardize"] = False
+    with pytest.raises(ValueError, match="was removed"):
+        pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
+
+
+def test_pretrain_explicit_none_matches_default_bitwise(tmp_path, monkeypatch):
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    pretrain.train_pretrain(config, tmp_path / "default", 17, torch.device("cpu"))
+    config["train"]["decoder_input_scale"] = "none"
+    pretrain.train_pretrain(config, tmp_path / "none", 17, torch.device("cpu"))
+    default = torch.load(tmp_path / "default/training_checkpoint.pt", weights_only=True)
+    explicit = torch.load(tmp_path / "none/training_checkpoint.pt", weights_only=True)
+    for key in ("actor", "decoder", "optimizer", "rng", "fit_state"):
+        _assert_nested_equal(default[key], explicit[key])
+    assert set(default["decoder"]) == {"weight", "bias"}
+
+
+def test_population_rms_decoder_starts_at_zero_after_the_default_draw(tmp_path, monkeypatch):
+    from flytrack_train.pretrain import PopulationRMSDecoder
+
+    torch.manual_seed(5)
+    reference = torch.nn.Linear(3, 4)
+    after_reference = torch.get_rng_state()
+    torch.manual_seed(5)
+    decoder = PopulationRMSDecoder(3, 4, torch.tensor([False, True, True]))
+    assert torch.equal(after_reference, torch.get_rng_state())
+    assert reference.weight.abs().sum() > 0
+    assert torch.count_nonzero(decoder.weight) == torch.count_nonzero(decoder.bias) == 0
+    assert decoder.weight.requires_grad and decoder.bias.requires_grad
+
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    original_initialize = pretrain.initialize_decoder_inputs
+    seen = []
+
+    def record_start(decoder, *args):
+        seen.append({key: value.clone() for key, value in decoder.state_dict().items()})
+        original_initialize(decoder, *args)
+
+    monkeypatch.setattr(pretrain, "initialize_decoder_inputs", record_start)
+    config["train"]["decoder_input_scale"] = "population_rms"
+    pretrain.train_pretrain(config, tmp_path, 3, torch.device("cpu"))
+    (start,) = seen
+    assert torch.count_nonzero(start["weight"]) == torch.count_nonzero(start["bias"]) == 0
+    trained = torch.load(tmp_path / "training_checkpoint.pt", weights_only=True)["decoder"]
+    assert torch.count_nonzero(trained["weight"]) > 0
+
+
+@pytest.mark.parametrize("scale", ["none", "population_rms"])
+def test_validate_pretrain_reads_plain_and_population_rms_decoders(tmp_path, monkeypatch, scale):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import validation
+
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    config["train"]["decoder_input_scale"] = scale
+    pretrain.train_pretrain(config, tmp_path / "train", 3, torch.device("cpu"))
+    checkpoint_path = tmp_path / "train/pretraining_checkpoint.pt"
+    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    assert ("input_rms" in checkpoint["decoder"]) == (scale == "population_rms")
+    policy, _ = pretrain.prepare_policy(config, "cpu")
+    policy.load_state_dict(checkpoint["actor"])
+    monkeypatch.setattr(
+        validation, "load_policy_artifact", lambda *args, **kwargs: (policy, SensorContract(), {})
+    )
+    monkeypatch.setattr(validation, "make_env", lambda *args: _RecoveryEnv())
+    summary = validation.validate_pretraining(
+        {**config, "validation": {"episodes": 2}},
+        tmp_path / "validation",
+        tmp_path / "actor",
+        checkpoint_path,
+        torch.device("cpu"),
+    )
+    assert summary["episodes"] == 2 and summary["present_steps"] == 6
+    assert math.isfinite(summary["bearing_mae_deg"])
+
+    # Uninitialized scales would silently divide by one; refuse them.
+    if scale == "population_rms":
+        checkpoint["decoder"]["input_initialized"] = torch.tensor(False)
+        torch.save(checkpoint, tmp_path / "uninitialized.pt")
+        with pytest.raises(ValueError, match="uninitialized"):
+            validation.validate_pretraining(
+                {**config, "validation": {"episodes": 2}},
+                tmp_path / "rejected",
+                tmp_path / "actor",
+                tmp_path / "uninitialized.pt",
+                torch.device("cpu"),
+            )
+
+
+def test_decoder_rms_ignores_padding_held_out_and_uses_whole_first_batch_once():
+    from flytrack_train.batches import SequenceModel
+    from flytrack_train.pretrain import PopulationRMSDecoder, initialize_decoder_inputs
+
+    class ActivityPolicy(_RecoveryPolicy):
+        def forward(self, observation, state):
+            return observation["odor"], state, observation["odor"]
+
+    inputs = [
+        {"odor": torch.tensor([[1.0, 2.0, 4.0], [3.0, 4.0, 4.0]])},
+        {"odor": torch.full((1, 3), 1000.0)},  # Held out.
+        {"odor": torch.tensor([[5.0, 6.0, 4.0]])},
+        {"odor": torch.full((1, 3), 1000.0)},  # Held out.
+        {"odor": torch.full((1, 3), 1000.0)},  # Beyond first batch.
+    ]
+    decoder = PopulationRMSDecoder(3, 3, torch.tensor([False, False, True]))
+    parameters = list(decoder.parameters())
+    model = SequenceModel(ActivityPolicy(), "cpu")
+    rng_before = torch.get_rng_state().clone()
+    initialize_decoder_inputs(
+        decoder,
+        model,
+        inputs,
+        torch.ones(3, dtype=torch.bool),
+        {"batch_episodes": 2, "sequence_length": 1, "validation_every": 2},
+    )
+    torch.testing.assert_close(decoder.input_rms, torch.tensor([math.sqrt(91 / 6), 4.0]))
+    assert not decoder.input_rms.requires_grad
+    assert torch.equal(rng_before, torch.get_rng_state())
+    assert len(list(decoder.parameters())) == len(parameters) == 2
+    assert all(parameter.grad is None for parameter in parameters)
+    activity = torch.tensor([[2.0, 0.0, 4.0], [3.0, 1e-5, 4.0]], requires_grad=True)
+    torch.testing.assert_close(
+        decoder(activity),
+        torch.nn.functional.linear(
+            activity / decoder.input_rms[torch.tensor([0, 0, 1])], decoder.weight, decoder.bias
+        ),
+    )
+    decoder(activity).sum().backward()
+    assert activity.grad is not None and torch.isfinite(activity.grad).all()
+    saved_rms = decoder.input_rms.clone()
+    inputs[0]["odor"].fill_(999)
+    initialize_decoder_inputs(
+        decoder,
+        SequenceModel(ActivityPolicy(), "cpu"),
+        inputs,
+        torch.ones(3, dtype=torch.bool),
+        {},
+    )
+    assert torch.equal(decoder.input_rms, saved_rms)
+
+
+@pytest.mark.parametrize("value", [0.0, float("inf"), float("nan")])
+def test_decoder_population_rms_floor_and_nonfinite_inputs(value):
+    from flytrack_train.batches import SequenceModel
+    from flytrack_train.pretrain import PopulationRMSDecoder, initialize_decoder_inputs
+
+    class ActivityPolicy(_RecoveryPolicy):
+        def forward(self, observation, state):
+            return observation["odor"], state, observation["odor"]
+
+    decoder = PopulationRMSDecoder(2, 3, torch.tensor([False, True]))
+    args = (
+        decoder,
+        SequenceModel(ActivityPolicy(), "cpu"),
+        [{"odor": torch.full((2, 2), value)}],
+        torch.ones(2, dtype=torch.bool),
+        {"batch_episodes": 1},
+    )
+    if math.isfinite(value):
+        initialize_decoder_inputs(*args)
+        torch.testing.assert_close(decoder.input_rms, torch.full((2,), 1e-3))
+    else:
+        with pytest.raises(ValueError, match="finite"):
+            initialize_decoder_inputs(*args)
+        assert not bool(decoder.input_initialized)
+
+
+def _checkpoint_digest(value):
+    def normalized(item):
+        if isinstance(item, torch.Tensor):
+            return {
+                "dtype": str(item.dtype),
+                "shape": list(item.shape),
+                "bytes": item.cpu().contiguous().numpy().tobytes().hex(),
+            }
+        if isinstance(item, dict):
+            return [[key, normalized(part)] for key, part in item.items()]
+        if isinstance(item, (tuple, list)):
+            return [normalized(part) for part in item]
+        return item
+
+    return hashlib.sha256(json.dumps(normalized(value)).encode()).hexdigest()
+
+
+@pytest.mark.parametrize("scale", [None, "none"])
+def test_pretrain_none_matches_main_checkpoint_bitwise(tmp_path, monkeypatch, scale):
+    # Captured from the untouched origin/main worktree before this transplant:
+    # CPU, seed 17, six environment steps and two Adam updates (torch 2.9.1).
+    pretrain, config = _patch_small_pretrain(monkeypatch)
+    if scale is not None:
+        config["train"]["decoder_input_scale"] = scale
+    pretrain.train_pretrain(config, tmp_path, 17, torch.device("cpu"))
+    checkpoint = torch.load(tmp_path / "training_checkpoint.pt", weights_only=True)
+    reference = json.loads(
+        (Path(__file__).parent / "fixtures/pretrain_main_sha256.json").read_text()
+    )
+    assert {key: _checkpoint_digest(checkpoint[key]) for key in reference} == reference
+    assert checkpoint["fit_state"]["reports"][0]["updates"] == 2

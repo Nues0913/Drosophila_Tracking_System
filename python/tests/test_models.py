@@ -626,3 +626,27 @@ def test_optional_turn_bias_sets_mean_turn_without_changing_default(graph):
         biased.turn_bias.fill_(0.2)
     omega = biased([rate])[0, 1]
     torch.testing.assert_close(omega, SensorContract().omega_max * torch.tanh(torch.tensor(0.2)))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the cuSPARSE bypass is CUDA-only")
+def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
+    from flytrack_core.model.sparse import spmm
+
+    generator = torch.Generator().manual_seed(0)
+    indices = torch.randint(0, 300, (2, 5000), generator=generator)
+    indices[0] = indices[0] % 250  # rows 250-299 stay empty
+    values = torch.randn(5000, generator=generator)
+    coo = torch.sparse_coo_tensor(indices, values, (300, 300)).coalesce().cuda()
+    dense = torch.relu(torch.randn(300, 64, generator=generator)).cuda()
+    reference = torch.sparse.mm(coo, dense)
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        for matrix in (coo, coo.to_sparse_csr()):
+            first, second = spmm(matrix, dense), spmm(matrix, dense)
+            assert torch.equal(first, second)
+            torch.testing.assert_close(first, reference, rtol=1e-5, atol=1e-5)
+    finally:
+        torch.use_deterministic_algorithms(previous)
+    # Outside deterministic mode spmm is torch.sparse.mm unchanged.
+    assert torch.equal(spmm(coo.cpu(), dense.cpu()), torch.sparse.mm(coo.cpu(), dense.cpu()))

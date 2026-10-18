@@ -28,7 +28,7 @@ train: {}
 output: runs/VO/seed_0
 ```
 
-路徑以執行指令時的工作目錄為基準，建議在儲存庫根目錄執行。感測契約亦可改用 inline `sensor_contract`。`init_artifact` 載入同 variant 完整 actor 權重並驗證契約、子圖、前端來源；不載入 critic 或 optimizer。`scenario_configs` 可指定情境 → YAML 路徑，依當前環境情境讀取，檔案的 `name` 必須吻合，其餘欄位合併至 `env.scenario_config`；inline 情境欄位優先於檔案。
+路徑以執行指令時的工作目錄為基準，建議在儲存庫根目錄執行。感測契約亦可改用 inline `sensor_contract`。`init_artifact` 載入同 variant 完整 actor 權重並驗證契約、子圖、前端來源；不載入 critic 或 optimizer。`scenario_configs` 可指定情境 → YAML 路徑，依當前環境情境讀取，檔案的 `name` 必須吻合，其餘欄位合併至 `env.scenario_config`；inline 情境欄位優先於檔案。`configs/scenarios/*.yaml` 是情境參數的唯一來源：occlusion、noise、conflict 情境若沒有對應的 `scenario_configs`（也沒有 inline `env.scenario_config`），`make_env` 直接報錯，不再默默改用 `ScenarioSpec` 的程式預設值（#2）；程式預設值已改成與 YAML 相同，只供單元測試與 ROS 未指定檔案時使用。`configs/train/` 下的訓練範本都已加上 `scenario_configs`。
 
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision
@@ -211,4 +211,4 @@ evaluator 提供 `artifact` 時只讀 `model_card.json`，不載入 torch 模型
 
 `python/tests/test_training.py`（動作 Jacobian、terminal/truncation GAE、非零初始記憶重置、actor input 隔離、seed bootstrap、重新捕獲 censoring、ES tied rank、中斷續訓）已通過；小預算預訓練/BC/PPO 已跑通，ES 尚未實跑。ROS package、launch、錄製與真值隔離測試需要已安裝並建置的 ROS 2 環境及真实 artifact。
 
-checkpoint 目前供保留研究狀態，CLI `init_artifact` 是 actor 權重暖啟動；沒有宣稱恢復完全相同的 optimizer、環境中途狀態或 RNG 軌跡。GPU sparse reduction 的數值可有差異；固定種子不是逐 bit 相同結果的保證。
+checkpoint 目前供保留研究狀態，CLI `init_artifact` 是 actor 權重暖啟動；沒有宣稱恢復完全相同的 optimizer、環境中途狀態或 RNG 軌跡。GPU sparse reduction 的數值可有差異；固定種子不是逐 bit 相同結果的保證。評估需要逐位元重現時（回歸測試、和參考檔比對），在評估 config 設 `evaluation.deterministic: true`，或對 `scripts/diagnostics/policy_episode_eval.py` 設 `DETERMINISTIC=1`（#3）：開啟 `torch.use_deterministic_algorithms`、固定 cuBLAS workspace，CUDA 上的稀疏乘法改用 gather 加分段加總（`flytrack_core.model.sparse.spmm`），因為 cuSPARSE 不受 deterministic 旗標控制，而且不會報錯。這只讓結果固定，不會更準：deterministic GPU、預設 GPU 和 CPU 三者之間仍有 float32 捨入層級的差異，參考檔要用同一個模式產生。訓練沒有提供這個選項（成本 2 倍以上）。

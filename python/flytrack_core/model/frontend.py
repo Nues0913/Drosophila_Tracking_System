@@ -11,6 +11,7 @@ import torch
 from torch import Tensor, nn
 
 from flytrack_core.contracts import SensorContract
+from flytrack_core.model.sparse import spmm
 from flytrack_core.sensing.hex_eye import axial_coordinates
 
 
@@ -183,9 +184,9 @@ class FrozenFlyvis(nn.Module):
         bias = self.bias.unsqueeze(1)
         columns = available.reshape(1, batch * 2)
         for _ in range(self.substeps):
-            recurrent = torch.sparse.mm(self.weight, torch.relu(voltage))
+            recurrent = spmm(self.weight, torch.relu(voltage))
             evolved = voltage + ratio * (-voltage + bias + recurrent + current)
             voltage = torch.where(columns, evolved, voltage)
-        features = torch.sparse.mm(self.pooling, torch.relu(voltage)).T
+        features = spmm(self.pooling, torch.relu(voltage)).T
         features = torch.where(available, features, 0.0)
         return features.reshape(batch, 2, -1), voltage.T.reshape(batch, -1)

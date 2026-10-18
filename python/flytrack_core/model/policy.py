@@ -17,6 +17,7 @@ from flytrack_core.contracts import SensorContract
 
 from .frontend import FrozenFlyvis
 from .graph import GROUPS, Graph, randomize_edges
+from .sparse import spmm
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 
@@ -289,7 +290,7 @@ class MaskedRateCore(nn.Module):
             if self.dense:
                 target = torch.addmm(drive, rates, operator)
             else:
-                target = drive + torch.sparse.mm(operator, rates.T).T
+                target = drive + spmm(operator, rates.T).T
             voltage = torch.lerp(voltage, target, ratio)
             if active is not None:
                 voltage = voltage * active

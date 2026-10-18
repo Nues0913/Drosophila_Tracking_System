@@ -14,7 +14,7 @@
 | flyvis 前端（方案 A） | 官方 checkpoint 作者 SHA-256 核對；原生轉換對官方輸出最大誤差 1.91e-6 | `artifacts/frontend/verification.json`、`docs/frontend_execution.md` |
 | 中央子圖萃取 | 2569 神經元、14165 邊；弱連通、每個種子型別可達 DN、號誌、雜湊等 19 項獨立檢查全過；重跑兩次位元相同 | `artifacts/data_execution/graph_verification.json`、`scripts/verify_subgraph.py` |
 | 六變體參數預算 | DN A＋C 後仍為 VO/V/O/RS=6794、VO-late=6766、GRU=6831，均在 ±5% 內 | `runs/dn_fix/experiment_configs/parameter_budget.json`（只產生設定，沒有執行 run_all.sh） |
-| 測試與 lint | 98 passed（含真實前端）；`ruff check`、`ruff format --check` 通過 | `runs/dn_fix/pytest.txt`、`runs/dn_fix/REPORT.md` |
+| 測試與 lint | 114 passed（含真實前端，2026-10-18 的 main）；`ruff check`、`ruff format --check` 通過 | `pytest python/tests` |
 | 小規模訓練鏈 | VO seed 0 縮小版：視覺預訓練 → 氣味預訓練 → BC → PPO 全部跑完，各階段權重有限且有更新 | 可用 `configs/train/smoke.yaml` 重現 PPO 部分 |
 | Docker 映像 | `flytrack-ml:0.1`、`flytrack-ros:0.1` 本機建置成功 | `docs/ros_execution.md` |
 
@@ -50,19 +50,19 @@
     - 縮短方案還沒決定，選項見 [training_time.md](training_time.md)。
     - CUDA Graphs 還沒試。
     - 第 13 點的修正如果要從 pretrain 重練，每條訓練鏈約多 1 小時。
-8. **ROS／Gazebo** 只建好映像，`colcon build`、閉環回合、真值隔離 launch test、延遲量測都還沒做。
+8. **ROS／Gazebo**：映像內的 `colcon build` 成功；2026-10-18 用目前的程式碼在映像裡跑真值隔離 launch test（通過）和 latency 單元測試（通過）。同時發現並修正策略節點關閉時送不出停止命令的問題（#15）。**閉環回合、Gazebo 物理與相機、延遲量測都還沒做。**
 9. **評估的主要終點、非劣容許差** 已在 `configs/evaluation_protocol.yaml` 宣告（2026-10-17 修訂為 schema 2：隨機化世界、朝向條件、環境審計），正式訓練前請組內確認一次。
 10. **新門檻是工程選擇**：朝向 45°、盲目策略 ≤10%、teacher ≥90%、BC 轉向相關 ≥0.5 與幅度 ≥25%、DN 輸入增益 100、wander 參數；請 reviewer 確認。
 11. **noise 情境的大幅波動**（情境測試中 A 3%、B 77%）。有一部分是設定不一致造成的：情境參數原本有程式預設值和 YAML 兩個來源，bc_A 的 noise 碰撞率因此出現 0.667 對 0.267（#2，已由 #5 修正）。另外，noise 情境的結果對雜訊參數非常敏感：bc_B 的 noise 成功率在兩組參數下是 77% 對 0%。雜訊強度對成功率的曲線，以及 BC 是否要做雜訊擴增，都還沒做。
 12. **linear 目標撞牆反彈會撞上跟隨者**（teacher 13% 碰撞），因此只留在 PPO 暖身課程。wander 目標撞上 teacher 的問題已在 #1 修正：總轉速加上限，teacher 也會閃避，1000 回合 0 次碰撞。正式評估要不要加入 wander 還沒決定。
 13. **【未解決】策略不用氣味（#4）。** bc_A、bc_B 對去掉氣味、氣味 ×10、左右交換的動作差都是 0。原因是非運動節點的 ReLU 在工作點截斷了嗅覺訊號。**所以現有的 VO 結果實際上只用了視覺**，conflict 的數字等於 normal，VO／V／O 的比較和 lesion 結論都還不成立。
-    - #7（審查中）：ORN 輸入增益 ×100，加上可選的 softplus。
+    - #7（已 merge）：可選的 ORN 輸入增益與嗅覺 softplus（預設都關閉；×100 會讓 odor pretrain 發散），pretrain 支援 `core_bias_learning_rate`，以及 `scripts/diagnostics/modality_sensitivity.py`。#12 讓 PPO／ES 也遵守這個設定，凍結的 bias 會一路保持到最後階段。
     - 我們在 4060 上的對照：
       - ×100 會讓嗅覺 rate 到 136（視覺 0.37），odor pretrain 因此發散。
       - vision pretrain 只更新 38 次，氣味對 ω 的影響就掉約 150 倍。
       - 在氣味通路不通時，用 20 秒長遮蔽混合訓練 BC，策略會崩潰成常數 ω（normal 成功率 0%，兩個 seed 都一樣）。
     - 診斷（2026-10-18）：訊號其實傳得到 DN，是 DN 的工作點被壓低了。
-      - vision pretrain 會訓練 bias（BC 有凍結，pretrain 沒有），上游抑制性節點因此變得持續活躍，再經 DN 輸入增益 ×100 放大，把 DNa01 的電壓壓到 −0.875。
+      - vision pretrain 預設會訓練 bias（BC 預設凍結；pretrain 現在可用 `core_bias_learning_rate: 0` 凍結），上游抑制性節點因此變得持續活躍，再經 DN 輸入增益 ×100 放大，把 DNa01 的電壓壓到 −0.875。
       - 在這個電壓下，softplus 的斜率只剩 1.6e-4，氣味造成的 ΔV 換不成 rate。
       - 氣味主要經 DNa01 影響轉向，所以「DNa01 沉默」（第 0 點）和 #4 是同一件事。
       - 只把 bias 換回初始化的值，氣味對 ω 的影響就恢復到初始化的 104%。
@@ -74,6 +74,19 @@
 15. **GPU 評估無法逐位元重現（#3，已修）。** 唯一的來源是 cuSPARSE。已由 #6 修正：評估 config 設 `evaluation.deterministic: true`，或診斷腳本設 `DETERMINISTIC=1`。在 4060 上兩次重跑的結果逐位元相同，耗時約 2 倍，只用在回歸測試和參考檔比對。
 16. **teacher／BC 是否必要還沒驗證（T3）。** 計畫從同一個 pretrain 出發，比較「BC 加 PPO」和「直接 PPO」：先跑 1 個種子各 500k 步，再決定要不要跑 3 個種子 × 2M 步。
 
+### 必須揭露的工程近似
+
+以下原本記在 `implementation_status.md`（2026-10-15），報告須說明。
+
+1. 方案 A 的早期視覺來自 flyvis 的資料與學習參數，只有中央子圖使用 MaleCNS。報告應區分這兩個來源。
+2. 沒有真實 RF 座標時，LC 輸入映射採型別／側別的空間池化；ORN Hill 閾值也是模擬設定，不是特定化學氣味的實測受體曲線。
+3. V／O 是同一張圖的輸入消融。VO-late 共享型別參數但隔離活性；RS 保留原邊參數槽的共享標籤。這些比較口徑都寫進 model_card。
+4. 2D 使用 2.5D 光線投射，Gymnasium 向量環境是 CPU 上的平行子行程，沒有實作 GPU 張量化世界。
+5. 2D 有大小／亮度的領域隨機化。Gazebo 使用設定中的固定幾何和材質，還沒證明兩者的感測分布一致，仍需量測與校準。
+6. ROS 碰撞目前用場地、半徑與障礙幾何判斷，沒有接 Gazebo contact sensor 做獨立核對。reset 的 pose 服務、零速度與隱狀態清理仍需跨節點驗證。
+7. ROS 的感測時間戳用模擬時鐘，推論耗時用 wall time。完整 sensor-to-command 因果延遲還沒有量測契約，不能宣稱 p95 < 50 ms。
+8. 續訓：同一階段中斷後可完整接續（權重、optimizer、RNG、環境重播，由 `test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng` 驗證）；跨階段以 `init_artifact` 暖啟動，recovery 也綁定上游 actor 的內容（#14）。改了程式碼或 optimizer 參數組數之後，舊的 checkpoint 不能接續，要重跑該階段。
+
 ## 下一步（建議順序）
 
 0. **reviewer 確認 [fixes_2026-10-17.md](fixes_2026-10-17.md)「仍待組內決定」的門檻**。環境、成功判定與 BC gate 已依情境測試的建議實作。
@@ -81,5 +94,5 @@
 2. 用 **VO seed 0** 跑完整預算，確認 PPO 穩定、回報有上升；需要調整的話，所有變體一起改。**先修好 #4（第 13 點）**，否則 VO 實際上等於 V，正式訓練的多感官比較沒有意義。
 3. 依新的教師校準（第 5 點）固定方位解碼門檻與成功率目標。
 4. 依 [gpu_hosts.md](gpu_hosts.md#分工跑正式訓練) 分工跑 6 變體 × 5 種子。
-5. 同時有人負責 ROS／Gazebo：`colcon build`、閉環回合、真值隔離測試（見 [ros_execution.md](ros_execution.md)）。
+5. 同時有人負責 ROS／Gazebo：`colcon build` 和真值隔離測試已通過（第 8 點），接著是閉環回合、reset 跨節點驗證與延遲量測（見 [ros_execution.md](ros_execution.md)）。
 6. 2D 正式評估 → Gazebo 主要比較 → lesion 分析 → 報告與展示。

@@ -15,6 +15,7 @@ from flytrack_core.sensing.hex_eye import HexEye
 from flytrack_interfaces.msg import NeuralActivity, OdorReading
 from geometry_msgs.msg import Twist
 from rclpy.duration import Duration
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
@@ -235,22 +236,29 @@ def main(args=None) -> None:
     # rclpy's own SIGINT handler shut the context down before the finally block,
     # so the zero command never left and Gazebo kept the last cmd_vel. Python
     # handles SIGINT/SIGTERM here instead; spin_once with a timeout returns to the
-    # interpreter so the interrupt is raised while the context is still valid.
+    # interpreter so the interrupt is raised while the context is still valid. One
+    # executor for the whole run, as rclpy.spin() does: rclpy.spin_once(node) adds
+    # and removes the node on every call.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     signal.signal(signal.SIGTERM, _interrupt)
-    node = None
+    node = executor = None
     try:
         node = ConnectomePolicyNode()
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
         while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
+        if node is not None and rclpy.ok():
+            node.publish_stop()
+            # Reliable QoS: let subscribers acknowledge before teardown.
+            node.command_publisher.wait_for_all_acked(Duration(seconds=1.0))
+        # Unlike the global executor, our own is not closed by rclpy.shutdown().
+        if executor is not None:
+            executor.shutdown()
         if node is not None:
-            if rclpy.ok():
-                node.publish_stop()
-                # Reliable QoS: let subscribers acknowledge before teardown.
-                node.command_publisher.wait_for_all_acked(Duration(seconds=1.0))
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

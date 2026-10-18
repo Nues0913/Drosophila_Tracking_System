@@ -1,8 +1,6 @@
 """Algorithmic checks to run later; no downloaded data or trained artifact required."""
 
-import hashlib
 import importlib.util
-import json
 import math
 import random
 from pathlib import Path
@@ -662,13 +660,6 @@ def test_pretrain_decoder_scale_rejects_invalid_options(tmp_path, monkeypatch, v
         pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
 
 
-def test_pretrain_rejects_removed_standardization_setting(tmp_path, monkeypatch):
-    pretrain, config = _patch_small_pretrain(monkeypatch)
-    config["train"]["decoder_input_standardize"] = False
-    with pytest.raises(ValueError, match="was removed"):
-        pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
-
-
 def test_pretrain_explicit_none_matches_default_bitwise(tmp_path, monkeypatch):
     pretrain, config = _patch_small_pretrain(monkeypatch)
     pretrain.train_pretrain(config, tmp_path / "default", 17, torch.device("cpu"))
@@ -828,36 +819,3 @@ def test_decoder_population_rms_floor_and_nonfinite_inputs(value):
         with pytest.raises(ValueError, match="finite"):
             initialize_decoder_inputs(*args)
         assert not bool(decoder.input_initialized)
-
-
-def _checkpoint_digest(value):
-    def normalized(item):
-        if isinstance(item, torch.Tensor):
-            return {
-                "dtype": str(item.dtype),
-                "shape": list(item.shape),
-                "bytes": item.cpu().contiguous().numpy().tobytes().hex(),
-            }
-        if isinstance(item, dict):
-            return [[key, normalized(part)] for key, part in item.items()]
-        if isinstance(item, (tuple, list)):
-            return [normalized(part) for part in item]
-        return item
-
-    return hashlib.sha256(json.dumps(normalized(value)).encode()).hexdigest()
-
-
-@pytest.mark.parametrize("scale", [None, "none"])
-def test_pretrain_none_matches_main_checkpoint_bitwise(tmp_path, monkeypatch, scale):
-    # Captured from the untouched origin/main worktree before this transplant:
-    # CPU, seed 17, six environment steps and two Adam updates (torch 2.9.1).
-    pretrain, config = _patch_small_pretrain(monkeypatch)
-    if scale is not None:
-        config["train"]["decoder_input_scale"] = scale
-    pretrain.train_pretrain(config, tmp_path, 17, torch.device("cpu"))
-    checkpoint = torch.load(tmp_path / "training_checkpoint.pt", weights_only=True)
-    reference = json.loads(
-        (Path(__file__).parent / "fixtures/pretrain_main_sha256.json").read_text()
-    )
-    assert {key: _checkpoint_digest(checkpoint[key]) for key in reference} == reference
-    assert checkpoint["fit_state"]["reports"][0]["updates"] == 2

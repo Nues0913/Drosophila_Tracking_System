@@ -24,11 +24,11 @@ from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .recovery import (
     Recovery,
-    _window_batch,
     atomic_torch_save,
     fit_sequence_epochs,
     held_out_episodes,
     restore_rng,
+    window_batch,
 )
 
 PRETRAIN_STREAMS = {"vision": 1, "odor": 2}
@@ -71,7 +71,7 @@ def initialize_decoder_inputs(decoder, model, inputs, mask, train):
     span = max(lengths[index] for index in fitted[:lanes])
     schedule = LaneSchedule(lengths, fitted, lanes, span)
     _, central = model.initial(lanes)
-    batch, _, step_mask, central = _window_batch(
+    batch, _, step_mask, central = window_batch(
         model, schedule.next(), inputs, [{} for _ in inputs], central
     )
     # Graph population labels overlap: convergence belongs to its own group,
@@ -171,8 +171,6 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
         raise ValueError("Pretraining requires train.modality: vision or odor (inferred for V/O)")
     policy, contract = prepare_policy(config, device)
     train = config.get("train", {})
-    if "decoder_input_standardize" in train:
-        raise ValueError("decoder_input_standardize was removed; use decoder_input_scale")
     input_scale = train.get("decoder_input_scale", "none")
     if not isinstance(input_scale, str) or input_scale not in {"none", "population_rms"}:
         raise ValueError("decoder_input_scale must be none or population_rms")

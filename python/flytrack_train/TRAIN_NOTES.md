@@ -211,4 +211,4 @@ evaluator 提供 `artifact` 時只讀 `model_card.json`，不載入 torch 模型
 
 `python/tests/test_training.py`（動作 Jacobian、terminal/truncation GAE、非零初始記憶重置、actor input 隔離、seed bootstrap、重新捕獲 censoring、ES tied rank、中斷續訓）已通過；小預算預訓練/BC/PPO 已跑通，ES 尚未實跑。ROS package、launch、錄製與真值隔離測試需要已安裝並建置的 ROS 2 環境及真实 artifact。
 
-checkpoint 目前供保留研究狀態，CLI `init_artifact` 是 actor 權重暖啟動；沒有宣稱恢復完全相同的 optimizer、環境中途狀態或 RNG 軌跡。GPU sparse reduction 的數值可有差異；固定種子不是逐 bit 相同結果的保證。
+checkpoint 目前供保留研究狀態，CLI `init_artifact` 是 actor 權重暖啟動；沒有宣稱恢復完全相同的 optimizer、環境中途狀態或 RNG 軌跡。GPU sparse reduction 的數值可有差異；固定種子不是逐 bit 相同結果的保證。評估需要逐位元重現時（回歸測試、和參考檔比對），在評估 config 設 `evaluation.deterministic: true`，或對 `scripts/diagnostics/policy_episode_eval.py` 設 `DETERMINISTIC=1`（#3）：開啟 `torch.use_deterministic_algorithms`、固定 cuBLAS workspace，CUDA 上的稀疏乘法改用 gather 加分段加總（`flytrack_core.model.sparse.spmm`），因為 cuSPARSE 不受 deterministic 旗標控制，而且不會報錯。這只讓結果固定，不會更準：deterministic GPU、預設 GPU 和 CPU 三者之間仍有 float32 捨入層級的差異，參考檔要用同一個模式產生。訓練沒有提供這個選項（成本 2 倍以上）。

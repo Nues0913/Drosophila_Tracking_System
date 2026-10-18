@@ -28,6 +28,9 @@ evaluation:
   # Held-out environment seeds, disjoint from the training namespace [0, 1e9).
   environment_seed: 1700000000
   bootstrap_draws: 10000
+  # Bitwise-reproducible GPU runs (deterministic kernels, no cuSPARSE), about 2x
+  # slower. Use it for regression checks against reference files made the same way.
+  deterministic: false
   success_distance_m: 2.0
   success_time_fraction: 0.8
   # A tracked sample must also face the target (protocol amendment 2026-10-17).

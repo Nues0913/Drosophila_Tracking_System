@@ -22,7 +22,7 @@ from .config import (
 )
 from .distributions import BoundedGaussian, generalized_advantage
 from .imitation import parameter_groups
-from .losses import activity_penalty
+from .losses import activity_penalty, dn_floor_penalty, dn_floor_settings
 from .parallel import EnvPool
 from .recovery import Recovery, restore_rng
 
@@ -102,6 +102,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     seed_all(seed)
     policy, contract = prepare_policy(config, device)
     train = config.get("train", {})
+    floor_coef, floor_voltage = dn_floor_settings(train)
     n_envs = int(train.get("num_envs", 8))
     rollout_steps = int(train.get("rollout_steps", 256))
     sequence_length = int(train.get("sequence_length", 32))
@@ -346,6 +347,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                         env_indices = torch.tensor([e for _, e, _ in selected], device=device)
                         chunk_state = data["state"][starts, env_indices].detach()
                         logprobs, entropies, activities = [], [], []
+                        floor_losses = []
                         _, chunk_initial = model.initial(len(selected))
                         with model.cache():
                             for offset in range(length):
@@ -358,6 +360,10 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                                     for key, values in data["inputs"].items()
                                 }
                                 mean, chunk_state, activity = model.step(inputs, chunk_state)
+                                if floor_coef:
+                                    floor_losses.append(
+                                        dn_floor_penalty(policy, chunk_state, floor_voltage).mean()
+                                    )
                                 dist = BoundedGaussian(
                                     mean, policy.log_std, contract.v_max, contract.omega_max
                                 )
@@ -399,6 +405,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                             - float(train.get("entropy_coef", 0.01)) * entropy
                         )
                         loss = loss + float(train.get("activity_coef", 1e-4)) * activity_loss
+                        if floor_coef:
+                            loss = loss + floor_coef * torch.stack(floor_losses).mean()
                         if not bool(torch.isfinite(loss)):
                             raise FloatingPointError(
                                 "PPO loss is nonfinite; inspect actor activity and reward scale"

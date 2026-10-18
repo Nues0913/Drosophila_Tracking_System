@@ -78,6 +78,12 @@ collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
 
 ## DN 活動正則與階段診斷
 
+- `train.core_bias_learning_rate`：pretrain 與 BC 共用參數分組；有限且非負，0 凍結 `core.bias`，未設沿用基準 learning rate；pretrain decoder 使用基準 rate。
+- `train.readout_learning_rate`：pretrain 與 BC 可覆寫 readout 的有限非負 learning rate，0 凍結；未設沿用基準 rate。
+- `train.dn_floor_coef`：pretrain、BC、PPO 的 DN 電壓平方 hinge 係數，有限且非負，預設 0 關閉；只算 motor mask，GRU 為 0。
+- `train.dn_floor_voltage`：有限的電壓下限，預設 −0.2；正則為 `coef * mean(relu(floor - V)^2)`，VO-late 分別計算兩支路的 DN 電壓後平均。
+- `train.decoder_input_scale`：`none`（預設，原始線性 decoder）或 `population_rms`；以更新前 intact policy 的第一批完整已編碼 episodes 的全部有效時間步計算兩個族群純量 `sqrt(mean(rate²))`（排除 padding／held-out，RMS ≥ 1e-3）：該模態的 visual／olfactory 去除 convergence，以及 convergence；輸入只除以各族群 RMS，不減平均。統計只算一次，research／recovery checkpoint 的 `decoder` 保存 `input_rms`、`input_convergence`、`input_initialized`，resume 原樣沿用；讀取使用 `PopulationRMSDecoder`（`validate-pretrain` 依 checkpoint 是否含 `input_rms` 自動選用）。此模式 decoder weight／bias 初始化為 0（仍照常消耗 `nn.Linear` 的隨機抽樣）：未減平均的單位 RMS 輸入配上隨機 head 起始 loss 達 9–15，零初始化起始約 1 + ln 2。舊 `decoder_input_standardize` 已移除，舊標準化研究 decoder 不相容；已匯出的 actor 不受影響。
+
 pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連接體策略的 `activity_coef` 只乘上非運動 DN 神經元的平方活性平均，分母是非 DN 數量；保留時間／批次軸供原本的 lane／step mask 彙總。全為運動 DN 時回傳可微的零。GRU 保留全部診斷 hidden channels 的平方平均。DN 仍可能透過對其他神經元的回饋受到間接梯度；這不是證明活動正則造成先前沉默的消融結果。
 
 所有新連接體模型使用 `motor_rate_beta=10.0` 的 DN softplus（其他神經元維持 ReLU），完整定義見 [MODEL_NOTES.md](../flytrack_core/model/MODEL_NOTES.md)。舊 artifact 缺少 β 時保留 ReLU；若要暖啟動並切換為新規則，須明確設定 `model: {motor_rate_beta: 10.0}`，新生成的六變體設定已包含此鍵。單純讀取 artifact 不會修改它。

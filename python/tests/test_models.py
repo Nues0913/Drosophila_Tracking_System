@@ -22,7 +22,7 @@ from flytrack_core.model.frontend import FrozenFlyvis
 from flytrack_core.model.graph import Graph, randomize_edges
 from flytrack_core.model.policy import DEFAULT_CONFIG, MaskedRateCore, MotorReadout
 from flytrack_train.config import prepare_policy
-from flytrack_train.losses import activity_penalty
+from flytrack_train.losses import DNFloorModel, activity_penalty, dn_floor_penalty
 
 
 @pytest.fixture
@@ -298,6 +298,31 @@ def test_negative_motor_voltages_keep_action_gradients(graph_path, official_fron
     upstream = ~motor[policy.core.pre] & motor[policy.core.post] & policy.core.edge_enabled
     labels = policy.core.edge_label[upstream].unique()
     assert len(labels) > 0 and policy.core.raw_alpha.grad[labels].norm() > 1e-9
+
+
+def test_decoder_olfactory_population_rms_tracks_input_gain(graph_path, official_frontend):
+    from flytrack_train.batches import SequenceModel
+    from flytrack_train.pretrain import PopulationRMSDecoder, initialize_decoder_inputs
+
+    measurements = []
+    for gain in (1, 10, 100):
+        torch.manual_seed(0)
+        policy = build_policy(
+            "VO", graph_path, SensorContract(), official_frontend, odor_input_gain=gain
+        )
+        code = torch.zeros(12, policy.encoder.code_size)
+        code[:, policy.encoder.visual_code_size : -3] = 0.5
+        code[:, -3:] = 1
+        groups = policy.population_masks
+        mask = groups["olfactory"] | groups["convergence"]
+        decoder = PopulationRMSDecoder(int(mask.sum()), 3, groups["convergence"][mask])
+        initialize_decoder_inputs(
+            decoder, SequenceModel(policy, "cpu"), [{"code": code}], mask, {"batch_episodes": 1}
+        )
+        measurements.append(float(decoder.input_rms[0]))
+    assert measurements[0] > 1e-3
+    assert measurements[1] / measurements[0] == pytest.approx(10, rel=0.05)
+    assert measurements[2] / measurements[0] == pytest.approx(100, rel=0.05)
 
 
 def test_late_fusion_lesion_cannot_leak_softplus_rest_rates(graph_path, official_frontend):
@@ -650,3 +675,105 @@ def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
         torch.use_deterministic_algorithms(previous)
     # Outside deterministic mode spmm is torch.sparse.mm unchanged.
     assert torch.equal(spmm(coo.cpu(), dense.cpu()), torch.sparse.mm(coo.cpu(), dense.cpu()))
+
+
+@pytest.mark.parametrize("variant", ["VO", "VO-late", "GRU"])
+def test_dn_floor_uses_only_motor_voltages_and_preserves_gradients(
+    graph_path, official_frontend, variant
+):
+    policy = build_policy(variant, graph_path, SensorContract(), official_frontend)
+    _, state = DNFloorModel(policy, "cpu", -0.2).initial(2)
+    voltage = torch.full_like(state, -0.5).detach().requires_grad_()
+    penalty = dn_floor_penalty(policy, voltage, -0.2)
+    gradient = torch.autograd.grad(penalty.sum(), voltage)[0]
+    assert penalty.shape == (2,)
+    if variant == "GRU":
+        assert torch.count_nonzero(penalty) == torch.count_nonzero(gradient) == 0
+    else:
+        motor = policy.core.motor_mask.repeat(policy.branches)
+        torch.testing.assert_close(penalty, torch.full((2,), 0.09))
+        assert torch.count_nonzero(gradient[..., ~motor]) == 0
+        assert torch.all(gradient[..., motor] < 0)
+        high = voltage.detach().clone().fill_(0.0).requires_grad_()
+        high_penalty = dn_floor_penalty(policy, high, -0.2)
+        assert torch.count_nonzero(high_penalty) == 0
+        assert torch.count_nonzero(torch.autograd.grad(high_penalty.sum(), high)[0]) == 0
+
+
+@pytest.mark.parametrize("variant", ["VO", "VO-late", "GRU"])
+def test_dn_floor_window_records_actual_states_and_masks_padding(
+    graph_path, official_frontend, variant
+):
+    from flytrack_train.recovery import _run_window
+
+    policy = build_policy(variant, graph_path, SensorContract(), official_frontend, bias_init=-0.5)
+    model = DNFloorModel(policy, "cpu", -0.2)
+    _, state = model.initial(2)
+    code = torch.zeros(3, 2, policy.encoder.code_size)
+    mask = torch.tensor([[1.0, 1.0], [1.0, 0.0], [1.0, 0.0]])
+    outputs, _ = _run_window(model, {"code": code}, mask, state)
+    losses = torch.stack(model.floor_losses)
+    assert losses.shape == mask.shape == outputs["activity"].shape[:2]
+    loss = (losses * mask).sum() / mask.sum()
+    gradients = torch.autograd.grad(loss, list(policy.parameters()), allow_unused=True)
+    if variant != "GRU":
+        assert any(g is not None and bool((g != 0).any()) for g in gradients)
+    else:
+        assert float(loss.detach()) == 0
+    with model.cache():
+        assert model.floor_losses == []
+
+
+@pytest.mark.parametrize("algorithm", ["pretrain", "bc", "ppo"])
+def test_dn_floor_reaches_optimizer_in_each_trainer(
+    graph_path, official_frontend, tmp_path, monkeypatch, algorithm
+):
+    from flytrack_train import imitation, ppo, pretrain
+    from test_training import _RecoveryEnv
+
+    class TinyWorld(_RecoveryEnv):
+        def _observe(self):
+            observation, info = super()._observe()
+            observation["vision"] = np.full((2, 721), 0.5, dtype=np.float32)
+            return observation, info
+
+    module, run = {
+        "pretrain": (pretrain, pretrain.train_pretrain),
+        "bc": (imitation, imitation.train_bc),
+        "ppo": (ppo, ppo.train_ppo),
+    }[algorithm]
+
+    def prepare(*args):
+        policy = build_policy("VO", graph_path, SensorContract(), official_frontend, bias_init=-0.5)
+        return policy, policy.contract
+
+    monkeypatch.setattr(module, "prepare_policy", prepare)
+    monkeypatch.setattr(module, "make_env", lambda *args, **kwargs: TinyWorld())
+    monkeypatch.setattr(module, "save_actor", lambda *args, **kwargs: None)
+    moments = []
+    for coefficient in (0, 2):
+        config = {
+            "train": {
+                "modality": "vision",
+                "total_steps": 6,
+                "epochs": 1,
+                "sequence_length": 3,
+                "batch_episodes": 2,
+                "teacher_steps": 6,
+                "dagger_rounds": 0,
+                "dagger_steps_per_round": 3,
+                "num_envs": 1,
+                "rollout_steps": 3,
+                "update_epochs": 1,
+                "critic_hidden_size": 4,
+                "dn_floor_coef": coefficient,
+            }
+        }
+        output = tmp_path / str(coefficient)
+        run(config, output, 11, torch.device("cpu"))
+        checkpoint = torch.load(output / "training_checkpoint.pt", weights_only=True)
+        policy, _ = prepare()
+        bias_index = [name for name, _ in policy.named_parameters()].index("core.bias")
+        moments.append(checkpoint["optimizer"]["state"][bias_index]["exp_avg"])
+    assert torch.isfinite(moments[1]).all()
+    assert not torch.allclose(moments[0], moments[1], atol=1e-7, rtol=1e-5)

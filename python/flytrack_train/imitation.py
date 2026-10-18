@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from .config import (
     seed_all,
     write_json,
 )
-from .losses import activity_penalty
+from .losses import DNFloorModel, activity_penalty, dn_floor_settings
 from .parallel import EnvPool, default_workers
 from .recovery import EpisodeStore, Recovery, fit_sequence_epochs, restore_rng
 
@@ -95,12 +96,17 @@ def fit_behavior(
     scale = torch.tensor([contract.v_max, contract.omega_max], device=device)
     labels = [{"action": torch.as_tensor(e.labels["action"], device=device)} for e in episodes]
     activity_coef = float(train.get("activity_coef", 1e-4))
+    floor_coef, _ = dn_floor_settings(train)
 
     def window_loss(outputs, targets, step_mask):
         steps = step_mask.sum(0).clamp_min(1)
         error = ((outputs["action"] - targets["action"]) / scale).square().mean(-1)
         activity = activity_penalty(model.policy, outputs["activity"])
-        return ((error + activity_coef * activity) * step_mask).sum(0) / steps
+        loss = ((error + activity_coef * activity) * step_mask).sum(0) / steps
+        if floor_coef:
+            floor_loss = torch.stack(model.floor_losses)
+            loss = loss + floor_coef * (floor_loss * step_mask).sum(0) / steps
+        return loss
 
     return fit_sequence_epochs(
         model,
@@ -127,8 +133,13 @@ def parameter_groups(policy, train: dict[str, Any]) -> list[dict[str, Any]]:
         "core.bias": train.get("core_bias_learning_rate"),
         "readout.": train.get("readout_learning_rate"),
     }
-    if any(rate is not None and float(rate) < 0 for rate in rates.values()):
-        raise ValueError("Group learning rates must be nonnegative")
+    if not math.isfinite(base) or base <= 0:
+        raise ValueError("learning_rate must be finite and positive")
+    if any(
+        rate is not None and (not math.isfinite(float(rate)) or float(rate) < 0)
+        for rate in rates.values()
+    ):
+        raise ValueError("Group learning rates must be finite and nonnegative")
     groups: dict[float, list[torch.nn.Parameter]] = {}
     for name, parameter in policy.named_parameters():
         rate = next(
@@ -142,6 +153,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     seed_all(seed)
     policy, contract = prepare_policy(config, device)
     train = config.get("train", {})
+    floor_coef, floor_voltage = dn_floor_settings(train)
     if (
         int(train.get("epochs", 10)) <= 0
         or int(train.get("sequence_length", 32)) <= 0
@@ -172,7 +184,9 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         policy.load_state_dict(checkpoint["actor"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         restore_rng(checkpoint["rng"], rng)
-    model = SequenceModel(policy, device)
+    model = (
+        DNFloorModel(policy, device, floor_voltage) if floor_coef else SequenceModel(policy, device)
+    )
     encoded: list[dict[str, torch.Tensor]] = []
     for round_index in range(first_round, rounds + 1):
         # The final round is fully student driven; labels always come from the privileged teacher.

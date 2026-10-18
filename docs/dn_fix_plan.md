@@ -1,6 +1,6 @@
 # 運動 DN 沉默問題修正計畫
 
-狀態：待執行。建立日期：2026-10-15。證據見 [`runs/dn_audit/REPORT.md`](../runs/dn_audit/REPORT.md) 與 [status.md](status.md) 已知問題第 0 點。
+狀態：**已執行，僅保留作歷史紀錄**（建立日期：2026-10-15）。A＋C 修正見 [dn/fix_A_C_2026-10-15.md](dn/fix_A_C_2026-10-15.md)，驗證與後續診斷見 [dn/diagnosis_2026-10-16.md](dn/diagnosis_2026-10-16.md)、[dn/scenario_test_2026-10-17.md](dn/scenario_test_2026-10-17.md)，整合後的修正見 [fixes_2026-10-17.md](fixes_2026-10-17.md)；目前狀態以 [status.md](status.md) 為準。原始證據 `runs/dn_audit/REPORT.md` 不在版本控制中，只存在當時的主機上。
 
 ## 1. 問題
 

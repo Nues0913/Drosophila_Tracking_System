@@ -300,6 +300,31 @@ def test_negative_motor_voltages_keep_action_gradients(graph_path, official_fron
     assert len(labels) > 0 and policy.core.raw_alpha.grad[labels].norm() > 1e-9
 
 
+def test_decoder_olfactory_population_rms_tracks_input_gain(graph_path, official_frontend):
+    from flytrack_train.batches import SequenceModel
+    from flytrack_train.pretrain import PopulationRMSDecoder, initialize_decoder_inputs
+
+    measurements = []
+    for gain in (1, 10, 100):
+        torch.manual_seed(0)
+        policy = build_policy(
+            "VO", graph_path, SensorContract(), official_frontend, odor_input_gain=gain
+        )
+        code = torch.zeros(12, policy.encoder.code_size)
+        code[:, policy.encoder.visual_code_size : -3] = 0.5
+        code[:, -3:] = 1
+        groups = policy.population_masks
+        mask = groups["olfactory"] | groups["convergence"]
+        decoder = PopulationRMSDecoder(int(mask.sum()), 3, groups["convergence"][mask])
+        initialize_decoder_inputs(
+            decoder, SequenceModel(policy, "cpu"), [{"code": code}], mask, {"batch_episodes": 1}
+        )
+        measurements.append(float(decoder.input_rms[0]))
+    assert measurements[0] > 1e-3
+    assert measurements[1] / measurements[0] == pytest.approx(10, rel=0.05)
+    assert measurements[2] / measurements[0] == pytest.approx(100, rel=0.05)
+
+
 def test_late_fusion_lesion_cannot_leak_softplus_rest_rates(graph_path, official_frontend):
     policy = build_policy("VO-late", graph_path, SensorContract(), official_frontend)
     policy.set_lesion("vision")

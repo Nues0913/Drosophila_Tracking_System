@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .batches import SequenceModel, pack_episode
+from .batches import LaneSchedule, SequenceModel, pack_episode
 from .collection import PretrainDatasetCache, collect_lockstep, pretrain_stream_identity
 from .config import (
     make_env,
@@ -22,9 +22,82 @@ from .config import (
 from .imitation import parameter_groups
 from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
-from .recovery import Recovery, atomic_torch_save, fit_sequence_epochs, restore_rng
+from .recovery import (
+    Recovery,
+    atomic_torch_save,
+    fit_sequence_epochs,
+    held_out_episodes,
+    restore_rng,
+    window_batch,
+)
 
 PRETRAIN_STREAMS = {"vision": 1, "odor": 2}
+
+
+class PopulationRMSDecoder(nn.Linear):
+    """Disposable head with one frozen RMS per disjoint input population.
+
+    Weights and bias start at zero: unit-RMS inputs are not mean-centered, so a
+    random head began at losses of 9-15. Zero predicts sin/cos 0 and presence
+    logit 0 (about 1 + ln 2). The default random draw is still consumed.
+    """
+
+    def __init__(self, in_features: int, out_features: int, convergence: torch.Tensor):
+        super().__init__(in_features, out_features)
+        with torch.no_grad():
+            self.weight.zero_()
+            self.bias.zero_()
+        self.register_buffer("input_convergence", convergence.bool().clone())
+        self.register_buffer("input_rms", torch.ones(2))
+        self.register_buffer("input_initialized", torch.tensor(False))
+
+    def forward(self, activity):
+        return super().forward(activity / self.input_rms[self.input_convergence.long()])
+
+
+@torch.no_grad()
+def initialize_decoder_inputs(decoder, model, inputs, mask, train):
+    """Use the first batch of complete encoded episodes before any updates.
+
+    Held-out episodes and padded steps never enter the statistics. No random
+    draws are consumed, and initialized recovery buffers are used unchanged.
+    """
+    if bool(decoder.input_initialized):
+        return
+    lengths = [len(next(iter(item.values()))) for item in inputs]
+    held = set(held_out_episodes(len(inputs), int(train.get("validation_every", 10))))
+    fitted = [index for index in range(len(inputs)) if index not in held]
+    lanes = int(train.get("batch_episodes", 16))
+    span = max(lengths[index] for index in fitted[:lanes])
+    schedule = LaneSchedule(lengths, fitted, lanes, span)
+    _, central = model.initial(lanes)
+    batch, _, step_mask, central = window_batch(
+        model, schedule.next(), inputs, [{} for _ in inputs], central
+    )
+    # Graph population labels overlap: convergence belongs to its own group,
+    # and the modality group contains the remaining selected nodes.
+    populations = (~decoder.input_convergence, decoder.input_convergence)
+    squared_sum = torch.zeros(2, device=model.device, dtype=torch.float64)
+    units = torch.stack([population.sum() for population in populations])
+    count = 0
+    with model.cache():
+        for step in range(len(step_mask)):
+            _, updated, activity = model.step(
+                {key: values[step] for key, values in batch.items()}, central
+            )
+            valid = step_mask[step].bool()
+            central = torch.where(valid.unsqueeze(-1), updated, central)
+            values = activity[valid][..., mask].double()
+            squared_sum += torch.stack(
+                [values[:, population].square().sum() for population in populations]
+            )
+            count += len(values)
+    # An absent population has no decoder inputs; give its unused scalar the floor.
+    rms = (squared_sum / (count * units).clamp_min(1)).sqrt().clamp_min(1e-3)
+    if not bool(torch.isfinite(rms).all()):
+        raise ValueError("Decoder input RMS must be finite")
+    decoder.input_rms.copy_(rms)
+    decoder.input_initialized.fill_(True)
 
 
 def pretraining_actor(config, contract, modality):
@@ -98,6 +171,9 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
         raise ValueError("Pretraining requires train.modality: vision or odor (inferred for V/O)")
     policy, contract = prepare_policy(config, device)
     train = config.get("train", {})
+    input_scale = train.get("decoder_input_scale", "none")
+    if not isinstance(input_scale, str) or input_scale not in {"none", "population_rms"}:
+        raise ValueError("decoder_input_scale must be none or population_rms")
     if (
         int(train.get("epochs", 20)) <= 0
         or int(train.get("sequence_length", 32)) <= 0
@@ -119,7 +195,11 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
             f"Graph lacks {modality} projection/convergence nodes for auxiliary decoding"
         )
     output_count = 4 if modality == "vision" else 3
-    decoder = nn.Linear(int(mask.sum()), output_count).to(device)
+    decoder = (
+        PopulationRMSDecoder(int(mask.sum()), output_count, groups["convergence"][mask])
+        if input_scale == "population_rms"
+        else nn.Linear(int(mask.sum()), output_count)
+    ).to(device)
     parameters = list(policy.parameters()) + list(decoder.parameters())
     # Same groups as BC (one rate unless overridden). 38 vision updates moved the
     # neuron-type biases by up to 0.04 and odor's effect on omega fell ~2000x (#4);
@@ -218,6 +298,8 @@ def train_pretrain(config: dict[str, Any], output: Path, seed: int, device: torc
 
     model = SequenceModel(policy, device)
     inputs = model.encode(dataset)
+    if input_scale == "population_rms":
+        initialize_decoder_inputs(decoder, model, inputs, mask, train)
     labels = [
         {key: torch.as_tensor(value, device=device) for key, value in episode.labels.items()}
         for episode in dataset

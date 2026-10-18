@@ -210,7 +210,7 @@ def held_out_episodes(count: int, every: int) -> list[int]:
     return [index for index in range(count) if index % every == every - 1]
 
 
-def _window_batch(model, window, inputs, labels, central):
+def window_batch(model, window, inputs, labels, central):
     """Pad one window per lane to [T, L, ...]; lanes without data are masked.
 
     Lanes starting an episode get a fresh initial state. It may depend on
@@ -313,7 +313,7 @@ def fit_sequence_epochs(
         _, central = model.initial(lanes)
         total, count = 0.0, 0
         while (window := schedule.next()) is not None:
-            batch_inputs, batch_labels, mask, central = _window_batch(
+            batch_inputs, batch_labels, mask, central = window_batch(
                 model, window, inputs, labels, central
             )
             outputs, central = _run_window(model, batch_inputs, mask, central)
@@ -335,7 +335,7 @@ def fit_sequence_epochs(
             central = fitting["state"].to(model.device)
         central = central.detach()
         while (window := schedule.next()) is not None:
-            batch_inputs, batch_labels, mask, central = _window_batch(
+            batch_inputs, batch_labels, mask, central = window_batch(
                 model, window, inputs, labels, central
             )
             outputs, central = _run_window(model, batch_inputs, mask, central)

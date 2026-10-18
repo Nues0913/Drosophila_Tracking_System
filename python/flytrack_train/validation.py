@@ -12,6 +12,7 @@ from flytrack_core.model import load_policy_artifact
 from .batches import SequenceModel, tensor_observation
 from .config import make_env, project_source_fingerprint, write_json
 from .parallel import EnvPool
+from .pretrain import PopulationRMSDecoder
 from .recovery import Recovery
 
 
@@ -27,8 +28,17 @@ def validate_pretraining(
         if not torch.equal(value, checkpoint["actor"][name].to(device)):
             raise ValueError("Auxiliary decoder checkpoint and actor weights differ")
     mask = checkpoint["mask"].to(device=device, dtype=torch.bool)
-    decoder = torch.nn.Linear(int(mask.sum()), 4 if modality == "vision" else 3).to(device)
-    decoder.load_state_dict(checkpoint["decoder"])
+    state = checkpoint["decoder"]
+    outputs = 4 if modality == "vision" else 3
+    if "input_rms" in state:
+        # decoder_input_scale: population_rms keeps its frozen scales as buffers.
+        if not bool(state["input_initialized"]):
+            raise ValueError("Population-RMS decoder checkpoint has uninitialized input scales")
+        decoder = PopulationRMSDecoder(int(mask.sum()), outputs, state["input_convergence"])
+    else:
+        decoder = torch.nn.Linear(int(mask.sum()), outputs)
+    decoder = decoder.to(device)
+    decoder.load_state_dict(state)
     policy.eval()
     decoder.eval()
     validation = config.get("validation", {})

@@ -559,6 +559,26 @@ def test_cached_sensory_code_and_adjacency_reproduce_full_forward(
         torch.testing.assert_close(plain, cached, atol=5e-7, rtol=5e-5)
 
 
+def test_odor_pathway_softplus_opt_in_and_gain_default(graph, graph_path, official_frontend):
+    voltage = torch.full((1, graph.n_nodes), -0.5)
+    legacy = MaskedRateCore(graph, SensorContract(), dict(DEFAULT_CONFIG))
+    smooth = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 10})
+    olfactory = smooth.olfactory_mask
+    # Only the non-motor ORN pair: motor DNs keep their own softplus, vision its ReLU.
+    assert olfactory.tolist() == [False, False, True, True, False, False, False, False]
+    assert bool((legacy.rates(voltage)[:, olfactory] == 0).all())
+    assert bool((smooth.rates(voltage)[:, olfactory] > 0).all())
+    torch.testing.assert_close(
+        smooth.rates(voltage)[:, ~olfactory], legacy.rates(voltage)[:, ~olfactory]
+    )
+    with pytest.raises(ValueError, match="olfactory_rate_beta"):
+        MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 0})
+    base = build_policy("VO", graph_path, SensorContract(), official_frontend, odor_input_gain=1)
+    boosted = build_policy("VO", graph_path, SensorContract(), official_frontend)
+    torch.testing.assert_close(boosted.encoder.odor_projection, base.encoder.odor_projection * 100)
+    torch.testing.assert_close(boosted.encoder.visual_projection, base.encoder.visual_projection)
+
+
 def test_ros_watchdog_reset_and_out_of_order_packets(monkeypatch):
     monkeypatch.syspath_prepend(
         str(Path(__file__).resolve().parents[2] / "ros2_ws/src/flytrack_policy")
@@ -606,23 +626,3 @@ def test_optional_turn_bias_sets_mean_turn_without_changing_default(graph):
         biased.turn_bias.fill_(0.2)
     omega = biased([rate])[0, 1]
     torch.testing.assert_close(omega, SensorContract().omega_max * torch.tanh(torch.tensor(0.2)))
-
-
-def test_odor_pathway_softplus_opt_in_and_gain_default(graph, graph_path, official_frontend):
-    voltage = torch.full((1, graph.n_nodes), -0.5)
-    legacy = MaskedRateCore(graph, SensorContract(), dict(DEFAULT_CONFIG))
-    smooth = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 10})
-    olfactory = smooth.olfactory_mask
-    # Only the non-motor ORN pair: motor DNs keep their own softplus, vision its ReLU.
-    assert olfactory.tolist() == [False, False, True, True, False, False, False, False]
-    assert bool((legacy.rates(voltage)[:, olfactory] == 0).all())
-    assert bool((smooth.rates(voltage)[:, olfactory] > 0).all())
-    torch.testing.assert_close(
-        smooth.rates(voltage)[:, ~olfactory], legacy.rates(voltage)[:, ~olfactory]
-    )
-    with pytest.raises(ValueError, match="olfactory_rate_beta"):
-        MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 0})
-    base = build_policy("VO", graph_path, SensorContract(), official_frontend, odor_input_gain=1)
-    boosted = build_policy("VO", graph_path, SensorContract(), official_frontend)
-    torch.testing.assert_close(boosted.encoder.odor_projection, base.encoder.odor_projection * 100)
-    torch.testing.assert_close(boosted.encoder.visual_projection, base.encoder.visual_projection)

@@ -177,8 +177,12 @@ def main():
     lock = threading.Lock()
     failures: list[str] = []
 
-    def commit():
+    def commit(row=None, **values):
+        # Rows are mutated only under the lock: json serialization in another chain's
+        # commit would otherwise see a row change size and fail that whole chain.
         with lock:
+            if row is not None:
+                row.update(values)
             write_json(args.configs / "execution_plan.json", manifest)
 
     commit()
@@ -205,8 +209,7 @@ def main():
             ]
             if (destination / "training_checkpoint.pt").is_file():
                 command.append("--resume")
-            row["status"] = "running"
-            commit()
+            commit(row, status="running")
             with (destination / "execution.log").open("a", buffering=1) as log:
                 print(
                     f"[{index + 1}/{len(plan)}] {row['variant']} seed={row['seed']} "
@@ -217,8 +220,7 @@ def main():
                     command, stdout=log, stderr=subprocess.STDOUT, env=environment, check=False
                 )
             if result.returncode:
-                row.update(status="failed", exit_code=result.returncode)
-                commit()
+                commit(row, status="failed", exit_code=result.returncode)
                 raise RuntimeError(f"Stage failed; inspect {destination / 'execution.log'}")
             if not completed(config, row["command"], device):
                 raise RuntimeError(f"Stage exited without a verified actor artifact: {destination}")
@@ -228,8 +230,7 @@ def main():
                 args.python, row["path"], destination, row["command"], environment
             )
             if exit_code:
-                row.update(status="dn_health_failed", exit_code=exit_code)
-                commit()
+                commit(row, status="dn_health_failed", exit_code=exit_code)
                 raise RuntimeError(
                     f"DN health gate failed; inspect {destination / 'dn_health.log'}"
                 )
@@ -259,11 +260,9 @@ def main():
                         command, stdout=log, stderr=subprocess.STDOUT, env=environment, check=False
                     )
                 if result.returncode:
-                    row.update(status="heldout_validation_failed", exit_code=result.returncode)
-                    commit()
+                    commit(row, status="heldout_validation_failed", exit_code=result.returncode)
                     raise RuntimeError(f"Held-out decoding gate failed; inspect {validation}")
-        row.update(status=status, finished_unix_s=time.time())
-        commit()
+        commit(row, status=status, finished_unix_s=time.time())
 
     chains: dict[tuple[str, int], list[int]] = {}
     for index, row in enumerate(plan):
@@ -285,8 +284,9 @@ def main():
         list(executor.map(run_chain, chains.values()))
     if failures:
         raise SystemExit("; ".join(failures))
-    manifest["completed_unix_s"] = time.time()
-    write_json(args.configs / "execution_plan.json", manifest)
+    with lock:
+        manifest["completed_unix_s"] = time.time()
+        write_json(args.configs / "execution_plan.json", manifest)
 
 
 if __name__ == "__main__":

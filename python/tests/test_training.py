@@ -496,3 +496,34 @@ def test_scenario_parameters_have_one_source():
     env = make_env(loaded, contract, scenario="conflict")
     assert (env.scenario_spec.decoy_x, env.scenario_spec.decoy_y) == (-2, 0)
     env.close()
+
+
+@pytest.mark.parametrize("algorithm", ["ppo", "es"])
+def test_zero_core_bias_rate_freezes_biases_after_bc(tmp_path, algorithm):
+    """#4: a bias freeze set for pretraining and BC must hold in the final stage too."""
+    import copy
+
+    from flytrack_core.model import load_policy_artifact
+    from flytrack_train import es, ppo
+    from flytrack_train.config import prepare_policy, read_config
+
+    config = copy.deepcopy(read_config("configs/train/smoke.yaml"))
+    config.pop("init_artifact", None)
+    if algorithm == "es":
+        config["train"].update(population_size=2, evaluation_steps=8, total_steps=32)
+    config["train"]["core_bias_learning_rate"] = 0.0
+    torch.manual_seed(0)
+    initial, _ = prepare_policy(config, torch.device("cpu"))
+    torch.manual_seed(0)
+    {"ppo": ppo.train_ppo, "es": es.train_es}[algorithm](config, tmp_path, 0, torch.device("cpu"))
+    trained = load_policy_artifact(tmp_path / "actor", device="cpu")[0]
+    assert torch.equal(trained.core.bias, initial.core.bias)
+    assert not torch.equal(trained.core.raw_alpha, initial.core.raw_alpha)
+    if algorithm == "es":
+        with pytest.raises(ValueError, match="only 0"):
+            es.train_es(
+                {**config, "train": {**config["train"], "core_bias_learning_rate": 1e-4}},
+                tmp_path / "rejected",
+                0,
+                torch.device("cpu"),
+            )

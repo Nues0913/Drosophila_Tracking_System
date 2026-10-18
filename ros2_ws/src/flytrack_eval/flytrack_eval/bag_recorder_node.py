@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 DEFAULT_TOPICS = [
@@ -81,6 +82,8 @@ def main(args=None):
     node = BagRecorderNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # normal launch shutdown; the finally block still cleans up
     finally:
         node.destroy_node()
         if rclpy.ok():

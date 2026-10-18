@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import time
 from pathlib import Path
 
@@ -13,8 +14,11 @@ from flytrack_core.model import load_policy_artifact
 from flytrack_core.sensing.hex_eye import HexEye
 from flytrack_interfaces.msg import NeuralActivity, OdorReading
 from geometry_msgs.msg import Twist
+from rclpy.duration import Duration
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 from std_srvs.srv import Trigger
@@ -224,17 +228,37 @@ class ConnectomePolicyNode(Node):
         self.command_publisher.publish(Twist())
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main(args=None) -> None:
-    rclpy.init(args=args)
-    node = None
+    # rclpy's own SIGINT handler shut the context down before the finally block,
+    # so the zero command never left and Gazebo kept the last cmd_vel. Python
+    # handles SIGINT/SIGTERM here instead; spin_once with a timeout returns to the
+    # interpreter so the interrupt is raised while the context is still valid. One
+    # executor for the whole run, as rclpy.spin() does: rclpy.spin_once(node) adds
+    # and removes the node on every call.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    signal.signal(signal.SIGTERM, _interrupt)
+    node = executor = None
     try:
         node = ConnectomePolicyNode()
-        rclpy.spin(node)
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        while rclpy.ok():
+            executor.spin_once(timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        if node is not None:
+        if node is not None and rclpy.ok():
             node.publish_stop()
+            # Reliable QoS: let subscribers acknowledge before teardown.
+            node.command_publisher.wait_for_all_acked(Duration(seconds=1.0))
+        # Unlike the global executor, our own is not closed by rclpy.shutdown().
+        if executor is not None:
+            executor.shutdown()
+        if node is not None:
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -81,6 +81,24 @@ class FlyTrackEnv(gym.Env):
         self.plume_config = dict(options.pop("plume_config", {}) or {})
         self.trajectory_config = dict(options.pop("trajectory_config", {}) or {})
         self.scenario_config = dict(options.pop("scenario_config", {}) or {})
+        odor_steering = options.pop("occlusion_odor_steering", None)
+        self.occlusion_odor_steering = None
+        if odor_steering is not None:
+            if not isinstance(odor_steering, dict) or set(odor_steering) - {"gain"}:
+                raise ValueError("occlusion_odor_steering must be null or a mapping with gain")
+            gain = odor_steering.get("gain", 8.0)
+            try:
+                valid_gain = (
+                    not isinstance(gain, (str, bool))
+                    and np.ndim(gain) == 0
+                    and np.isfinite(gain)
+                    and gain >= 0
+                )
+            except TypeError:
+                valid_gain = False
+            if not valid_gain:
+                raise ValueError("occlusion odor gain must be finite and nonnegative")
+            self.occlusion_odor_steering = {"gain": float(gain)}
         self.initial_agent_pose = options.pop("initial_agent_pose", None)
         # Per-episode layout diversity is on by default; layout_preset: legacy (or the
         # individual LayoutConfig keys) reproduces the old fixed layout.
@@ -221,7 +239,8 @@ class FlyTrackEnv(gym.Env):
         self.plume.advance(0, self._source_positions)
         self._acquire_vision()
         self._acquire_odor()
-        return self._observation(), self._info()
+        observation = self._observation()
+        return observation, self._info(observation)
 
     def _source_positions(self, time_s: float) -> np.ndarray:
         target_pose, _ = self.trajectory.state(time_s)
@@ -379,11 +398,12 @@ class FlyTrackEnv(gym.Env):
             self.time_s >= self.episode_seconds - 1e-9 or self.step_count >= self.max_steps
         )
         self._running = not (terminated or truncated)
-        info = self._info()
+        observation = self._observation()
+        info = self._info(observation)
         if not self._running:
             info["episode_metrics"] = self.episode_metrics()
             info["episode"] = {"r": self.episode_return, "l": self.step_count, "t": self.time_s}
-        return self._observation(), float(reward), terminated, truncated, info
+        return observation, float(reward), terminated, truncated, info
 
     def _target_visible(self, bearing: float, distance: float) -> bool:
         if self.scenario_spec.occluded_at(self.time_s):
@@ -406,7 +426,7 @@ class FlyTrackEnv(gym.Env):
                 return False
         return True
 
-    def _info(self) -> dict:
+    def _info(self, observation: dict[str, np.ndarray] | None = None) -> dict:
         displacement = self.target_pose[:2] - self.agent_pose[:2]
         distance = float(np.linalg.norm(displacement))
         bearing = float(
@@ -424,6 +444,13 @@ class FlyTrackEnv(gym.Env):
             ],
             dtype=np.float32,
         )
+        teacher_options = {}
+        if self.occlusion_odor_steering is not None:
+            teacher_options = {
+                "occluded": self.scenario_spec.occluded_at(self.time_s),
+                "observation": self._observation() if observation is None else observation,
+                "occlusion_odor_gain": self.occlusion_odor_steering["gain"],
+            }
         return {
             "privileged_state": privileged,
             "teacher_action": teacher_action(
@@ -433,6 +460,7 @@ class FlyTrackEnv(gym.Env):
                 self.contract,
                 self.following_distance_m,
                 target_velocity=self.target_velocity,
+                **teacher_options,
             ),
             "target_bearing_rad": bearing,
             "target_distance_m": distance,

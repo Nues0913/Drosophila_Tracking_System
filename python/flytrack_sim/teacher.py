@@ -1,8 +1,28 @@
 """Privileged teacher. Its output is an info label, never an observation."""
 
+import math
+
 import numpy as np
 from flytrack_core.contracts import ActionLimits, SensorContract
 from flytrack_core.world.trajectories import wrap_angle
+
+
+def _odor_turn(observation: dict[str, np.ndarray], gain: float) -> float:
+    """Use the student's latest, corrupted raw ORN input, never plume truth."""
+    odor = np.asarray(observation["odor"], dtype=np.float64)
+    valid = np.asarray(observation["valid"])
+    if odor.shape != (2,) or valid.shape != (3,):
+        raise ValueError("odor steering requires odor[2] and valid[3]")
+    if not np.isfinite(valid[2]) or valid[2] <= 0 or not np.isfinite(odor).all():
+        return 0.0
+    # Match the nonnegative concentration contract. Scaling avoids overflow and
+    # does not impose a concentration threshold that would hide faint cues.
+    odor = np.maximum(odor, 0.0)
+    scale = float(odor.max())
+    if scale == 0:
+        return 0.0
+    left, right = odor / scale
+    return float(gain * (left - right) / (left + right))
 
 
 def teacher_action(
@@ -16,6 +36,10 @@ def teacher_action(
     target_velocity: np.ndarray | None = None,
     evasion_distance_m: float = 1.5,
     evasion_clearance_m: float = 0.6,
+    *,
+    occluded: bool = False,
+    observation: dict[str, np.ndarray] | None = None,
+    occlusion_odor_gain: float | None = None,
 ) -> np.ndarray:
     limits = ActionLimits.from_contract(contract)
     displacement = np.asarray(target_pose[:2]) - np.asarray(agent_pose[:2])
@@ -38,4 +62,17 @@ def teacher_action(
             requested = np.asarray(
                 [limits.v_max * max(0, np.cos(turn)), turn_gain * turn], dtype=np.float32
             )
+    if occluded and occlusion_odor_gain is not None:
+        if (
+            isinstance(occlusion_odor_gain, (str, bool))
+            or not math.isfinite(occlusion_odor_gain)
+            or occlusion_odor_gain < 0
+        ):
+            raise ValueError("occlusion odor gain must be finite and nonnegative")
+        if observation is None:
+            raise ValueError("occlusion odor steering requires the student's observation")
+        omega = _odor_turn(observation, occlusion_odor_gain)
+        # Preserve the privileged forward-speed rule, but replace requested turn
+        # before applying the normal velocity and acceleration limits once.
+        requested[1] = np.clip(omega, -limits.omega_max, limits.omega_max)
     return limits.clip(requested, previous_action, contract.control_dt)

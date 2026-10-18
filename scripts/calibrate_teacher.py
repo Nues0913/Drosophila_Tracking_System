@@ -15,6 +15,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/train/evaluate.yaml"))
     parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument(
+        "--scenario", choices=("normal", "occlusion", "noise", "conflict"), default="normal"
+    )
     # Diagnostic range [1.6e9, 1.7e9): disjoint from training [0, 1e9), decoder
     # validation [1.5e9, 1.6e9) and formal evaluation [1.7e9, ...).
     parser.add_argument("--seed-start", type=int, default=1_650_000_000)
@@ -26,7 +29,7 @@ def main():
         )
     config = read_config(args.config)
     contract = contract_from_config(config)
-    env = make_env(config, contract, scenario="normal")
+    env = make_env(config, contract, scenario=args.scenario)
     rows = []
     started = time.perf_counter()
     try:
@@ -57,13 +60,14 @@ def main():
             )
             report = {
                 "purpose": "calibration only; privileged teacher, never a sensory baseline",
-                "scenario": "normal",
+                "scenario": args.scenario,
                 "episodes_requested": args.episodes,
                 "episodes_completed": len(rows),
                 "complete": len(rows) == args.episodes,
                 "elapsed_s": time.perf_counter() - started,
                 "rows": rows,
                 "mean_success": float(np.mean([row["success"] for row in rows])),
+                "mean_collision_rate": float(np.mean([row["collision_rate"] for row in rows])),
                 "mean_bearing_error_deg": float(
                     np.mean([row["mean_bearing_error_deg"] for row in rows])
                 ),

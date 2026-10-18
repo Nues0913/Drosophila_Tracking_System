@@ -265,6 +265,9 @@ def test_recovery_is_bound_to_the_parent_artifact(tmp_path):
     (parent / "model_card.json").write_text('{"files": {"weights.pt": "bbb"}}')
     with pytest.raises(ValueError, match="source hashes differ"):
         Recovery(output, {**config, "resume": True}, "bc", 0)
+    (parent / "model_card.json").unlink()
+    with pytest.raises(FileNotFoundError, match="Parent actor of this stage is missing"):
+        Recovery(output, {**config, "resume": True}, "bc", 0)
 
 
 def test_recovery_restores_all_cpu_random_streams_without_cuda_init(tmp_path):

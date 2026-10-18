@@ -76,6 +76,11 @@ def _identity(config: dict[str, Any], stage: str, seed: int) -> dict[str, Any]:
     for name, path in parents.items():
         if path:
             card = Path(path) / "model_card.json"
+            if not card.is_file():
+                raise FileNotFoundError(
+                    f"Parent actor of this stage is missing ({name}: {path}); its card "
+                    "binds the checkpoint, so restore it or rerun the stages from there"
+                )
             sources[name] = hashlib.sha256(card.read_bytes()).hexdigest()
     encoded = json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
     return {

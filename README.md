@@ -71,7 +71,7 @@ WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的
 - 中央遞迴初始化把 |W| 的譜半徑壓到 `init_spectral_radius`（0.9），否則真實突觸數會讓 ReLU 動態發散；接進運動 DN 的邊另有固定增益 `motor_input_gain`（100），避免方位訊號到 DN 時被一起壓小（見 [MODEL_NOTES](python/flytrack_core/model/MODEL_NOTES.md)）。
 - 每回合隨機化目標繞圈方向、半徑與起始位置（2D 與 Gazebo 共用），成功須在 2 m 內**且**朝向目標 45° 內；訓練與正式評估前以 `audit-env` 確認固定動作策略無法成功（見 [SIM_NOTES](python/flytrack_sim/SIM_NOTES.md)）。
 - Gazebo 先評估直接移轉的 2D 模型；追加微調另立實驗。
-- 核心只依賴 NumPy／PyTorch，ROS 與 Gymnasium 是外層。架構依 [skill.md](skill.md) 按責任拆分。
+- 核心只依賴 NumPy／PyTorch，ROS 與 Gymnasium 是外層，模組按責任拆分（見下方「目錄與責任」）。
 
 ## 目錄與責任
 

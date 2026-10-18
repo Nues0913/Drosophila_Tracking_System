@@ -45,8 +45,9 @@ bash runs/experiment_configs/run_all.sh --variants VO --seeds 0 --jobs 1
 
 規則：
 
+- 誰跑哪些「變體／種子」，以 PM 開的 GPU 執行 Issue 為準；同一組只有一位執行負責人（見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md#gpu-任務派工)）。
 - **不要修改** `configs/`、`python/` 後再跑正式實驗；要改就先提 PR，合併後所有人一起重跑，否則六變體不可比較。
 - 開跑前記下 `git rev-parse HEAD`；訓練產物的 `model_card.json` 也會記錄程式指紋。
-- 先跑 `pytest python/tests`，確認與其他人結果一致（73 passed）。
+- 先跑 `pytest python/tests`，確認與其他人結果一致（2026-10-18 的 `main` 為 116 passed）。
 - 跑完把 `runs/<variant>/seed_<n>/`（含 `actor/` 與 log）打包交回；`runs/` 不進 git。
 - 第一次跑請記錄每階段耗時與 `nvidia-smi` 顯存峰值，回報到 [status.md](status.md)。

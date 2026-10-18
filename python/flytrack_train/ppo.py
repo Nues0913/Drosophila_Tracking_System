@@ -21,6 +21,7 @@ from .config import (
     write_json,
 )
 from .distributions import BoundedGaussian, generalized_advantage
+from .imitation import parameter_groups
 from .losses import activity_penalty
 from .parallel import EnvPool
 from .recovery import Recovery, restore_rng
@@ -119,7 +120,15 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         raise ValueError("total_steps must be divisible by num_envs for exact comparison budgets")
     critic = PrivilegedCritic(hidden_size=int(train.get("critic_hidden_size", 128))).to(device)
     parameters = list(policy.parameters()) + list(critic.parameters())
-    optimizer = torch.optim.Adam(parameters, lr=float(train.get("learning_rate", 3e-4)), eps=1e-5)
+    # Actor groups as in pretraining and BC, so a bias freeze (#4) holds through PPO.
+    learning_rate = float(train.get("learning_rate", 3e-4))
+    optimizer = torch.optim.Adam(
+        [
+            *parameter_groups(policy, {**train, "learning_rate": learning_rate}),
+            {"params": list(critic.parameters()), "lr": learning_rate},
+        ],
+        eps=1e-5,
+    )
     gamma, gae_lambda = float(train.get("gamma", 0.99)), float(train.get("gae_lambda", 0.95))
     clip = float(train.get("clip_coef", 0.2))
     epochs = int(train.get("update_epochs", 4))

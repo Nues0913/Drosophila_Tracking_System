@@ -113,6 +113,11 @@ def main():
         "--workers", default="auto", help="Environment worker processes per job (auto splits CPUs)"
     )
     parser.add_argument("--tf32", action="store_true", help="Pass --tf32 to every stage")
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="A failed chain (stage error or gate) stops only itself; the others run on",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--skip-environment-audit",
@@ -270,7 +275,9 @@ def main():
 
     def run_chain(indices):
         for index in indices:
-            if failures:
+            # By default one failure (often systemic, e.g. a gate every variant fails)
+            # stops all chains; --keep-going lets long unattended runs finish the rest.
+            if failures and not args.keep_going:
                 return
             try:
                 run_stage(index, plan[index])

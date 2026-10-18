@@ -86,7 +86,7 @@ pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連�
 
 softplus 的正值靜息項不能當作運動控制證據。除原始 `rate>0` 比例，診斷另用 `rate>1e-3` 計算有效活性，要求至少 4 個 DN 在 ≥10% 步數有效、中央梯度範數 >1e-6、視覺換眼角速度差中位數 ≥0.05 rad/s，所有數值有限。BC 階段另要求策略 ω 與教師 ω 的相關 ≥0.5、R²>0（勝過最佳常數）且 ω 標準差 ≥ 教師的 25%；PPO／ES 要求相關 ≥0.3 與同樣的幅度條件。原本的「MAE 比固定零輸出低 20%」會讓完全固定轉向的模型通過（教師平均 ω 不為零），只看相關則會讓方向正確但幅度只有 1/80 的模型通過（其 R² 約 +0.02）。O 變體依設計完全遮蔽視覺，所以不套視覺換眼門檻；GRU 沒有生物 DN 對應，略過 DN gate。診斷不能取代正式 held-out 評估或 validate-pretrain。
 
-`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷；未通過寫入 `dn_health_failed` 並停止後續鏈；不得為了繼續訓練而默默放寬門檻。
+`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷；未通過寫入 `dn_health_failed` 並停止後續鏈；不得為了繼續訓練而默默放寬門檻。預設任何一條鏈失敗（階段錯誤或 gate 未過）都會讓其他鏈在下一個階段交界停下，因為失敗常是全面性的問題；長時間無人看管時可加 `--keep-going`，只停失敗的那條鏈，其他照跑，最後一起回報失敗並以非 0 結束。
 
 ## 環境退化檢查
 

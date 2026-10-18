@@ -544,3 +544,55 @@ def test_zero_core_bias_rate_freezes_biases_after_bc(tmp_path, algorithm):
                 0,
                 torch.device("cpu"),
             )
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_runner_failed_chain_stops_others_unless_keep_going(tmp_path, monkeypatch, keep_going):
+    import sys
+
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "scripts/run_experiments.py"
+    spec = importlib.util.spec_from_file_location("experiment_runner", path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    budgets = {
+        "pretrain_vision": {"total_steps": 1},
+        "pretrain_odor": {"total_steps": 1},
+        "bc": {"teacher_steps": 1, "dagger_rounds": 0, "dagger_steps_per_round": 1},
+        "ppo": {"total_steps": 1},
+    }
+    for variant, first in (("O", "pretrain_odor"), ("V", "pretrain_vision")):
+        for stage in (first, "bc", "ppo"):
+            config = {
+                "variant": variant,
+                "seed": 0,
+                "output": str(tmp_path / "runs" / variant / stage),
+                "train": budgets[stage],
+            }
+            target = tmp_path / "configs" / variant / "seed_0" / f"{stage}.yaml"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(yaml.safe_dump(config))
+    finished, launched = set(), []
+
+    def run(command, **kwargs):
+        if "--config" in command and "validate-pretrain" not in command:
+            output = yaml.safe_load(Path(command[command.index("--config") + 1]).read_text())
+            launched.append(output["output"])
+            if "/O/" in output["output"]:
+                return SimpleNamespace(returncode=1)
+            finished.add(output["output"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(
+        runner, "completed", lambda config, command, device: config["output"] in finished
+    )
+    monkeypatch.setattr(runner, "check_dn_health", lambda *args: 0)
+    argv = ["run_experiments.py", "--configs", str(tmp_path / "configs"), "--variants", "O", "V"]
+    argv += ["--seeds", "0", "--jobs", "1", "--skip-environment-audit"]
+    monkeypatch.setattr(sys, "argv", argv + (["--keep-going"] if keep_going else []))
+    with pytest.raises(SystemExit, match="Stage failed"):
+        runner.main()
+    v_stages = [output for output in launched if "/V/" in output]
+    assert len(v_stages) == (3 if keep_going else 0)

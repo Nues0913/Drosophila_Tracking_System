@@ -113,6 +113,8 @@ train:
 
 `imitation.parameter_groups` 依名稱分組：`core.bias`（神經元型別偏置）在 BC 固定，`readout.*` 以 1e-2 學習，其餘用 `learning_rate`。離線 BC 顯示偏置的梯度比連結強度大 30～1000 倍，優化器先調偏置去配合平均動作，同時把已傳到 DN 的方位資訊破壞（DN 左右差 R² 0.67→−0.12）；固定偏置則保留。GRU 沒有連接體偏置，只套用讀出學習率。`early_stopping_min_delta` 為相對改善門檻，0 時驗證損失每 epoch 只降 0.1% 也永不停止。
 
+pretrain 也使用 `parameter_groups`（#4、#7）：可以設 `core_bias_learning_rate`、`readout_learning_rate`，沒設定時和原本一樣只有單一學習率。auxiliary decoder 另成一組，所以 pretrain 的 optimizer 至少有 2 個參數組。**這個版本之前開始、還沒跑完的 pretrain checkpoint 無法 resume**（`optimizer.load_state_dict` 的參數組數對不上），要從頭重跑該階段；已完成的 pretrain actor 不受影響，可以照常當 `init_artifact`。
+
 先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
 ## Recurrent PPO

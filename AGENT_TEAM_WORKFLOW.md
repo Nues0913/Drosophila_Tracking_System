@@ -7,7 +7,7 @@
 ## 0. 給所有 Agent 的簡短規則
 
 1. 開始工作前，先讀本文件、最新的 [docs/status.md](docs/status.md)，以及指派給自己或可以自行認領的 Issue。
-2. **一項工作對應一位負責人（DRI）、一個 Issue、一條分支、一個 PR。** 聊天訊息、Agent 對話和 commit message 都不能取代 Issue。
+2. **一項工作對應一位負責人（DRI）、一個 Issue、一條分支、一個 PR。** 聊天訊息、Agent 對話和 commit message 都不能取代 Issue。自己領域內的探索實驗可以先在 `exp/` 分支進行（第 4.3 節）。
 3. **自己主責領域內、低風險、低成本、不改規格的小 Bug**：可以自行開 Issue 或認領、修正並送 PR，不必等 PM 指派（第 4.1 節）。**跨領域、高成本、研究設計或驗收標準的變更**：要先取得 PM 在 Issue 留下的 `Decision: Approved`（第 4.2 節）。
 4. 不搶別人已經負責的工作，也不在未協調的情況下修改別人主責的模組。
 5. 所有修改都走 PR。每個 PR 至少要有一名**非作者**依第 5.1 節完成審查，**PM 自己的 PR 也一樣**。最後由 PM 決定是否合併。
@@ -33,7 +33,8 @@
 | `python/connectome_extract/`、`python/flytrack_core/model/`、`configs/model/`、模型與子圖診斷 | @milong9487 | 跨感測契約、模型變體或影響實驗公平性的變更須 PM 核准 |
 | `python/flytrack_train/`、`configs/train/`、`scripts/run_experiments.py`、`scripts/prepare_experiments.py` | @milong9487 | 訓練設定、效能、checkpoint、recovery；不得自行放寬正式預算與 gate |
 | `scripts/dn_health.py`、`scripts/diagnostics/`、正式 2D 結果統計 | @milong9487 | 需要改世界或感測實作時，先開跨模組 Issue 邀請 @cweiting731 |
-| `python/flytrack_core/world/`、`python/flytrack_core/sensing/`、`python/flytrack_sim/`、`configs/scenarios/` | @cweiting731 | 影響 teacher、reward、資料分布或模型輸入時，須 @milong9487 複核、PM 核准 |
+| `python/flytrack_core/world/`、`python/flytrack_core/sensing/`、`python/flytrack_sim/`（世界、物理、感測、teacher）、`configs/scenarios/` | @cweiting731 | 影響 teacher、資料分布或模型輸入時，須 @milong9487 複核、PM 核准 |
+| 訓練用的 reward 與 termination：`flytrack_sim/env.py` 的 reward 計算、`reward_weights`、訓練時碰撞是否結束回合 | @milong9487 | 本質上是訓練目標；改動屬於研究規格變更，須 PM 事前批准；改到 `env.py` 時請 @cweiting731 Review。評估指標與成功判定（碰撞率、success 的定義）屬於評估協定，仍由 PM 決定 |
 | `ros2_ws/`（interfaces、policy、world、eval、bringup）、`docker/`、`compose*.yaml` | @cweiting731 | 模型匯出格式與感測契約的變更須和 @milong9487 協調、PM 核准 |
 | Gazebo 閉環、ROS 真值隔離、sensor-to-command 延遲、部署與故障恢復測試 | @cweiting731 | @milong9487 支援模型 artifact 與推論問題 |
 | `python/tests/` 等測試 | 依被測模組決定 | 跨模組的測試至少通知另一位主責人 |
@@ -96,7 +97,17 @@
 
 PM 在 Issue 留下 `Decision: Approved`、`Decision: Rejected` 或 `Decision: Needs changes`，寫明 DRI、允許範圍、必要的驗證和資源安排。只有 Approved 之後才能在核准範圍內動工；超出範圍要再請示。**只有 PM 能留 `Decision:`**，未確認的建議不能當作批准。
 
-### 4.3 指派、狀態與紀錄
+### 4.3 探索性實驗分支
+
+診斷和對照實驗常常要先改程式、跑幾輪，才知道該提什麼方案。在**自己主責的領域**內：
+
+- 可以用 `exp/<issue>-<主題>` 分支（例如 `exp/4-odor-gain`）做探索，不必開 PR。
+- 每一輪的設定、commit SHA 和結果回報到對應的 Issue；分支要推上遠端，讓其他人能查證。
+- 探索分支上的結果只能當作診斷證據，**不能當作正式結果**。正式實驗一律從 `main` 上已合併的 commit 執行。
+- 程式碼要進 `main`，仍然走正常的 PR，而且只放最後採用的修改。
+- 長時間 GPU 工作或會佔用共享算力的探索，仍依第 4.2 節先取得批准；改到別人主責的模組時，先開跨模組 Issue。
+
+### 4.4 指派、狀態與紀錄
 
 - **Assignee 只設一位 DRI**；協作者用 @mention、sub-issue 或 checklist 表示。可以獨立交付的工作拆成不同 Issue。
 - 自行認領只限自己的領域：@milong9487 認領模型與訓練的小 Bug，@cweiting731 認領模擬、ROS 與部署的小 Bug。PM 可以自行建立和指派任何任務。
@@ -155,7 +166,7 @@ DRI：@Nues0913、@milong9487 或 @cweiting731（擇一）
 
 ### 5.2 提交與合併流程
 
-1. 依第 4.1／4.2 節確認可以開工。從最新的 `main` 為每個 Issue 建一條分支，例如 `fix/4-odor-pathway`、`feat/ros-closed-loop`。**任何人都不直接推送 `main`。**
+1. 依第 4.1／4.2 節確認可以開工。從最新的 `main` 為每個 Issue 建一條分支，例如 `fix/4-odor-pathway`、`feat/ros-closed-loop`（探索用的 `exp/` 分支見第 4.3 節）。**任何人都不直接推送 `main`。**
 2. PR 由實際執行者的帳號建立，標題描述成果，內文用繁體中文並連結 Issue：只是部分處理時寫 `Refs #N`；完全解決時才寫 `Closes #N`（合併到 `main` 時 Issue 會自動關閉）。
 3. 每個 PR 只放最小可審查的範圍。修 Bug 時不順便大幅清理無關文件、重構跨模組程式或修改研究參數。
 4. 只加入該加的檔案（先看 `git status`，不要用 `git add -A`）。`runs/`、權重、`.venv`、本機路徑不進 Git。
@@ -224,8 +235,9 @@ PM merge decision: @Nues0913
 GitHub 現況（2026-10-18 查詢）：@MiLong9487 和 @cweiting731 都有 write 權限；repo 只有 GitHub 預設的 label；`main` 沒有自動強制的 Review 規則，第 5.1 節由 PM 人工把關。
 
 1. 本文件經兩名 teammate Review 後合併，三個 Agent 開始新任務前先讀。
+   - 合併前已經在跑的長時間工作不中斷：PM 在對應 Issue 補上 `Decision:`，把它納入本規範。
 2. 確認兩名 teammate 可用的 GPU、VRAM、ROS/Gazebo 環境和可投入時間；必要時調整**算力分配**，不隨意改**模組主責**。
-3. PM 建立第 4.3 節的 label；之後視需要加上 Issue／PR 模板、`CODEOWNERS` 和 `main` 的保護規則。個人帳號的 repo 可能受方案限制而無法啟用，那時仍以人工確認第 5.1 節的非作者審查。
+3. PM 建立第 4.4 節的 label；之後視需要加上 Issue／PR 模板、`CODEOWNERS` 和 `main` 的保護規則。個人帳號的 repo 可能受方案限制而無法啟用，那時仍以人工確認第 5.1 節的非作者審查。
 4. 依第 7 節整理現有 Issue 的 DRI 與待決事項，並為 ROS 閉環和 GPU 矩陣開新的 Issue。
 5. 先跑單一種子的 benchmark，確認兩名 teammate 都能保存一致的訓練產物，再分配全部的 GPU 批次。
 6. 之後一律依照：Issue →（同領域小 Bug 自行認領；其他工作經 PM 批准並指派）→ 分支 → PR → teammate 依需要驗證 → 依作者與領域完成非作者 Review → PM 決定合併 → 更新 Issue。

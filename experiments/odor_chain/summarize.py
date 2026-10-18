@@ -95,8 +95,9 @@ def main():
     )
     for row in summary["groups"].values():
         bc = row["bc"]
+        # #4 Decision: the 0.05 ratio is not a current gate; keep it as a reference only.
+        row["reference"] = {"bc_ratio_ge_0.05": row["stages"]["bc"]["ratio"] >= 0.05}
         row["criteria"] = {
-            "bc_ratio_ge_0.05": row["stages"]["bc"]["ratio"] >= 0.05,
             "normal_success_within_10pt_of_G0": (
                 bc["normal_success"] >= reference - 0.10 if reference is not None else None
             ),
@@ -134,7 +135,7 @@ def main():
     lines += [
         "",
         "| 組 | normal 成功率 | occlusion 成功率 | 遮蔽中方位誤差° | odor lesion 後° | Δ° "
-        "| BC gate | 比例≥0.05 | 成功率 ≥ G0−10pt | 全部通過 |",
+        "| BC gate | 比例≥0.05（僅參考，非現行 gate） | 成功率 ≥ G0−10pt | 驗收（不含比例） |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for group, row in summary["groups"].items():
@@ -143,7 +144,7 @@ def main():
             f"| {group} | {fmt(bc['normal_success'])} | {fmt(bc['occlusion_success'])} "
             f"| {fmt(bc['occluded_bearing_deg'])} | {fmt(bc['occluded_bearing_deg_odor_lesion'])} "
             f"| {fmt(bc['odor_lesion_occluded_bearing_delta_deg'])} "
-            f"| {fmt(bc['dn_health_passed'])} | {fmt(criteria['bc_ratio_ge_0.05'])} "
+            f"| {fmt(bc['dn_health_passed'])} | {fmt(row['reference']['bc_ratio_ge_0.05'])} "
             f"| {fmt(criteria['normal_success_within_10pt_of_G0'])} | {fmt(criteria['all'])} |"
         )
     lines += ["", f"G1/G2 vision pretrain 完全相同：{fmt(summary['G1_G2_vision_identical'])}"]

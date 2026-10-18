@@ -8,6 +8,7 @@ from pathlib import Path
 import rclpy
 from flytrack_core.contracts import SensorContract
 from flytrack_core.world import ScenarioSpec
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -120,6 +121,8 @@ def spin_main(node_type, args=None):
     try:
         node = node_type()
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # normal launch shutdown; the finally block still cleans up
     finally:
         if node is not None:
             node.destroy_node()

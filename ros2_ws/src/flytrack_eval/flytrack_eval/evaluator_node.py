@@ -14,6 +14,7 @@ from flytrack_core.contracts import VARIANTS
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_interfaces.msg import ControlTrace, OdorReading, ScenarioEvent, TrackingMetrics
 from geometry_msgs.msg import PoseStamped, Twist
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -391,6 +392,8 @@ def main(args=None):
     node = EvaluatorNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # normal launch shutdown; the finally block still cleans up
     finally:
         node.destroy_node()
         if rclpy.ok():

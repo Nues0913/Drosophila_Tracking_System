@@ -203,7 +203,6 @@ lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明�
 - [docs/gpu_hosts.md](docs/gpu_hosts.md)：在 Linux／WSL2／Colab 跑訓練與分工
 - [docs/execution_log.md](docs/execution_log.md)：執行環境與驗證證據
 - [docs/data_sources.md](docs/data_sources.md)：資料來源、授權、雜湊
-- [docs/implementation_status.md](docs/implementation_status.md)：各模組實作狀態與工程近似
 - [docs/requirements_traceability.md](docs/requirements_traceability.md)：計劃書驗收對照
 - `python/*/…_NOTES.md`：各套件設計筆記
 

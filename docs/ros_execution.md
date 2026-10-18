@@ -32,3 +32,13 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu \
 真正策略 artifact 備妥後，仍須另外執行感測到控制、看門狗、模型 reset、真值隔離、rosbag 完整性及 Gazebo 正式矩陣。既有 sensor age 與 inference wall time 不是完整 sensor generation 到 command 的 wall-time 因果量測。
 
 官方配對依據：[Gazebo ROS 安裝](https://gazebosim.org/docs/jetty/ros_installation/)、[ros_gz 版本表](https://github.com/gazebosim/ros_gz/tree/ros2)、[OSRF Docker 定義](https://github.com/osrf/docker_images)。Lyrical 使用 Jetty 的 ROS vendor 套件；未新增 Gazebo 自家 apt 來源。
+
+## ROS topic 與重置（設計）
+
+原始感測 `/sim/camera/{left,right}/image_raw`、`/sim/odor` 只送干擾節點；策略只讀 `/fly/camera/{left,right}/image_raw`、`/fly/odor`。`/world/agent/pose`、`/world/target/pose`、`/world/scenario` 留在 world 與 eval 邊界。
+
+`/cmd_vel` 由策略發布；回合管理器在 inactive／reset 階段發布零速度，評估器不能發布控制。`/fly/neural_activity` 與額外 `/fly/inference_latency_ms` 為診斷，`/eval/metrics` 為每回合結果。
+
+回合管理器先關閉感測轉送並呼叫 `/connectome_policy_node/reset`，持續零速停穩，再重置 agent/target pose，第二次清除策略緩衝，所有服務成功後才開新回合。氣味與軌跡按照同一事件種子與模擬起點重建。部署第一次控制前等待三路新感測；真值缺失會讓評估回合標記 invalid，不從少量好樣本宣告成功。
+
+`scripts/run_gazebo_matrix.py` 提供後續批次編排，錄製彙總核對每回合 model_card SHA-256。這兩段程式碼尚未實際執行。

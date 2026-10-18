@@ -121,6 +121,44 @@ PPO 和 ES 也一樣：同一個設定在每個階段都成立，例如 pretrain
 
 先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
+## Reward 與回報尺度
+
+環境預設使用有界存活獎勵（#19）：`env.distance_penalty_cap_m: 3.0` 把距離
+誤差封頂為 3 m，`env.reward_weights.survival: auto` 在初始化時計算每步非碰撞
+懲罰上界 `P_max`，並在每個未碰撞步加入 `b=P_max`。碰撞步不加存活獎勵，仍扣
+原本的 `collision` 並立即 terminated。推導包含距離、lost、動作變化和負向
+progress；watchdog 直接歸零的動作變化也算在內，詳見
+[SIM_NOTES.md](../flytrack_sim/SIM_NOTES.md#bounded-survival-reward)。環境屬性
+`reward_penalty_bounds`、`max_step_penalty`、`survival_bonus` 可供診斷讀取。
+
+預設速度／權重下，每個存活步 reward ≥0，碰撞步的 reward 上界為負，因此
+gamma=0.99 的 PPO 與未折扣的 ES 都不會因「省掉後續負回報」而偏好立即碰撞。
+自訂 collision 權重仍需大於單步正向 progress 上界，才有嚴格的最差存活比較。
+固定長度下，固定 bonus 不改變套用距離上限後的存活策略排序。成功率、碰撞率與
+評估協定不變，`episode_metrics.episode_return` 和 `info['episode']['r']` 累積新 reward。
+
+預設 `control_dt=0.05`，靜止世界 `P_max=b≈1.575`，移動世界約 1.595。60 秒
+有 1200 步，完整存活的未折扣回報保守界分別約 `[0,1950]`、`[0,1998]`；若計入
+提早碰撞，整回合下界分別約 −11.575、−11.595。gamma=0.99 下，完整存活回報
+上界約 162.499、166.499。PPO 沒有 reward normalization，critic loss 定義為
+`0.5 * max(value_error², clipped_value_error²).mean()`；應同時記錄回報與
+`training_metrics.json` 的 `critic_loss`（value loss），CPU smoke 只能檢查執行及
+有限數值，不能代替 500k 步 T3 的學習曲線和碰撞率驗收。
+
+`survival` 也可設有限非負數字，設 0 只關閉 bonus；小於 `P_max` 時不保證存活步
+非負。`distance_penalty_cap_m` 可設有限非負數字、0（距離項歸零）或 null
+（不封頂，auto 會從場地與軌跡邊界推導較大的上界）。以下兩個設定合用才會
+逐位元重現舊 reward：
+
+```yaml
+env:
+  distance_penalty_cap_m: null
+  reward_weights: {survival: 0}
+```
+
+新 reward 是核准的預設值，現有訓練 YAML 不必同步增加權重。舊 PPO checkpoint
+不可直接 resume；pretrain／BC artifact 可沿用並重新開始 PPO。
+
 ## Recurrent PPO
 
 ```yaml

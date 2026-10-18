@@ -119,8 +119,62 @@ Common kwargs: `target_motion` (name or list), the `LayoutConfig` fields or
 `trajectory_config`, `scenario_config` (strict dict loaded by the caller),
 `episode_seconds`, `arena_size_m`, `arena_center_xy`, `initial_agent_pose`,
 `obstacles` (extruded circle dicts), `domain_randomization`, `reward_weights`,
+`distance_penalty_cap_m`,
 `subrays`, `render_mode='rgb_array'`. Unknown kwargs raise errors. Episode duration
 overrides the scenario file's `duration_s` for both offline and ROS adapters.
+
+### Bounded survival reward
+
+The default reward caps distance error and adds a constant bonus on each step
+without collision. With distance `d`, following distance `f`, tolerance `tol`,
+applied action change `da` and weights `w`, the base reward is
+
+```text
+w.progress * (previous_d - d)
+- w.distance * min(max(0, abs(d - f) - tol), distance_penalty_cap_m)
+- w.smoothness * dot(da, da) - w.lost * (d > lost_distance_m)
+- w.collision * collision
+```
+
+`distance_penalty_cap_m` defaults to 3 m; null leaves distance error uncapped,
+and zero removes that penalty. Numeric caps must be finite and nonnegative.
+`reward_weights.survival` defaults to `auto`, resolving once at initialization
+to `b = P_max`, the sum of the non-collision penalty bounds:
+
+- Distance: `w.distance * cap`. For a null cap, use the maximum separation of
+  the arena and trajectory bounds, also accounting for error at zero distance.
+- Lost: `w.lost`.
+- Smoothness: `w.smoothness * max(dv_max² + domega_max², v_max² + omega_max²)`.
+  Normal action changes are bounded by `dv_max = min(v_max, linear_accel_max*dt)`
+  and `domega_max = min(2*omega_max, angular_accel_max*dt)`. The second term
+  covers the watchdog's immediate zero command, which bypasses acceleration
+  limits. A relative `8*float32_epsilon` margin covers action arithmetic.
+- Negative progress: `w.progress * (v_max + target_speed_max) * dt`. Stationary
+  targets have zero speed; all other supported trajectories are bounded by
+  `trajectory_config.speed_m_s`, falling back to `target_speed_m_s`. Random
+  layout sampling does not change speed, and mixed motions use the largest
+  bound. Reflection, wander interpolation and wall clipping cannot increase it.
+  The same rounding margin covers float32 speed limits and displacement arithmetic.
+
+These values are exposed as `env.reward_penalty_bounds`, `env.max_step_penalty`
+and `env.survival_bonus`. Defaults give approximately 1.575 per stationary step
+or 1.595 per moving-target step (including watchdog rounding margin).
+
+Every non-collision step adds `b`, so its reward is at least zero in auto mode.
+The collision step receives no bonus and still terminates immediately. Its
+reward is at most `w.progress*(v_max+target_speed_max)*dt - w.collision`, which
+is strictly negative with default weights/speeds. Thus immediate collision is
+worse than even the zero lower bound for surviving to the deadline, both for
+gamma=0.99 and undiscounted ES. Custom weights/speeds retain this strict
+comparison only when collision weight exceeds the positive progress bound.
+
+Survival may instead be any finite nonnegative number; zero disables the bonus.
+Values below `P_max` do not guarantee nonnegative surviving rewards. Set both
+`distance_penalty_cap_m: null` and `reward_weights: {survival: 0}` for bitwise
+legacy rewards. At a fixed horizon, the constant bonus preserves the ordering
+of surviving policies under the capped base reward (with or without discount).
+`episode_metrics.episode_return` and `info['episode']['r']` accumulate the new
+reward; success, collision and other evaluation metrics retain their definitions.
 
 `info['privileged_state']` is float32[12], ordered:
 

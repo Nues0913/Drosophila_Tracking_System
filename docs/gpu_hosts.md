@@ -28,7 +28,7 @@ GPU 建議 8 GB 以上。3 GB 的 GTX 1050 已確認不夠（PPO 更新時 OOM�
 
 ## 分工跑正式訓練
 
-`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，它呼叫 `scripts/run_experiments.py`：同一個「變體／種子」依序跑 pretrain → BC → PPO，不同組之間預設同時跑 2 組（`--jobs`）。分工時建議**以種子分**，每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤；同一種子的預訓練資料也只需收集一次：
+`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，它呼叫 `scripts/run_experiments.py`：同一個「變體／種子」依序跑 pretrain → BC → PPO，不同組之間預設同時跑 3 組（`prepare_experiments.py --jobs` 的預設值，寫進 `run_all.sh`）。分工時建議**以種子分**，每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤；同一種子的預訓練資料也只需收集一次：
 
 ```bash
 python scripts/prepare_experiments.py --algorithm ppo --device cuda --seeds 2

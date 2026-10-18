@@ -66,6 +66,22 @@ def _identity(config: dict[str, Any], stage: str, seed: int) -> dict[str, Any]:
     for name in ("graph_path", "frontend_path", "sensor_contract_path"):
         if config.get(name):
             sources[name] = hashlib.sha256(Path(config[name]).read_bytes()).hexdigest()
+    # The config holds only the parent actor's path; its card (which hashes every
+    # weight file) binds this stage to the exact parent, so a rerun upstream stage
+    # invalidates checkpoints and completed actors built on the old one.
+    parents = {"init_artifact": config.get("init_artifact")}
+    parents.update(
+        {f"pretrained_{k}": v for k, v in (config.get("pretrained_artifacts") or {}).items()}
+    )
+    for name, path in parents.items():
+        if path:
+            card = Path(path) / "model_card.json"
+            if not card.is_file():
+                raise FileNotFoundError(
+                    f"Parent actor of this stage is missing ({name}: {path}); its card "
+                    "binds the checkpoint, so restore it or rerun the stages from there"
+                )
+            sources[name] = hashlib.sha256(card.read_bytes()).hexdigest()
     encoded = json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
     return {
         "stage": stage,
@@ -107,7 +123,9 @@ class Recovery:
                 or self.checkpoint.get("identity") != self.identity
             ):
                 raise ValueError(
-                    "Recovery checkpoint stage, seed, configuration or source hashes differ"
+                    "Recovery checkpoint stage, seed, configuration or source hashes differ "
+                    f"(sources include the parent actor's model card); remove {output} "
+                    "to rerun this stage from its current inputs"
                 )
         elif self.path.exists() or (output / "actor/model_card.json").exists():
             raise FileExistsError(f"Run already exists at {output}; pass --resume to continue it")

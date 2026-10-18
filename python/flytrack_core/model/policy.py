@@ -958,11 +958,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "motor_rate_beta": 10.0,
     # Fixed gain on edges into motor DNs; legacy cards load with 1.0 (no gain).
     "motor_input_gain": 100.0,
-    # Odor pathway (#4): x100 ORN drive kept odor at 13% of vision's effect on
-    # omega after a short BC (x1: 0.2%); softplus lowered it, so it stays opt-in.
-    # Legacy cards load with odor_input_gain 1.0.
+    # Odor pathway options (#4), opt-in: x100 ORN drive diverged the odor-pretrain
+    # decoder, and vision pretraining alone cut odor's effect ~150x.
     "olfactory_rate_beta": None,
-    "odor_input_gain": 100.0,
+    "odor_input_gain": 1.0,
     "dense_threshold": 5000,
     "readout": "auto",
     # Offsets the DN left/right structural asymmetry; legacy cards load without it.

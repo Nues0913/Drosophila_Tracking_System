@@ -553,13 +553,11 @@ def test_cached_sensory_code_and_adjacency_reproduce_full_forward(
         gradients.append([p.grad.clone() for p in policy.parameters() if p.grad is not None])
         for expected, observed in zip(full_actions, actions, strict=True):
             torch.testing.assert_close(expected, observed, atol=0, rtol=0)
-    # Summation order differs between the two graphs; with the x100 ORN drive
-    # (#4) VO-late gradients differ by up to ~2e-7 absolute, 2.3e-5 relative.
     for plain, cached in zip(*gradients, strict=True):
-        torch.testing.assert_close(plain, cached, atol=5e-7, rtol=5e-5)
+        torch.testing.assert_close(plain, cached, atol=1e-7, rtol=1e-5)
 
 
-def test_odor_pathway_softplus_opt_in_and_gain_default(graph, graph_path, official_frontend):
+def test_odor_pathway_options_are_opt_in(graph, graph_path, official_frontend):
     voltage = torch.full((1, graph.n_nodes), -0.5)
     legacy = MaskedRateCore(graph, SensorContract(), dict(DEFAULT_CONFIG))
     smooth = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 10})
@@ -573,8 +571,10 @@ def test_odor_pathway_softplus_opt_in_and_gain_default(graph, graph_path, offici
     )
     with pytest.raises(ValueError, match="olfactory_rate_beta"):
         MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "olfactory_rate_beta": 0})
-    base = build_policy("VO", graph_path, SensorContract(), official_frontend, odor_input_gain=1)
-    boosted = build_policy("VO", graph_path, SensorContract(), official_frontend)
+    base = build_policy("VO", graph_path, SensorContract(), official_frontend)
+    boosted = build_policy(
+        "VO", graph_path, SensorContract(), official_frontend, odor_input_gain=100
+    )
     torch.testing.assert_close(boosted.encoder.odor_projection, base.encoder.odor_projection * 100)
     torch.testing.assert_close(boosted.encoder.visual_projection, base.encoder.visual_projection)
 

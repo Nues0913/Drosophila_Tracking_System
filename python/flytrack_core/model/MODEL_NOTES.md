@@ -100,19 +100,25 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 
 舊 model card 沒有這兩個鍵時，載入補 `motor_input_gain=1`、`readout_turn_bias=False`，保留原本推論語意。
 
-**嗅覺通路選項（#4）。** 已訓練的 VO 策略動作完全不受氣味影響：非運動神經元的 ReLU 把氣味訊號截斷，關掉後梯度也是 0，訓練救不回來；BC 之前氣味對 ω 的影響也只有視覺的約 1/2500。兩個可選設定：
+**嗅覺通路選項（#4，都是可選設定）。** 已訓練的 VO 策略動作完全不受氣味影響：非運動神經元的 ReLU 把氣味訊號截斷，關掉後梯度也是 0；訓練前氣味對 ω 的影響也只有視覺的約 1/2500。兩個可選設定：
 - `olfactory_rate_beta`（預設 `None` = ReLU）：嗅覺 population 中非運動 DN 的節點改用 `softplus(v, beta)`，讓負電位時仍有梯度。和運動 DN 的 softplus 一樣是工程假設，不是生物測量；分支遮罩照常把關閉分支的 rate 設為 0。
-- `odor_input_gain`（預設 100）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以也會受影響。
+- `odor_input_gain`（預設 1）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以也會受影響。
 
-小預算對照（從初始化開始的短版 BC：teacher 12k 加 DAgger 6k，VO seed 0，GTX 1050）。數值是 BC 後 teacher 駕駛 200 步的最大 |Δω|，單位 rad/s：
+量測工具是 `scripts/diagnostics/modality_sensitivity.py`（teacher 駕駛 200 步，最大 |Δω|，單位 rad/s）。目前的證據：
 
-| 設定 | 去掉氣味 | 氣味左右交換 | 去掉視覺 | 氣味／視覺 | ω 與 teacher 相關 |
-|---|---|---|---|---|---|
-| 增益 1（舊） | 4.5e-5 | 1.8e-6 | 0.027 | 0.0017 | 0.641 |
-| 增益 100 | 3.6e-3 | 1.1e-4 | 0.027 | 0.134 | 0.638 |
-| 增益 100 加 softplus（β=10） | 9.9e-4 | 2.9e-5 | 0.026 | 0.038 | 0.640 |
+| 階段（VO seed 0） | 增益 | 去掉氣味 | 去掉視覺 | 氣味／視覺 |
+|---|---|---|---|---|
+| 初始化 | 1 | 6.7e-6 | 5.6e-4 | 0.012 |
+| 初始化 | 100 | 6.9e-4 | 5.6e-4 | 1.24 |
+| vision pretrain 2400 步（38 次更新） | 1 | 3.2e-9 | 1.6e-3 | 2e-6 |
+| vision pretrain 2400 步 | 100 | 6.8e-6 | 1.6e-3 | 4e-3 |
+| 從初始化直接短版 BC（18k） | 1 | 4.5e-5 | 0.027 | 0.0017 |
+| 從初始化直接短版 BC（18k） | 100 | 3.6e-3 | 0.027 | 0.134 |
+| 從初始化直接短版 BC，加 softplus（β=10） | 100 | 9.9e-4 | 0.026 | 0.038 |
 
-三組都通過 DN 健康檢查，視覺行為幾乎相同。初始化時，增益 100 的氣味／視覺比例是 1.24（增益 1 是 0.012）。softplus 在這個預算下反而降低氣味的影響，所以維持可選。注意：氣味左右交換的影響只有去掉氣味的約 1/30，代表氣味主要改變左右共同的部分，還不是轉向線索；normal 情境的任務本身不需要氣味（#4 修正方向 3）。
+- **增益 100 不能當預設**：odor pretrain 的線性 decoder 直接讀嗅覺 rate，增益 100 時 rate 放大約 100 倍（初始化最大 136），loss 發散（4060：0.69 → 208）。要用大於 1 的增益，pretrain decoder 的輸入必須先做尺度處理。
+- **vision pretrain 本身就會壓掉氣味**：把 pretrain 後的參數逐類還原成初始值，只有還原 bias 才能救回氣味；alpha、tau、readout 都沒有效果。其中是「只屬於視覺」的 680 個 type 的 bias 改變了網路的工作點：還原它們，氣味的影響回到 5.6e-6，但視覺增加的敏感度也一起消失。只凍結嗅覺 type 救不回來（7e-8）。全部凍結（`core_bias_learning_rate: 0`，pretrain 現在也支援）可以完整保住氣味，但 vision pretrain 第 1 個 epoch 的 loss 從 0.518 變差到 0.619。
+- 這些都只是 2400～18k 步的小實驗。完整流程（pretrain → BC）下比例能不能守住，要等 4060 上的縮小鏈。
 
 新 model card 會記錄這兩個值；舊 card 沒有 `odor_input_gain` 時補 1.0，沒有 `olfactory_rate_beta` 時是 `None`，語意不變。`scripts/diagnostics/modality_sensitivity.py` 量測 teacher 駕駛下去掉氣味、氣味 ×10、左右交換、去掉視覺時的最大 |Δω|，以及氣味／視覺比例。
 

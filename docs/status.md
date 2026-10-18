@@ -14,7 +14,7 @@
 | flyvis 前端（方案 A） | 官方 checkpoint 作者 SHA-256 核對；原生轉換對官方輸出最大誤差 1.91e-6 | `artifacts/frontend/verification.json`、`docs/frontend_execution.md` |
 | 中央子圖萃取 | 2569 神經元、14165 邊；弱連通、每個種子型別可達 DN、號誌、雜湊等 19 項獨立檢查全過；重跑兩次位元相同 | `artifacts/data_execution/graph_verification.json`、`scripts/verify_subgraph.py` |
 | 六變體參數預算 | DN A＋C 後仍為 VO/V/O/RS=6794、VO-late=6766、GRU=6831，均在 ±5% 內 | `runs/dn_fix/experiment_configs/parameter_budget.json`（只產生設定，沒有執行 run_all.sh） |
-| 測試與 lint | 114 passed（含真實前端，2026-10-18 的 main）；`ruff check`、`ruff format --check` 通過 | `pytest python/tests` |
+| 測試與 lint | 116 passed（含真實前端，2026-10-18 的 main）；`ruff check`、`ruff format --check` 通過 | `pytest python/tests` |
 | 小規模訓練鏈 | VO seed 0 縮小版：視覺預訓練 → 氣味預訓練 → BC → PPO 全部跑完，各階段權重有限且有更新 | 可用 `configs/train/smoke.yaml` 重現 PPO 部分 |
 | Docker 映像 | `flytrack-ml:0.1`、`flytrack-ros:0.1` 本機建置成功 | `docs/ros_execution.md` |
 
@@ -50,7 +50,7 @@
     - 縮短方案還沒決定，選項見 [training_time.md](training_time.md)。
     - CUDA Graphs 還沒試。
     - 第 13 點的修正如果要從 pretrain 重練，每條訓練鏈約多 1 小時。
-8. **ROS／Gazebo**：映像內的 `colcon build` 成功；2026-10-18 用目前的程式碼在映像裡跑真值隔離 launch test（通過）和 latency 單元測試（通過）。同時發現策略節點關閉時送不出停止命令（修正在 #15，審查中）。**閉環回合、Gazebo 物理與相機、延遲量測都還沒做。**
+8. **ROS／Gazebo**：映像內的 `colcon build` 成功；2026-10-18 用目前的程式碼在映像裡跑真值隔離 launch test（通過）和 latency 單元測試（通過）。同時發現策略節點關閉時送不出停止命令，已由 #15 修正（SIGINT／SIGTERM 都會先送出零速度命令再退出）。**閉環回合、Gazebo 物理與相機、延遲量測都還沒做。**
 9. **評估的主要終點、非劣容許差** 已在 `configs/evaluation_protocol.yaml` 宣告（2026-10-17 修訂為 schema 2：隨機化世界、朝向條件、環境審計），正式訓練前請組內確認一次。
 10. **新門檻是工程選擇**：朝向 45°、盲目策略 ≤10%、teacher ≥90%、BC 轉向相關 ≥0.5 與幅度 ≥25%、DN 輸入增益 100、wander 參數；請 reviewer 確認。
 11. **noise 情境的大幅波動**（情境測試中 A 3%、B 77%）。有一部分是設定不一致造成的：情境參數原本有程式預設值和 YAML 兩個來源，bc_A 的 noise 碰撞率因此出現 0.667 對 0.267（#2，已由 #5 修正）。另外，noise 情境的結果對雜訊參數非常敏感：bc_B 的 noise 成功率在兩組參數下是 77% 對 0%。雜訊強度對成功率的曲線，以及 BC 是否要做雜訊擴增，都還沒做。
@@ -93,6 +93,6 @@
 1. **在有 ≥8 GB GPU 的主機**照 README「組員快速上手」安裝，跑 `pytest`、`audit-env` 與 smoke，回報速度與顯存。
 2. 用 **VO seed 0** 跑完整預算，確認 PPO 穩定、回報有上升；需要調整的話，所有變體一起改。**先修好 #4（第 13 點）**，否則 VO 實際上等於 V，正式訓練的多感官比較沒有意義。
 3. 依新的教師校準（第 5 點）固定方位解碼門檻與成功率目標。
-4. 依 [gpu_hosts.md](gpu_hosts.md#分工跑正式訓練) 分工跑 6 變體 × 5 種子。
+4. 依 [gpu_hosts.md](gpu_hosts.md#分工跑正式訓練) 分工跑 6 變體 × 5 種子；派工方式見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md#gpu-任務派工)。
 5. 同時有人負責 ROS／Gazebo：`colcon build` 和真值隔離測試已通過（第 8 點），接著是閉環回合、reset 跨節點驗證與延遲量測（見 [ros_execution.md](ros_execution.md)）。
 6. 2D 正式評估 → Gazebo 主要比較 → lesion 分析 → 報告與展示。

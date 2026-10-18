@@ -59,7 +59,7 @@ python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device 
 
 WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的 `C:\Users\<帳號>\.wslconfig` 寫入 `[wsl2]`、`memory=12GB`，再於 PowerShell 執行 `wsl --shutdown` 後重開 Ubuntu。筆電訓練時請插電並使用最佳效能電源模式。
 
-先跑單一變體、單一種子確認穩定性與速度，再分工跑完整矩陣。分工方式與注意事項見 [docs/gpu_hosts.md](docs/gpu_hosts.md#分工跑正式訓練)。`runs/` 不進 git；訓練完成後請把各自的 `runs/<variant>/seed_<n>/actor` 與 log 交回整合。
+先跑單一變體、單一種子確認穩定性與速度，再分工跑完整矩陣。分工方式與注意事項見 [docs/gpu_hosts.md](docs/gpu_hosts.md#分工跑正式訓練)，誰跑哪些組以 PM 開的 GPU 執行 Issue 為準（[AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md#3-算力與重度測試分配)）。`runs/` 不進 git；訓練完成後請把各自的 `runs/<variant>/seed_<n>/actor` 與 log 交回整合。
 
 ## 已確認的實作決策
 
@@ -199,6 +199,7 @@ lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明�
 ## 文件索引
 
 - [docs/status.md](docs/status.md)：目前進度、已知問題、下一步（**先讀這份**）
+- [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)：三人（Agent）分工、Issue／PR 與審查規範（參與開發前先讀）
 - [後續計畫.md](後續計畫.md)：分階段檢查清單
 - [docs/gpu_hosts.md](docs/gpu_hosts.md)：在 Linux／WSL2／Colab 跑訓練與分工
 - [docs/execution_log.md](docs/execution_log.md)：執行環境與驗證證據

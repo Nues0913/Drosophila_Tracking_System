@@ -432,6 +432,7 @@ class FlyTrackEnv(gym.Env):
                 self.previous_action,
                 self.contract,
                 self.following_distance_m,
+                target_velocity=self.target_velocity,
             ),
             "target_bearing_rad": bearing,
             "target_distance_m": distance,

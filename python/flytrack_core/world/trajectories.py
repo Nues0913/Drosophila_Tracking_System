@@ -1,9 +1,9 @@
 """Bounded target trajectories that are pure functions of (config, seed, time).
 
 ``stationary``, ``linear`` and ``curved`` are analytic. ``wander`` is a smooth
-random walk (Ornstein-Uhlenbeck turn rate with soft wall avoidance) integrated
-on a fixed grid from a seed-derived stream, so ROS and the 2D world replay the
-same path for the same seed.
+random walk (Ornstein-Uhlenbeck turn rate with soft wall avoidance, the sum
+bounded by the maximum turn rate) integrated on a fixed grid from a seed-derived
+stream, so ROS and the 2D world replay the same path for the same seed.
 """
 
 import math
@@ -34,11 +34,13 @@ class TrajectoryConfig:
     # Curved motion only: +1 counter-clockwise (default), -1 clockwise.
     direction: float = 1.0
     # Wander motion only: turn rate is an OU process with this stationary std and
-    # correlation time, clipped to the maximum; walls repel within the margin.
+    # correlation time; walls repel within the margin. The total (OU plus wall)
+    # rate is clipped to the maximum: an unbounded wall term reached 1.0-1.3 rad/s,
+    # a 0.2 m U-turn radius that drove the target back into its 0.33 m follower.
     wander_turn_rate_std: float = 0.15
     wander_turn_tau_s: float = 2.0
     wander_max_turn_rate: float = 0.4
-    wander_wall_margin_m: float = 1.0
+    wander_wall_margin_m: float = 1.5
     wander_wall_gain: float = 1.0
     xmin: float = -4.5
     ymin: float = -4.5
@@ -124,7 +126,13 @@ class TargetTrajectory:
                 wall = min(x - c.xmin, c.xmax - x, y - c.ymin, c.ymax - y)
                 proximity = min(max((c.wander_wall_margin_m - wall) / c.wander_wall_margin_m, 0), 1)
                 inward = float(wrap_angle(math.atan2(center[1] - y, center[0] - x) - heading))
-                rate = self._wander_rate + c.wander_wall_gain * proximity * inward
+                rate = float(
+                    np.clip(
+                        self._wander_rate + c.wander_wall_gain * proximity * inward,
+                        -c.wander_max_turn_rate,
+                        c.wander_max_turn_rate,
+                    )
+                )
                 heading = float(wrap_angle(heading + rate * WANDER_DT_S))
                 x += c.speed_m_s * math.cos(heading) * WANDER_DT_S
                 y += c.speed_m_s * math.sin(heading) * WANDER_DT_S

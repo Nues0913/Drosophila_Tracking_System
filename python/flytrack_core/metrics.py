@@ -33,6 +33,18 @@ class EpisodeMetrics:
         self.recaptures: list[float] = []
         self.occlusion_events = 0
 
+    @classmethod
+    def from_env_options(cls, dt: float, options: dict) -> EpisodeMetrics:
+        """Thresholds of an environment's ``success_*`` options, with its defaults, so
+        an offline evaluation judges success exactly as the configured world does."""
+        bearing = options.get("success_bearing_deg", 45.0)
+        return cls(
+            dt,
+            float(options.get("success_distance_m", 2.0)),
+            float(options.get("success_fraction", 0.8)),
+            None if bearing is None else float(bearing),
+        )
+
     def append(
         self,
         distance: float,

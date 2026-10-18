@@ -32,7 +32,7 @@ DEFAULT_FIXED = {
 }
 
 
-def run(pool, slots, act, contract, episodes):
+def run(pool, slots, act, contract, episodes, env_options):
     """Lockstep episodes in ``slots``; act(observations, infos, rows) -> actions [N, 2]."""
     results, omegas, teachers = [], [], []
     for first in range(0, episodes, len(slots)):
@@ -41,7 +41,7 @@ def run(pool, slots, act, contract, episodes):
             *(pool.reset(slot, BASE_SEED + first + i) for i, slot in enumerate(lanes)), strict=True
         )
         obs, infos = list(obs), list(infos)
-        metrics = [EpisodeMetrics(contract.control_dt, 2.0, 0.8) for _ in lanes]
+        metrics = [EpisodeMetrics.from_env_options(contract.control_dt, env_options) for _ in lanes]
         live = list(range(len(lanes)))
         act.reset(len(lanes))
         while live:
@@ -133,7 +133,14 @@ def main():
         for name, factory in policies:
             act = factory()
             report["policies"][name] = {
-                s: run(pool, list(range(i * lanes, (i + 1) * lanes)), act, contract, episodes)
+                s: run(
+                    pool,
+                    list(range(i * lanes, (i + 1) * lanes)),
+                    act,
+                    contract,
+                    episodes,
+                    config["env"],
+                )
                 for i, s in enumerate(SCENARIOS)
             }
             row = report["policies"][name]

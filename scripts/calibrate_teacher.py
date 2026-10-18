@@ -33,7 +33,7 @@ def main():
         for episode in range(args.episodes):
             seed = args.seed_start + episode
             _, info = env.reset(seed=seed)
-            metrics = EpisodeMetrics(contract.control_dt)
+            metrics = EpisodeMetrics.from_env_options(contract.control_dt, config.get("env", {}))
             while True:
                 _, _, terminated, truncated, info = env.step(info["teacher_action"])
                 metrics.append(

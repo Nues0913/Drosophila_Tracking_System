@@ -200,11 +200,12 @@ def test_wander_target_is_smooth_bounded_and_seed_reproducible():
     times = np.arange(0, 600, 0.05)
     poses = np.array([trajectory.state(time)[0] for time in times])
     assert (np.abs(poses[:, :2]) <= 4.5 + 1e-9).all()
-    # Constant speed and a bounded, continuous turn rate (no instantaneous reversal).
+    # Constant speed and a turn rate bounded by the maximum, wall avoidance included
+    # (an unbounded wall term made 0.2 m U-turns back into the follower).
     step = np.linalg.norm(np.diff(poses[:, :2], axis=0), axis=1)
     np.testing.assert_allclose(step, 0.2 * 0.05, rtol=0.05)
     turn = np.abs(np.angle(np.exp(1j * np.diff(poses[:, 2])))) / 0.05
-    assert turn.max() < 0.4 + 1.0 * np.pi + 1e-6
+    assert turn.max() <= 0.4 + 1e-6
     assert np.ptp(poses[:, 0]) > 4 and np.ptp(poses[:, 1]) > 4
     # Pure function of (config, seed, time): query order and a fresh object agree.
     replay = TargetTrajectory(config, seed=11)
@@ -279,3 +280,33 @@ def test_success_requires_facing_the_target():
     # The constant left turn of the old world: within 2 m but side-on to the target.
     assert sideways.result()["success"] == 0 and sideways.result()["within_distance_fraction"] == 1
     assert legacy.result()["success"] == 1
+    # Offline evaluators take the thresholds from the env options, null included.
+    assert EpisodeMetrics.from_env_options(0.05, {}).bearing_threshold_deg == 45
+    configured = EpisodeMetrics.from_env_options(
+        0.05, {"success_bearing_deg": None, "success_distance_m": 1.5, "success_fraction": 0.6}
+    )
+    assert configured.bearing_threshold_deg is None
+    assert (configured.distance_threshold, configured.success_fraction) == (1.5, 0.6)
+
+
+def test_teacher_steps_aside_from_a_target_driving_at_it():
+    from flytrack_sim.teacher import teacher_action
+
+    contract = SensorContract(eye_radius=2)
+    agent, still = np.asarray([0.0, 0.0, 0.0]), np.zeros(2, np.float32)
+    # Target 1 m ahead, slightly to the agent's right, heading straight back at it:
+    # the agent is right of the target's path and turns left (+y) off it.
+    oncoming = teacher_action(
+        agent, [1.0, -0.2, np.pi], still, contract, target_velocity=np.asarray([-0.2, 0.0])
+    )
+    assert oncoming[1] > 0
+    mirrored = teacher_action(
+        agent, [1.0, 0.2, np.pi], still, contract, target_velocity=np.asarray([-0.2, 0.0])
+    )
+    assert mirrored[1] == pytest.approx(-oncoming[1])
+    # A target moving away, or passing beyond the clearance, is followed as before.
+    for pose, velocity in (([1.0, 0.0, 0.0], [0.2, 0.0]), ([1.0, 0.8, np.pi], [-0.2, 0.0])):
+        np.testing.assert_array_equal(
+            teacher_action(agent, pose, still, contract, target_velocity=np.asarray(velocity)),
+            teacher_action(agent, pose, still, contract),
+        )

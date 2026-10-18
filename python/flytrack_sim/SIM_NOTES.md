@@ -43,8 +43,11 @@ measurement and calibration before claiming distribution-identical observations.
 Motion choices are `stationary`, `linear` (wall reflection), `curved` (circle,
 `direction` +1 CCW / -1 CW) and `wander`: constant speed, an Ornstein-Uhlenbeck
 turn rate (std `wander_turn_rate_std`=0.15 rad/s, correlation
-`wander_turn_tau_s`=2 s, clipped to 0.4 rad/s) plus a soft turn toward the arena
-centre within `wander_wall_margin_m`=1 m of the bounds. Wander integrates on a
+`wander_turn_tau_s`=2 s) plus a soft turn toward the arena centre within
+`wander_wall_margin_m`=1.5 m of the bounds; the sum is clipped to
+`wander_max_turn_rate`=0.4 rad/s (0.5 m minimum turning radius). The wall term
+used to be added after the clip, reaching 1.0-1.3 rad/s: 0.2 m U-turns that drove
+the target back into its follower. Wander integrates on a
 fixed 10 ms grid from a seed-derived stream, so 2D and ROS replay the same path.
 Default arena is centered at (0,0), spanning [-5,5] in both axes; targets remain
 within [-4.5,4.5].
@@ -82,7 +85,8 @@ succeeds in ≥90% and every blind policy in ≤10% of episodes. Training
 (`scripts/run_experiments.py`) and formal evaluation run it first and refuse a
 degenerate world. Measured on 30 episodes of 60 s: legacy world with the old
 rule, constant left turn 100%; current curved world, teacher 100%, every blind
-policy 0%; wander, teacher 97%.
+policy 0%; wander, teacher 97% before the bounded turn rate and evasion, 100%
+(1000 episodes) after.
 
 `make_plume('puff'|'gaussian',PlumeConfig|dict,seed)` returns an object with
 `reset(seed,time_s=0)`, `advance(time_s,sources)` and `concentration(points)`.
@@ -132,7 +136,10 @@ visibility, occluded, collision, loss, time, episode/seed IDs, sensor timestamps
 and poses. None is part of actor observation. Done info adds `episode_metrics`
 and `episode`; reacquisition is NaN if no event completed and has a censor flag.
 The teacher slows for heading error and safe distance, with acceleration limits;
-it does not perform obstacle route planning.
+it does not perform obstacle route planning. Because it cannot reverse, a target
+that turns back and drives at it (within `evasion_distance_m`=1.5 m, ahead of the
+target and closer than `evasion_clearance_m`=0.6 m to its path) makes it step
+sideways off that path; in the legacy curved world this never triggers.
 
 `make_vector_env(num_envs,contract,scenario='normal',seed=0,**kwargs)` uses
 Gymnasium >=1.1 `SyncVectorEnv` with `AutoresetMode.SAME_STEP`. Ended episodes

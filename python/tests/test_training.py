@@ -253,6 +253,20 @@ def test_early_stopping_keeps_held_out_best_parameters():
     assert len(reports) == 8 or reports[-1]["epoch"] - best["epoch"] == 3
 
 
+def test_recovery_is_bound_to_the_parent_artifact(tmp_path):
+    parent = tmp_path / "pretrain" / "actor"
+    parent.mkdir(parents=True)
+    (parent / "model_card.json").write_text('{"files": {"weights.pt": "aaa"}}')
+    config = {"init_artifact": str(parent), "train": {}}
+    output = tmp_path / "bc"
+    Recovery(output, config, "bc", 0).save(np.random.default_rng(0), phase="fit")
+    Recovery(output, {**config, "resume": True}, "bc", 0)
+    # A rerun parent stage writes a new card at the same path: the old BC must not resume.
+    (parent / "model_card.json").write_text('{"files": {"weights.pt": "bbb"}}')
+    with pytest.raises(ValueError, match="source hashes differ"):
+        Recovery(output, {**config, "resume": True}, "bc", 0)
+
+
 def test_recovery_restores_all_cpu_random_streams_without_cuda_init(tmp_path):
     rng = np.random.default_rng(31)
     state = capture_rng(rng)
@@ -496,17 +510,3 @@ def test_scenario_parameters_have_one_source():
     env = make_env(loaded, contract, scenario="conflict")
     assert (env.scenario_spec.decoy_x, env.scenario_spec.decoy_y) == (-2, 0)
     env.close()
-
-
-def test_recovery_is_bound_to_the_parent_artifact(tmp_path):
-    parent = tmp_path / "pretrain" / "actor"
-    parent.mkdir(parents=True)
-    (parent / "model_card.json").write_text('{"files": {"weights.pt": "aaa"}}')
-    config = {"init_artifact": str(parent), "train": {}}
-    output = tmp_path / "bc"
-    Recovery(output, config, "bc", 0).save(np.random.default_rng(0), phase="fit")
-    Recovery(output, {**config, "resume": True}, "bc", 0)
-    # A rerun parent stage writes a new card at the same path: the old BC must not resume.
-    (parent / "model_card.json").write_text('{"files": {"weights.pt": "bbb"}}')
-    with pytest.raises(ValueError, match="source hashes differ"):
-        Recovery(output, {**config, "resume": True}, "bc", 0)

@@ -1,6 +1,7 @@
 # 本機環境與快取
 .env
-.venv/
+# No trailing slash: worktrees link .venv as a symlink, which ".venv/" misses.
+.venv
 .tools/
 .cache/
 .claude/

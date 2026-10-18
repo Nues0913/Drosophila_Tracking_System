@@ -15,6 +15,14 @@ def make_env(config: dict[str, Any], contract: SensorContract, **overrides: Any)
     options.update(overrides)
     scenario = options.get("scenario", "normal")
     source = config.get("scenario_configs", {}).get(scenario)
+    # configs/scenarios/*.yaml is the only source of scenario parameters: falling
+    # back silently to the ScenarioSpec defaults once trained and evaluated noise
+    # and conflict worlds that differed from the formal ones (issue #2).
+    if source is None and scenario != "normal" and not options.get("scenario_config"):
+        raise ValueError(
+            f"scenario {scenario} needs scenario_configs.{scenario} "
+            f"(configs/scenarios/{scenario}.yaml) or an explicit env scenario_config"
+        )
     if source is not None:
         with Path(source).open(encoding="utf-8") as stream:
             scenario_config = yaml.safe_load(stream)

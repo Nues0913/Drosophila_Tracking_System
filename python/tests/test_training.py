@@ -471,3 +471,28 @@ def test_environment_audit_flags_the_blind_circling_world():
     varied = audit_environment(config, contract, episodes=4)
     assert varied["passed"], varied["failures"]
     assert max(row["success_rate"] for row in varied["blind_policies"].values()) == 0
+
+
+def test_scenario_parameters_have_one_source():
+    import yaml
+    from flytrack_core.contracts import SensorContract
+    from flytrack_core.world import ScenarioSpec
+    from flytrack_train.worlds import make_env
+
+    # The code defaults equal the YAML files, so no world can drift from them...
+    for name in ("normal", "occlusion", "noise", "conflict"):
+        values = yaml.safe_load(Path(f"configs/scenarios/{name}.yaml").read_text())
+        spec = ScenarioSpec(name=name).to_dict()
+        assert {k: spec[k] for k in values if k != "duration_s"} == {
+            k: v for k, v in values.items() if k != "duration_s"
+        }
+    # ...and a corrupted scenario without its YAML is refused, not silently defaulted.
+    contract = SensorContract(eye_radius=2)
+    config = {"env": {"episode_seconds": 1}}
+    make_env(config, contract, scenario="normal").close()
+    with pytest.raises(ValueError, match="scenario_configs.noise"):
+        make_env(config, contract, scenario="noise")
+    loaded = {"scenario_configs": {"conflict": "configs/scenarios/conflict.yaml"}, **config}
+    env = make_env(loaded, contract, scenario="conflict")
+    assert (env.scenario_spec.decoy_x, env.scenario_spec.decoy_y) == (-2, 0)
+    env.close()

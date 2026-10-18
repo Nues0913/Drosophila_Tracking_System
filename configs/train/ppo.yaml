@@ -6,6 +6,11 @@ frontend_path: artifacts/frontend/frontend.npz
 init_artifact: runs/bc/VO/seed_0/actor
 output: runs/VO/seed_0
 model: {odor_K: [0.1, 0.3, 1.0], readout: structured, visual_bins: 5}
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
 env:
   episode_seconds: 60
   # Per-episode layout diversity (flytrack_core.world.layout defaults): random

@@ -9,17 +9,19 @@ from flytrack_core.sensing.corruption import CorruptionConfig
 
 @dataclass(frozen=True)
 class ScenarioSpec:
+    # Defaults equal configs/scenarios/*.yaml, the source every trainer and evaluator
+    # must load (flytrack_train.worlds.make_env refuses to fall back to these).
     name: str = "normal"
     duration_s: float = 30.0
     occlusion_start_s: float = 8.0
     occlusion_duration_s: float = 2.0
-    image_noise_std: float = 0.12
+    image_noise_std: float = 0.08
     brightness_std: float = 0.20
-    image_dropout: float = 0.02
-    odor_noise_std: float = 0.05
+    image_dropout: float = 0.05
+    odor_noise_std: float = 0.03
     odor_dropout: float = 0.10
-    decoy_x: float = 2.0
-    decoy_y: float = 2.0
+    decoy_x: float = -2.0
+    decoy_y: float = 0.0
 
     def __post_init__(self):
         if self.name not in ("normal", "occlusion", "noise", "conflict"):

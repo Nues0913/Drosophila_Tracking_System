@@ -6,6 +6,11 @@ frontend_path: artifacts/frontend/frontend.npz
 init_artifact: runs/pretrain/VO/seed_0/vision/actor
 output: runs/pretrain/VO/seed_0/odor
 model: {odor_K: [0.1, 0.3, 1.0], readout: structured, visual_bins: 5}
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
 env:
   episode_seconds: 60
   scenario: normal

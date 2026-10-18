@@ -1,0 +1,49 @@
+sensor_contract_path: configs/sensor_contract.json
+output: runs/evaluation/formal
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
+env:
+  episode_seconds: 60
+  target_motion: curved
+  plume_model: puff
+  domain_randomization: false
+  scenario_config:
+    occlusion_start_s: 8.0
+    occlusion_duration_s: 12.0
+  occlusion_odor_steering:
+    gain: 8.0
+evaluation:
+  variants:
+  - V
+  - O
+  - VO
+  - VO-late
+  - GRU
+  - RS
+  scenarios:
+  - normal
+  - occlusion
+  - noise
+  - conflict
+  seeds:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  episodes_per_seed: 100
+  batch_episodes: 32
+  latency_episodes: 1
+  artifact_template: runs/{variant}/seed_{seed}/actor
+  require_full_matrix: true
+  require_equal_budget: true
+  environment_seed: 1700000000
+  bootstrap_draws: 10000
+  deterministic: false
+  success_distance_m: 2.0
+  success_time_fraction: 0.8
+  success_bearing_deg: 45.0
+  environment_audit_episodes: 40

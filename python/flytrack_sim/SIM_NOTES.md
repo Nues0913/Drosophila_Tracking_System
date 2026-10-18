@@ -141,6 +141,36 @@ that turns back and drives at it (within `evasion_distance_m`=1.5 m, ahead of th
 target and closer than `evasion_clearance_m`=0.6 m to its path) makes it step
 sideways off that path; in the legacy curved world this never triggers.
 
+### Optional odor steering during occlusion (#24)
+
+`env.occlusion_odor_steering` defaults to null. Setting it to `{gain: 8.0}` enables
+an experimental teacher label only while `scenario_spec.occluded_at(time_s)` is
+true. Its requested turn is `gain * (L-R)/(L+R)`, where L/R are the same latest
+`observation["odor"]` concentrations passed to the student (the raw ORN input,
+after sensor corruption and the watchdog mask). It does not query plume truth,
+resample sensors, or read the actor's adapted ORN state. Gain must be finite and
+nonnegative; an empty mapping uses 8.0. Invalid/stale odor or two zero readings
+request zero turn. The usual angular velocity and acceleration limits still
+apply, so a prior turn can take several steps to reverse.
+
+Only requested omega is replaced. Forward speed, including the original
+privileged stand-off and evasion rule, remains unchanged: this teacher is still
+privileged and is not a sensory baseline. Outside the occlusion window, or when
+the option is null, the original teacher path is unchanged. No observations,
+world dynamics, reward, episode termination or success metrics are modified.
+
+The option is deliberately absent from the shared training configurations.
+Whether to enable it for training, its gain and the occlusion mixture remain PM
+decisions after #4; passing a teacher calibration does not resolve #4 or prove
+the policy uses odor.
+
+`scripts/calibrate_teacher.py --scenario occlusion --config PATH` uses the
+scenario file and any explicit `env.scenario_config` overrides, and reports
+`mean_success` and `mean_collision_rate`. The default scenario remains normal for
+existing calibration commands. For a 60-second diagnostic episode, explicit
+occlusion durations of 12 and 30 seconds yield 20% and 50% requested occlusion;
+keep the same diagnostic seeds, world and contract for enabled/disabled pairs.
+
 `make_vector_env(num_envs,contract,scenario='normal',seed=0,**kwargs)` uses
 Gymnasium >=1.1 `SyncVectorEnv` with `AutoresetMode.SAME_STEP`. Ended episodes
 reset before the returned next observation. Real terminal observation/info live

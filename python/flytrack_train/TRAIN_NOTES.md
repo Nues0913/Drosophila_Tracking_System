@@ -140,8 +140,10 @@ gamma=0.99 的 PPO 與未折扣的 ES 都不會因「省掉後續負回報」而
 預設 `control_dt=0.05`，靜止世界 `P_max=b≈1.575`，移動世界約 1.595。60 秒
 有 1200 步，完整存活的未折扣回報保守界分別約 `[0,1950]`、`[0,1998]`；若計入
 提早碰撞，整回合下界分別約 −11.575、−11.595。gamma=0.99 下，完整存活回報
-上界約 162.499、166.499。PPO 沒有 reward normalization，critic loss 定義為
-`0.5 * max(value_error², clipped_value_error²).mean()`；應同時記錄回報與
+上界約 162.499、166.499。這些界限是原始 reward；PPO 預設會正規化訓練 reward
+（見下節）。critic loss 預設為 `0.5 * value_error².mean()`；只有設定正數的
+`train.value_clip` 才使用 `0.5 * max(value_error², clipped_value_error²).mean()`。
+應同時記錄回報與
 `training_metrics.json` 的 `critic_loss`（value loss），CPU smoke 只能檢查執行及
 有限數值，不能代替 500k 步 T3 的學習曲線和碰撞率驗收。
 
@@ -174,12 +176,16 @@ train:
   gamma: 0.99
   gae_lambda: 0.95
   clip_coef: 0.2
+  value_clip: null
   value_coef: 0.5
   entropy_coef: 0.01
   activity_coef: 0.0001
   max_grad_norm: 0.5
   critic_hidden_size: 128
   target_kl: 0.03
+  reward_normalization: true
+  reward_clip: 10.0
+  separate_grad_clip: true
 ```
 
 多個 scalar 環境由 trainer 擁有（在 `EnvPool` 子行程中同時 step），逐一取得終局 info 後手動 reset，無 Gymnasium autoreset 覆寫終局觀測的風險。`total_steps` 必須是 `num_envs` 的倍數；最後 rollout 可縮短。每個 TBPTT minibatch 保留連續時間窗口，不以任意單步打散遞迴；窗口初始 state 是該 rollout 的 detached behavior state，窗口內按 episode-start reset。
@@ -187,6 +193,36 @@ train:
 策略先把 actor 物理均值 `[v,omega]` 轉為 `atanh([2v/v_max-1,omega/omega_max])`，再從 latent Gaussian 抽樣，經 tanh 與物理 affine transform 還原。這保留正向速度 sigmoid readout 的含義，log probability 包含 tanh 與物理縮放的 Jacobian。存 latent sample，避免接近界限時對實際動作做不穩定反算。
 
 真終止 `terminated` 不 bootstrap；時間限制 `truncated` 從 reset 前的真終局 privileged state bootstrap。兩者都截斷 GAE recursion，避免下一回合回報滲漏。critic 和 optimizer 只存在 `training_checkpoint.pt`，部署 `actor/` 只有 actor。
+
+`train.reward_normalization` 預設 `true`，採 SB3 VecNormalize 的方式：各環境先更新
+折扣累積回報 `R = gamma * R + r`，以平行合併的 running mean/variance 統計所有
+環境的 R（初始 mean=0、var=1、count=1e-4）。GAE 與 critic 收到的 reward 為
+`clip(r / sqrt(var + 1e-8), -reward_clip, reward_clip)`；`train.reward_clip` 預設 10，
+必須有限且大於 0。只除以標準差、不減平均，正負號保持不變，原始非負的存活步
+仍然非負。每次先將終局 R 納入統計，再於 terminated 或 truncated 將該環境 R
+歸零；rollout 交界不歸零。單環境剛開始時的少量 reward 可能被裁切，穩定後的
+一般存活步不會觸及預設上限。running mean、variance、count 與各環境 R 隨 recovery
+checkpoint 保存並在 resume 恢復。回合累積回報、`mean_last_20_episode_return` 仍是
+原始 reward。關閉此設定時完全使用原始 reward，`reward_clip` 不生效。
+
+`train.separate_grad_clip` 預設 `true`，actor 全部參數（含 `log_std`）與 critic
+各自以 `max_grad_norm` 裁剪，避免 critic 的大梯度壓縮 actor 更新。設 `false` 則
+沿用合併裁剪。ES 的 rank 正規化不受影響。
+
+`train.value_clip` 預設 `null`，critic 使用一般平方誤差，不裁剪估值變化，讓嚴重
+低估的 critic 仍能往 target 更新。設成有限正數時，將估值裁剪至
+`old_value ± value_clip`，再取原始與裁剪後平方誤差的較大值；`clip_coef` 僅控制
+actor 的 ratio clip，與此設定無關。0、負數、NaN、無限大及非數字均不接受。
+例如 old_value=0、target=20 或 160、預測=0.3 時，`value_clip=0.2` 會使 critic
+梯度為 0；預設不裁剪時，梯度仍會提高估值。要逐位元重現舊 PPO，須同時設定
+`value_clip: 0.2`（等於舊 `clip_coef`）、`reward_normalization: false` 和
+`separate_grad_clip: false`。
+
+每個 rollout 更新在 `training_metrics.json` 追加 `value_mean`（更新前 rollout
+估值平均）、`return_std`（最後一步使用的正規化分母；停用時為 1）、
+`actor_grad_norm`／`critic_grad_norm`（各 minibatch 裁剪前範數的平均）與
+`actor_grad_norm_clipped`／`critic_grad_norm_clipped`（裁剪後範數的平均）。估值及
+critic loss 使用訓練 reward 的尺度，比較實際折扣回報時必須用相同尺度。
 
 預設課程依累積步數：靜止高斯羽流 → 直線高斯羽流 → 曲線 puff → 視覺遮蔽 → 線索衝突。`train.curriculum` 可覆寫，每項有遞增 `until`（最終 ≥1）與環境參數；只在下一回合套用，不在回合中改变物理環境。
 

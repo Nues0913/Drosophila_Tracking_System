@@ -138,11 +138,52 @@ Lyrical 映像中的新版 setuptools 已不接受 `tests_require`；只加這�
 造成既有 pytest 函式未被收集，且 Python 3.14 在沒有 unittest 時回傳 5。
 
 各套件的 `setup.cfg` 固定本地 testpaths，避免 pytest 向上找到專案根目錄的設定後誤跑核心測試。
-`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_policy`、`flytrack_world` 目前沒有套件內測試，
-colcon 的 pytest adapter 接受空集合，但這不代表兩套件有測試覆蓋。
+`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_world` 收集 `test/` 的 5 項取消回呼測試；
+`flytrack_policy` 目前沒有套件內測試，colcon 的 pytest adapter 接受空集合，但這不代表該套件有測試覆蓋。
 需要 artifact 的真值隔離檢查仍以 `launch_test` 獨立執行，不混進無 artifact 的預設測試集合。
 
 在實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
 回傳 0，`colcon test-result --verbose` 為 **4 tests、0 errors、0 failures、0 skipped**。
 另只在臨時容器副本將預期延遲 5 ms 改為 6 ms，確認相同指令回傳 1，結果列出 3 個失敗；
 此負向驗證沒有修改提交的測試，證明失敗會傳回，而非忽略所有非零狀態。
+
+## 2026-10-19：#22 第 3b 階段，4070 GPU 推論比較
+
+依 PM 在 #22 的 Decision，沿用首輪相同五個環境種子 1650000200–1650000204、
+舊 VO smoke artifact（model card SHA `7ccff60ad0620b4ec5275eba48f1d8a8aece59d6b73a8594d93fdd69360f5fdc`）、
+感測契約與頻率。只將 policy 改用 GPU 推論；sim/eval 仍用首輪 CPU 映像及軟體渲染。
+Python 維持 3.14.4，torch 維持 2.9.1，改裝官方 cu126 wheel 及其相依套件；
+容器 CUDA 12.6、RTX 4070 Laptop、ROS device 參數為 `cuda`，實際 CUDA tensor 運算通過。
+衍生映像 `flytrack-ros:issue22-gpu-cu126` 的 ID 為
+`sha256:792f9b3d4f09717020c33268ce379ff29a250cc81906d6d3881e3908a4aca39c`。
+
+| 指標（wall time，ms） | 首輪 CPU | 第 3b GPU |
+| --- | ---: | ---: |
+| sensor-to-command p50 | 37.54 | 38.32 |
+| sensor-to-command p95 | 55.62 | 56.46 |
+| active 窗口 sensor-to-command p95 | 54.13 | 55.09 |
+| inference p50 | 17.02 | 18.07 |
+| inference p95 | 24.76 | 24.19 |
+
+GPU 全 bag 有 2355 筆有效推論 trace，無 invalid，coverage 100%；active 窗口有 2340 筆。
+分位數由各自原始 trace 整體重算，沒有平均各回合 p95，也沒有相加各階段 p95。
+五回合均 valid（invalid 0/5）、truth coverage 均 100%，沒有使用上一回合的 source sample，
+inactive 期間沒有新的左右眼／氣味 source stamp。兩輪只有各一次量測，不能據此判斷 GPU
+穩定變慢或解釋瓶頸；本次 GPU 沒有使端到端 p95 降至 50 ms 以下，G3 延遲項目仍未達成。
+依 PM Decision，後續指標或頻率由 #20 決定，本次沒有修改契約、控制頻率或模型。
+
+首次三路有效命令在 active 後 **453／47／48／48／49 ms**（simulation clock），均小於 1 秒。
+CPU 首輪為 414／52／47／51／48 ms；兩輪都只有第一回合較慢，符合冷啟動現象。
+GPU 第一筆命令從最後一路輸入抵達至發布耗時 251.52 ms（wall），後四回合為 22.32–35.08 ms。
+尚未用 profiler 分離載入、CUDA 初始化或其他排程成本，不將「暖機」當成已驗證的唯一原因。
+
+GPU bag 為 193228 筆訊息、13 個指定 topic 齊全，metadata/db3 完整；ros2 bag info exit0，
+SQLite quick_check=ok。policy/eval SIGINT 停止 1.02 秒（timeout 10），沒有強制 kill；本次容器已移除。
+證據包 `issue22_gpu3b_cweiting731.tar.gz` 包含 bag、逐回合／逐 trace、分析程式、映像與設定、
+CPU 比較摘要、#42 的正常／負向 colcon 驗證 log，以及取消回呼警告的重現輸出。
+交付位於 release `explore-4`，附同名 SHA-256 檔。
+
+另補首輪 log 的 `target SetEntityPose failed: NoneType.success`：真正 rclpy.Future 的最小重現顯示，
+inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記錄錯誤；先 detach pending 再 cancel
+則沒有訊息。這定位到取消回呼的誤報路徑，不能由該行直接推斷 Gazebo SetPose 服務失敗。
+本次未修改此 production 路徑；原始證據包與 SHA 保持不變。

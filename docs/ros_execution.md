@@ -196,4 +196,8 @@ inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記�
 
 #50 已合併預設關閉的 ROS policy profiler：以 `profiler_enabled` 和 `profiler_output_path` 明確啟用 JSONL sidecar；以 run／command／sensor-header 身分關聯 callback 與 tick 區段，未發出 ControlTrace 的錯誤命令標記 `null/not_emitted`。PM 在部署映像內重新 build 並以 colcon 驗證 4 項測試通過、無 skip；普通 pytest 入口的分析 5 項與 profiler／既有 watchdog 目標測試 2 項也通過。
 
-實際回放由原 DRI 在 [#49](https://github.com/Nues0913/Drosophila_Tracking_System/issues/49) 執行，固定 main `1563a93`，同一 4070 的 CPU／GPU 各最多 10 分鐘、總回放最多 20 分鐘。需量出 profile-off/on 開銷，不能將原 bag 的 monotonic 與新執行相減，也不能以回放結果宣稱原 G3 通過。PM 本次只做輕量測試與覆核，未執行 GPU replay、Gazebo 或正式訓練。
+實際回放由原 DRI 在 [#49](https://github.com/Nues0913/Drosophila_Tracking_System/issues/49) 執行，固定 main `1563a93`，同一 4070 的 CPU／GPU 各一組 profile-off/on，兩組分別約 379 秒，符合各 10 分鐘、總回放 20 分鐘的上限。[#51 回放報告](ros_policy_replay_profile_2026-10-19.md) 與離線重算工具已合併為 `0f795c4`，#49 完成本次診斷驗收。原始證據放在 release `explore-4`；PM 重新下載確認原始包與全部 18 個 manifest 雜湊，並以獨立分析比對 54 個分位數及相應 cohort／callback 數一致。
+
+回放保留 cold start、CUDA 掉落的 sensor callbacks 與 reset 前 73–74 筆 trace 缺口。off/on 處理時間只是一個配對的觀察，固定排程的 case elapsed 不能單獨估計 probe overhead；publish→callback 等待含 DDS 與排程，不能當成純 executor 等待。原 bag 的 monotonic 不與新執行相減，也不以回放結果宣稱原 G3 通過。
+
+[#52](https://github.com/Nues0913/Drosophila_Tracking_System/issues/52) 獨立修正 profiler 的 trace 提交／發布狀態及 reset 清除 pending 的可觀測性，目前僅核准輕量 CPU／ROS 測試，保留既有 production 發布與 reset 行為。camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准實作或新增回放。PM 本次只做離線重算、短 CPU 容器重現與覆核，未執行 GPU replay、Gazebo 或正式訓練。

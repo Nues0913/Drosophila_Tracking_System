@@ -57,6 +57,8 @@
 - 使用實際 rclpy.Future 及 production callback 獨立重現取消 future 的假 `NoneType.success` 錯誤，另開 #46，由原 ROS DRI 修正。[#47 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/47#pullrequestreview-5567356008) 完整審查後在本機 ROS 容器重新 build world，colcon 收集 5 項真實 Future 測試，5 passed／exit 0；Ruff check／format check 與 diff check 通過。#47 已合併為 `525db6a`，#46 關閉；真正服務拒絕與例外仍會回報。
 - [#20 的後續 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20#issuecomment-6260437085)：保留完整端到端門檻與頻率，先從既有 bag 做同 sample、同 wall-clock 的逐筆 stage 診斷；撤回先前將 simulation-clock age 與 wall time 相加的推論。
 - #48／#50 後續覆核：#48 的普通 pytest 入口 5 passed，分析工具搬移後不影響訓練 source fingerprint；逐筆資料與既有 4,707 筆覆核一致。#50 的普通 pytest 目標測試 2 passed（含既有 watchdog），部署 ROS 容器 colcon 4 passed／0 skipped，獨立 callback probe 確認錯誤／後續成功 trace 關聯為 null／0。兩 PR 已合併，固定 main `1563a93` 的 #49 短回放由原 DRI 執行。
+- #49／#51 回放診斷驗收：原 DRI 在同一 4070 上以固定 main `1563a93` 完成 CPU／CUDA 各一組 off/on，兩組約 379 秒，未超預算；PM 沒有重跑。#51 報告與 ROS 專用 analyzer 已覆核合併為 `0f795c4`，#49 結案。PM 重新下載 release 原始包，SHA 與全部 18 個 manifest 通過；執行 analyzer 並與另一份獨立分析比對 54 個分位數及相應 cohort／callback 數一致，Ruff／format／py_compile／diff check 通過，50 個 training-fingerprinted 來源與固定 main 一致。數據與 cold/warm、掉落及 trace 缺口限制見 [回放報告](ros_policy_replay_profile_2026-10-19.md)。
+- #52 觀測性修正待辦：PM 用真正 ROS message 類別及實際 ControlTracer，在短 CPU 容器重現 command 進 pending（1 筆、未 publish），reset 後直接清空且未 publish。原 DRI 獨立修正 profiler 狀態與丟棄紀錄；目前沒有改 production reset／timeout／發布語意，也沒有追加回放授權。下一個效能候選只選定 camera hex-eye 投影等價優化作設計提案，未實作、未驗證加速。
 - 本次 **NOT RUN**：新增 Gazebo 閉環、GPU 推論、正式訓練、#23 一致性實驗與真值隔離 launch_test。上述延遲是既有資料的獨立重算，不是新增量測；本次容器均已移除。
 
 ### 已知限制

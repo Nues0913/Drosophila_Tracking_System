@@ -7,8 +7,6 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
-from rclpy.serialization import deserialize_message
-from rosidl_runtime_py.utilities import get_message
 
 STAGES = (
     "source_to_ingress",
@@ -24,6 +22,9 @@ def ns(stamp):
 
 
 def load_bag(bag):
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+
     traces, events = [], []
     checks = []
     message_counts = Counter()
@@ -72,18 +73,18 @@ def analyze_trace(trace, episode):
             int(trace.control_started_monotonic_ns),
             int(trace.command_published_monotonic_ns),
         ]
+        sample_valid = (
+            bool(trace.clock_domain)
+            and sample.clock_domain == trace.clock_domain
+            and all(value > 0 for value in times)
+            and all(first <= second for first, second in zip(times, times[1:], strict=False))
+        )
+        if not sample_valid:
+            return None
         candidates.append((times[0], sample.sensor, sample.clock_domain, times))
     if not candidates:
         return None
-    source, sensor, domain, times = min(candidates, key=lambda x: (x[0], x[1]))
-    valid = (
-        bool(trace.clock_domain)
-        and domain == trace.clock_domain
-        and all(value > 0 for value in times)
-        and all(first <= second for first, second in zip(times, times[1:], strict=False))
-    )
-    if not valid:
-        return None
+    source, sensor, _, times = min(candidates, key=lambda x: (x[0], x[1]))
     stages = [(end - start) / 1e6 for start, end in zip(times, times[1:], strict=False)]
     total = (times[-1] - times[0]) / 1e6
     if not math.isclose(sum(stages), total, rel_tol=0, abs_tol=1e-9):
@@ -231,11 +232,13 @@ def main():
         },
         "all_rows": rows,
         "method": (
-            "For every inference_performed command, select the valid contributing sample "
-            "with the earliest same-host source CLOCK_MONOTONIC timestamp. Split that single "
-            "sample-to-command path into the five adjacent clock intervals; verify their sum "
-            "equals the complete endpoint difference. Active windows come from scenario "
-            "tracking/completed events. Worst 5% is the slowest ceil(5% of rows), ranked by total."
+            "For every inference_performed command, validate every valid contributing sample "
+            "for a common nonempty clock domain and positive, ordered CLOCK_MONOTONIC points; "
+            "reject the command if any contributor is invalid. Then select the contributor "
+            "with the earliest source timestamp, split its path into five adjacent intervals, "
+            "and verify their sum equals the complete endpoint difference. Active windows come "
+            "from scenario tracking/completed events. Worst 5% is the slowest ceil(5% of rows), "
+            "ranked by total."
         ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

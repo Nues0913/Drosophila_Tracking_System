@@ -1,9 +1,11 @@
 # Issue #22: same-clock latency diagnosis
 
-This report re-analyzes the existing five-episode CPU and GPU bags from the
-`83f57d1` validation run. It does not change the 50 ms end-to-end gate, control
-frequency, sensor contract, or evaluation rules. No simulation or GPU workload
-was started for this analysis.
+This report re-analyzes the existing five-episode CPU-inference and GPU-inference
+bags from the `83f57d1` validation run. Both inference configurations were run
+on the same RTX 4070 host; this is not a comparison between two hardware hosts.
+It does not change the 50 ms end-to-end gate, control frequency, sensor
+contract, or evaluation rules. No simulation or GPU workload was started for
+this analysis.
 
 ## Method and integrity
 
@@ -22,21 +24,39 @@ traces separately. The 17 CPU and 15 GPU unassigned traces were retained in
 full-bag statistics; none was active. There were no invalid causal traces.
 
 Each table below reports exact bag-derived quantiles rounded to 0.01 ms. The
-complete per-command rows and summaries are in the compressed JSON evidence;
-the script is `scripts/analyze_ros_latency_bag.py` and runs in the existing ROS
-Lyrical/Python 3.14 analysis image with `numpy`, `rclpy`, and the workspace
-interfaces sourced.
+complete per-command rows and summaries are in the compressed JSON evidence.
+The script is `scripts/diagnostics/analyze_ros_latency_bag.py`; run it from the
+repository root in the existing ROS Lyrical/Python 3.14 analysis environment,
+after sourcing ROS and the workspace:
+
+```sh
+source /opt/ros/lyrical/setup.bash
+source ros2_ws/install/setup.bash
+python3 scripts/diagnostics/analyze_ros_latency_bag.py \
+  runs/ros_validation/issue22_83f57d1/multi5/bags/flytrack_20261019T031946_320499Z \
+  /tmp/cpu-latency-diagnostic.json
+python3 scripts/diagnostics/analyze_ros_latency_bag.py \
+  runs/ros_validation/issue22_83f57d1/gpu5/bags/flytrack_20261019T034508_171480Z \
+  /tmp/gpu-latency-diagnostic.json
+```
+
+Before choosing the oldest contributor, the script validates the clock domain,
+presence, and ordering of all six monotonic points for **every** valid
+contributing sensor. If any contributor is invalid, it rejects that command.
+Regression tests cover a non-oldest cross-domain sample, reversed stage order,
+missing timestamps, a command with no valid contributors, and selection of the
+oldest source on a valid command.
 
 ## End-to-end distributions
 
-| Host / window | n | p50 ms | p90 ms | p95 ms | p99 ms | max ms | ≥50 ms |
+| 推論設定 / 範圍 | n | p50 ms | p90 ms | p95 ms | p99 ms | max ms | ≥50 ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | CPU full bag | 2,352 | 37.54 | 49.39 | 55.62 | 139.95 | 200.36 | 206 (8.8%) |
 | CPU active | 2,335 | 37.51 | 49.09 | 54.13 | 112.73 | 173.04 | 190 (8.1%) |
 | GPU full bag | 2,355 | 38.32 | 51.29 | 56.46 | 109.37 | 339.08 | 300 (12.7%) |
 | GPU active | 2,340 | 38.23 | 51.09 | 55.09 | 96.56 | 339.08 | 285 (12.2%) |
 
-Neither host meets the unchanged 50 ms p95 gate. These recomputed p95 values
+Neither inference configuration meets the unchanged 50 ms p95 gate. These recomputed p95 values
 match the values previously verified from the bags. Full-bag percentiles retain
 all inference traces, including episode-boundary traces; active means the
 command simulation timestamp lies inside a scenario's tracking-to-completed
@@ -53,7 +73,7 @@ window.
 | 4 | 375 / 52.57 / 30 (8.0%) | 375 / 56.55 / 37 (9.9%) |
 
 The highest episode p95 is GPU episode 3 at 67.05 ms; CPU episode 1 is 59.29 ms.
-Counts differ slightly because the captured inference streams differ by host.
+Counts differ slightly because the captured CPU and GPU inference streams differ.
 
 ## Slowest five percent: stage composition
 
@@ -61,7 +81,7 @@ The slowest group is `ceil(5% × n)` commands ranked by each command's complete
 latency. Stage shares below are computed by summing stages over that same group;
 they are not sums of separate stage percentiles.
 
-| Host / window | n | Source→ingress | Ingress→forward | Forward→received | Received→control | Control→published | Oldest source in slowest group |
+| 推論設定 / 範圍 | n | Source→ingress | Ingress→forward | Forward→received | Received→control | Control→published | Oldest source in slowest group |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | CPU full bag | 118 | 1.33 ms (1.4%) | 0.32 (0.3%) | 29.09 (29.5%) | 34.29 (34.8%) | 33.61 (34.1%) | odor 61, left 46, right 11 |
 | CPU active | 117 | 1.36 (1.5%) | 0.33 (0.4%) | 29.29 (33.3%) | 22.22 (25.3%) | 34.72 (39.5%) | odor 58, left 54, right 5 |
@@ -81,7 +101,7 @@ episode 1 and GPU episode 3.
 The first active command of each episode is listed separately here and remains
 included in the official distributions above.
 
-| Host | Episode 0 | Episode 1 | Episode 2 | Episode 3 | Episode 4 |
+| 推論設定 | Episode 0 | Episode 1 | Episode 2 | Episode 3 | Episode 4 |
 | --- | --- | --- | --- | --- | --- |
 | CPU total ms | 111.23 | 31.94 | 31.17 | 31.07 | 37.67 |
 | GPU total ms | 339.08 | 37.77 | 32.75 | 47.39 | 37.58 |
@@ -107,16 +127,13 @@ each slow command is model execution.
 
 The current evidence supports investigating callback scheduling and the
 policy-tick internals. It does not support selecting a code optimization yet.
-Recommended next step, subject to PM authorization because it requires replay
-work: add monotonic sub-spans around sensor callback entry/exit, tick input
-conversion, model execution/device synchronization, action limiting, and
-publish; replay the existing five-episode sensor bag into the policy node on
-CPU and GPU, retaining the same control rate and contract. Budget: about 30
-minutes to add/check the probes, then at most 10 minutes per host for replay and
-10 minutes for analysis (about 60 minutes total). Do not launch this replay or
-change executor, QoS, frequency, or contract until approved. A separate
-comparison can then test whether a callback-group/executor change is safe and
-reduces the measured queue component.
+PM approved this bounded diagnostic under Issue #49. Its default-off probes
+may be prepared, but replay must wait until this PR's contributor-validation
+fixes have been reviewed and merged. The approved replay budget is at most 10
+minutes for each CPU/GPU inference configuration on the same RTX 4070 host,
+including warmup and profile-off/on runs; total replay time is at most 20
+minutes and engineering work is about 60 minutes. No executor, QoS, frequency,
+or contract change is authorized by that profiler decision.
 
 The bag firmware/code basis is `83f57d1`; inspection confirms the policy,
 world sensor timing, and interface message implementations used here are
@@ -128,5 +145,5 @@ command row):
 
 | File | SHA-256 |
 | --- | --- |
-| `docs/evidence/issue22-latency/cpu.json.gz` | `279a39d336cecff566790feaf3e6499f95b10fe41f2adff8be9e66b3090150e7` |
-| `docs/evidence/issue22-latency/gpu.json.gz` | `62a80a60cdc1239c5e816c04e48d4c5f385a1392b61755a05194c3df83059a22` |
+| `docs/evidence/issue22-latency/cpu.json.gz` | `1c5d743c585ce9b2631718fb55396c0d93ff6d1497ee537256e2a7302f41a401` |
+| `docs/evidence/issue22-latency/gpu.json.gz` | `9f30e3e7986349a012afa4a9723c723accafc3890eeebb90fa428966e8bcd1dd` |

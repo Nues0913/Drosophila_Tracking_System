@@ -152,6 +152,8 @@ class ConnectomePolicyNode(Node):
             profiler_output_path,
             metadata={"device": device, "control_dt_s": contract.control_dt},
         )
+        if profiler_enabled:
+            self.tracer.on_trace_state = self.profiler.record_trace_state
         self.last_activity_stamp = -float("inf")
         self.get_logger().info(
             f"Loaded {self.card['variant']} policy with "
@@ -216,9 +218,11 @@ class ConnectomePolicyNode(Node):
         self, request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
         now = self.get_clock().now()
-        self.profiler.record_reset(now.to_msg(), time.monotonic_ns())
         self.runtime.reset(minimum_stamp=now.nanoseconds * 1e-9)
-        self.tracer.reset()
+        discarded = self.tracer.reset()
+        self.profiler.record_reset(
+            now.to_msg(), time.monotonic_ns(), discarded_trace_sequences=discarded
+        )
         self.last_activity_stamp = -float("inf")
         self.publish_stop()
         response.success, response.message = True, "Policy state and sensor buffers reset"
@@ -240,7 +244,7 @@ class ConnectomePolicyNode(Node):
             self.profiler.record_command(
                 command_sequence=profile_sequence,
                 trace_sequence=None,
-                trace_status="not_emitted",
+                trace_status="not_submitted",
                 sim_stamp=now.to_msg(),
                 callback_entry_ns=started_ns,
                 callback_exit_ns=time.monotonic_ns(),
@@ -260,7 +264,7 @@ class ConnectomePolicyNode(Node):
         self.command_publisher.publish(message)
         published_ns = time.monotonic_ns()
         samples = self.profiler.sensor_references(self.runtime.stamps, self.tracer.latest, valid)
-        self.tracer.command(
+        trace_sequence, trace_status = self.tracer.command(
             now.to_msg(),
             started_ns,
             published_ns,
@@ -285,8 +289,8 @@ class ConnectomePolicyNode(Node):
             self.last_activity_stamp = seconds
         self.profiler.record_command(
             command_sequence=profile_sequence,
-            trace_sequence=self.tracer.sequence - 1,
-            trace_status="emitted",
+            trace_sequence=trace_sequence,
+            trace_status=trace_status,
             sim_stamp=now.to_msg(),
             callback_entry_ns=started_ns,
             callback_exit_ns=time.monotonic_ns(),

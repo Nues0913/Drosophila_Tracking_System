@@ -194,7 +194,7 @@ lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明�
 
 ### 延遲指標的兩種時鐘
 
-`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 端到端延遲尚未完成量測契約，目前不能宣稱達到計劃書的 p95 <50 ms。
+`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 的因果計時已有契約與實作（`SensorTiming.msg`、`ControlTrace.msg`、`flytrack_eval.latency.CausalLatency`），但還沒有在 Gazebo 閉環中實測與驗證覆蓋率（#22），目前不能宣稱達到計劃書的 p95 <50 ms。
 
 ## 文件索引
 

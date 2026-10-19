@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from time import perf_counter
+from time import monotonic_ns, perf_counter
 
 import numpy as np
 import torch
 
 
 class PolicyRuntime:
-    def __init__(self, policy, contract, device: str = "cpu"):
+    def __init__(self, policy, contract, device: str = "cpu", profiler_enabled: bool = False):
         self.policy, self.contract, self.device = policy, contract, torch.device(device)
+        self.profiler_enabled = bool(profiler_enabled)
         self.history = deque(maxlen=contract.history_steps)
         self.reset()
 
@@ -27,6 +28,7 @@ class PolicyRuntime:
         self.previous_action = np.zeros(2, dtype=np.float32)
         self.previous_tick = None
         self.last_inference_latency_ms = None
+        self.last_profile_spans_ns = {}
         self.history.clear()
 
     def update_vision(self, eye: int, values: np.ndarray, stamp: float) -> bool:
@@ -81,6 +83,7 @@ class PolicyRuntime:
 
     def tick(self, now: float) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
         self.last_inference_latency_ms = None
+        self.last_profile_spans_ns = {}
         if not math.isfinite(now):
             raise ValueError("Runtime clock must be finite")
         if self.previous_tick is not None and now < self.previous_tick:
@@ -102,6 +105,7 @@ class PolicyRuntime:
         if not valid.any() or not self.armed:
             self.previous_action[:] = 0
             return self.previous_action.copy(), None, valid
+        input_started_ns = monotonic_ns() if self.profiler_enabled else 0
         observation = {
             "vision": self.vision.copy(),
             "odor": self.odor.copy(),
@@ -113,8 +117,29 @@ class PolicyRuntime:
             key: torch.as_tensor(value, device=self.device).unsqueeze(0)
             for key, value in observation.items()
         }
+        if self.profiler_enabled:
+            self.last_profile_spans_ns["tick_input_conversion"] = [
+                input_started_ns,
+                monotonic_ns(),
+            ]
+        if self.profiler_enabled and self.device.type == "cuda":
+            sync_started_ns = monotonic_ns()
+            torch.cuda.synchronize(self.device)
+            self.last_profile_spans_ns["device_sync_before_forward"] = [
+                sync_started_ns,
+                monotonic_ns(),
+            ]
+        model_started_ns = monotonic_ns() if self.profiler_enabled else 0
         with torch.inference_mode():
             action, next_state, activity = self.policy(tensors, self.state)
+        if self.profiler_enabled and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        if self.profiler_enabled:
+            self.last_profile_spans_ns["model_forward_and_completion"] = [
+                model_started_ns,
+                monotonic_ns(),
+            ]
+        finite_started_ns = monotonic_ns() if self.profiler_enabled else 0
         if (
             not torch.isfinite(action).all()
             or not torch.isfinite(next_state).all()
@@ -122,10 +147,16 @@ class PolicyRuntime:
         ):
             self.reset(minimum_stamp=now)
             return self.previous_action.copy(), None, valid
+        if self.profiler_enabled:
+            self.last_profile_spans_ns["finite_check"] = [finite_started_ns, monotonic_ns()]
         self.state = next_state
+        transfer_started_ns = monotonic_ns() if self.profiler_enabled else 0
         desired = action[0].detach().cpu().numpy()
         activity_array = activity[0].detach().cpu().numpy()
+        if self.profiler_enabled:
+            self.last_profile_spans_ns["device_to_host"] = [transfer_started_ns, monotonic_ns()]
         self.last_inference_latency_ms = (perf_counter() - inference_started) * 1000
+        limit_started_ns = monotonic_ns() if self.profiler_enabled else 0
         desired = np.clip(
             desired, [0, -self.contract.omega_max], [self.contract.v_max, self.contract.omega_max]
         )
@@ -137,4 +168,6 @@ class PolicyRuntime:
         self.previous_action = (
             self.previous_action + np.clip(desired - self.previous_action, -limits, limits)
         ).astype(np.float32)
+        if self.profiler_enabled:
+            self.last_profile_spans_ns["action_limit"] = [limit_started_ns, monotonic_ns()]
         return self.previous_action.copy(), activity_array, valid

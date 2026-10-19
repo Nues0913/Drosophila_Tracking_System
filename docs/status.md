@@ -10,7 +10,7 @@
 2. PPO 幾乎沒在更新，沒有改善 BC（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）。
 3. 評估協定還有兩項沒凍結：noise 強度和 occlusion 長度（[#20](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20)）。
 
-ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)）可以和上面並行，還沒開始跑。
+ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)，2026-10-19，5 回合 invalid 0）；端到端延遲 p95 55.6 ms，還沒達到 50 ms。
 
 ## 已完成並有證據
 
@@ -24,6 +24,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 | 兩台 GPU 主機校準（#21） | 同版本訓練的指標相對差 < 1e-3；同一個 artifact 跨主機評估相對差 1.5e-8／2.7e-8 | release `host-calibration` |
 | 環境審計 | 隨機化世界中 teacher 100%、所有盲目策略 0%；訓練與評估前自動檢查 | [fixes_2026-10-17.md](fixes_2026-10-17.md) |
 | Docker 映像與 ROS 節點 | `flytrack-ros:0.1` 內 `colcon build`、真值隔離 launch test、latency 單元測試通過；策略節點關閉時會送零速度（#15） | `docs/ros_execution.md` |
+| Gazebo 閉環部署鏈路（#22） | 5 回合 reset invalid 0/5、truth coverage 100%、bag 可讀；修正 rosbag `--topics` 與 SIGINT 關閉（#41）、`uint64` 序列化（#40） | `docs/ros_execution.md`、release `explore-4` |
 
 ## 速度（2026-10-18，#21）
 
@@ -67,7 +68,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 6. **模態使用 gate、BC 崩潰檢查**還沒加進 `run_experiments.py`（[#25](https://github.com/Nues0913/Drosophila_Tracking_System/issues/25)），門檻要等 #4 和 #35。
 7. **`lesion_analysis.py` 用了訓練範圍的種子，並繞過情境設定檔**（[#29](https://github.com/Nues0913/Drosophila_Tracking_System/issues/29)）。正式結果前要修。
 8. **linear 目標撞牆反彈會撞上跟隨者**（teacher 13% 碰撞），所以只留在 PPO 暖身課程。
-9. **ROS／Gazebo**：閉環回合、Gazebo 物理與相機、延遲量測都還沒做（#22）；2D／Gazebo 的感測分布與碰撞判斷一致性也還沒量（[#23](https://github.com/Nues0913/Drosophila_Tracking_System/issues/23)）。ROS 的 `target_motion` 只接受單一字串，正式評估若混合多種運動，要每個 cell 固定一種（見 #20）。
+9. **ROS／Gazebo**（#22，2026-10-19，CPU 推論＋軟體渲染，沿用舊的 smoke 模型，只驗鏈路、不代表追蹤品質）：單回合有效；5 回合 invalid 0/5、truth coverage 100%、沒有沿用前一回合的 sample；策略沒有訂閱真值 topic；bag 可以讀回。**完整 sensor-to-command 延遲 p95 55.6 ms，未達 50 ms**：輸入 age p95 37 ms（視覺 30 Hz、控制 20 Hz 的取樣不同步），模型處理 p95 25 ms（CPU）。下一步在 4070 上改用 GPU 推論重測。`colcon test` 收集不到測試（#42，手動跑 pytest 和 launch test 都通過）。2D／Gazebo 的感測分布與碰撞判斷一致性還沒量（[#23](https://github.com/Nues0913/Drosophila_Tracking_System/issues/23)）。ROS 的 `target_motion` 只接受單一字串，正式評估若混合多種運動，要每個 cell 固定一種（見 #20）。
 10. **生物對應查證**（ORN、LC、DN 標籤、號誌信心）還沒做（[#27](https://github.com/Nues0913/Drosophila_Tracking_System/issues/27)）。如果需要改圖，要在正式矩陣前完成。
 
 ## 報告須揭露的科學限制與工程近似
@@ -83,7 +84,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 9. **變體口徑**：V／O 是同一張圖的輸入消融。VO-late 共享型別參數但隔離活性；RS 保留原邊參數槽的共享標籤。這些都寫進 model_card。
 10. **2D 世界**：2.5D 光線投射，Gymnasium 向量環境是 CPU 上的平行子行程。2D 有大小／亮度的領域隨機化，Gazebo 用固定的幾何和材質，兩者的感測分布還沒證明一致（#23）。
 11. **ROS 碰撞**用場地、半徑與障礙幾何判斷，沒有接 Gazebo contact sensor。
-12. **時鐘與延遲**：行為指標用模擬時鐘，推論耗時用 wall time。sensor-to-command 的因果計時**已有契約與實作**：`SensorTiming.msg`／`ControlTrace.msg` 定義同一台主機上 `CLOCK_MONOTONIC` 的 source → ingress → forward → received → control → published 時間線，`flytrack_eval.latency.CausalLatency` 檢查時鐘域、因果順序和覆蓋率，有 `test_latency.py` 測試。**還沒有在 Gazebo 閉環中實測，覆蓋率也沒驗證（#22）**，所以不能宣稱 p95 < 50 ms。
+12. **時鐘與延遲**：行為指標用模擬時鐘，推論耗時用 wall time。sensor-to-command 的因果計時**已有契約與實作**：`SensorTiming.msg`／`ControlTrace.msg` 定義同一台主機上 `CLOCK_MONOTONIC` 的 source → ingress → forward → received → control → published 時間線，`flytrack_eval.latency.CausalLatency` 檢查時鐘域、因果順序和覆蓋率，有 `test_latency.py` 測試。2026-10-19 的 Gazebo 實測（#22）量到 p95 55.6 ms，**未達 50 ms**，詳見第 9 點與 [ros_execution.md](ros_execution.md)。
 13. **續訓**：同一階段中斷後可以完整接續（權重、optimizer、RNG、環境重播）；跨階段以 `init_artifact` 暖啟動，recovery 綁定上游 actor 的內容（#14）。改了程式碼或設定之後，舊的 checkpoint 不能接續；#36 合併後，舊的 pretrain／BC artifact 都要重跑。
 
 ## 下一步
@@ -94,7 +95,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 2. #35 PPO 診斷與一次 T3 重跑（@MiLong9487）。
 3. #20 凍結剩下的 noise 強度和 occlusion 長度，更新評估協定（PM）；#25 加入新 gate（@MiLong9487）。
 4. 全部完成後，PM 凍結一個 `main` commit，依 #21 的分配開執行 Issue：4060 跑 seed 0、2、4，4070 跑 seed 1、3。
-5. 並行：#22 Gazebo 閉環、#23 2D／Gazebo 一致性（@cweiting731）。
+5. 並行：#22 的 GPU 推論延遲重測、#42 colcon test、#23 2D／Gazebo 一致性（@cweiting731）。
 6. 2D 正式評估 → Gazebo 主要比較 → lesion 分析 → 報告與展示。
 
 舊版的逐日診斷紀錄保留在 [dn/](dn/)、[fixes_2026-10-17.md](fixes_2026-10-17.md) 和 [training_time.md](training_time.md)，這些是歷史紀錄，不代表目前狀態。

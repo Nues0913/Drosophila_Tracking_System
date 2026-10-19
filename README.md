@@ -190,11 +190,11 @@ python -m flytrack_train evaluate --config configs/train/evaluate_gazebo_recorde
 python scripts/lesion_analysis.py --artifact artifacts/VO
 ```
 
-lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明。ROS／Gazebo 目前只完成映像建置，閉環驗證進度見 [docs/ros_execution.md](docs/ros_execution.md)。
+lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明。ROS／Gazebo 部署鏈路已通過五回合 smoke 驗證，延遲仍未達標；這不是正式策略品質的驗收，證據與限制見 [docs/ros_execution.md](docs/ros_execution.md) 及 [#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)。
 
 ### 延遲指標的兩種時鐘
 
-`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 的因果計時已有契約與實作（`SensorTiming.msg`、`ControlTrace.msg`、`flytrack_eval.latency.CausalLatency`），但還沒有在 Gazebo 閉環中實測與驗證覆蓋率（#22），目前不能宣稱達到計劃書的 p95 <50 ms。
+`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 的因果計時已有契約與實作（`SensorTiming.msg`、`ControlTrace.msg`、`flytrack_eval.latency.CausalLatency`），已在 Gazebo smoke 中實測：CPU／GPU 的完整端到端 p95 為 55.62／56.46 ms（#22、PR #45），均未達計劃書的 50 ms。兩種時鐘不能相加，各階段的 p95 也不能相加代替端到端 p95；#20 維持原門檻，先以既有 bag 做逐筆、同時鐘的延遲診斷。
 
 ## 文件索引
 

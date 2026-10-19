@@ -1,6 +1,6 @@
 # ROS／Gazebo 實際執行紀錄
 
-日期：2026-10-15。使用者已授權執行完整計畫；以下只記錄已觀察的狀態，持續更新，未完成項目不當作通過。
+起始紀錄：2026-10-15。本頁按日期保留歷史狀態；當時的待驗證項目不代表目前仍未執行。後續閉環證據與測試收集結果見下方 2026-10-19 各節，最新離線診斷與 profiler 進度見本頁末節。
 
 ## 環境與秘密隔離
 
@@ -138,11 +138,11 @@ Lyrical 映像中的新版 setuptools 已不接受 `tests_require`；只加這�
 造成既有 pytest 函式未被收集，且 Python 3.14 在沒有 unittest 時回傳 5。
 
 各套件的 `setup.cfg` 固定本地 testpaths，避免 pytest 向上找到專案根目錄的設定後誤跑核心測試。
-`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_world` 收集 `test/` 的 5 項取消回呼測試；
-`flytrack_policy` 目前沒有套件內測試，colcon 的 pytest adapter 接受空集合，但這不代表該套件有測試覆蓋。
+`flytrack_eval` 收集 `test/` 的 4 項延遲測試；後續 #47 的 `flytrack_world` 收集 5 項取消回呼測試，
+#50 的 `flytrack_policy` 收集 4 項 profiler／callback 測試，兩者均已分別通過部署映像內的 colcon 驗證。
 需要 artifact 的真值隔離檢查仍以 `launch_test` 獨立執行，不混進無 artifact 的預設測試集合。
 
-在實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
+在 #42 最初修正時，實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
 回傳 0，`colcon test-result --verbose` 為 **4 tests、0 errors、0 failures、0 skipped**。
 另只在臨時容器副本將預期延遲 5 ms 改為 6 ms，確認相同指令回傳 1，結果列出 3 個失敗；
 此負向驗證沒有修改提交的測試，證明失敗會傳回，而非忽略所有非零狀態。
@@ -192,3 +192,19 @@ CPU 比較摘要、#42 的正常／負向 colcon 驗證 log，以及取消回呼
 inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記錄錯誤；先 detach pending 再 cancel
 則沒有訊息。這定位到取消回呼的誤報路徑，不能由該行直接推斷 Gazebo SetPose 服務失敗。
 本次未修改此 production 路徑；原始證據包與 SHA 保持不變。
+
+
+## 2026-10-19：離線診斷與預設關閉的 profiler（#48、#50）
+
+[#48 的同時鐘診斷報告](ros_latency_diagnostic_2026-10-19.md) 與
+`scripts/diagnostics/analyze_ros_latency_bag.py` 已合併。每筆命令先驗證全部有效 contributing samples 的時鐘與因果順序，再選最舊來源分段；4,707 筆原始資料與統計經 PM 獨立核對一致。這是既有資料的離線診斷，完整端到端 50 ms 門檻仍未通過。
+
+#50 已合併預設關閉的 ROS policy profiler：以 `profiler_enabled` 和 `profiler_output_path` 明確啟用 JSONL sidecar；以 run／command／sensor-header 身分關聯 callback 與 tick 區段，未發出 ControlTrace 的錯誤命令標記 `null/not_emitted`。PM 在部署映像內重新 build 並以 colcon 驗證 4 項測試通過、無 skip；普通 pytest 入口的分析 5 項與 profiler／既有 watchdog 目標測試 2 項也通過。
+
+實際回放由原 DRI 在 [#49](https://github.com/Nues0913/Drosophila_Tracking_System/issues/49) 執行，固定 main `1563a93`，同一 4070 的 CPU／GPU 各一組 profile-off/on，兩組分別約 379 秒，符合各 10 分鐘、總回放 20 分鐘的上限。[#51 回放報告](ros_policy_replay_profile_2026-10-19.md) 與離線重算工具已合併為 `0f795c4`，#49 完成本次診斷驗收。原始證據放在 release `explore-4`；PM 重新下載確認原始包與全部 18 個 manifest 雜湊，並以獨立分析比對 54 個分位數及相應 cohort／callback 數一致。
+
+回放保留 cold start、CUDA 掉落的 sensor callbacks 與 reset 前 73–74 筆 trace 缺口。off/on 處理時間只是一個配對的觀察，固定排程的 case elapsed 不能單獨估計 probe overhead；publish→callback 等待含 DDS 與排程，不能當成純 executor 等待。原 bag 的 monotonic 不與新執行相減，也不以回放結果宣稱原 G3 通過。
+
+[#52](https://github.com/Nues0913/Drosophila_Tracking_System/issues/52) 已由 #53 合併為 `388d481` 並結案。[Sidecar schema2](policy_profiler_sidecar.md) 區分 pending、publisher_called 與 not_submitted，另記 reset 丟棄的 sequence／數量／原因；publisher_called 只表示本機 publisher 呼叫，不保證外部 subscriber 收到。歷史 emitted 不重新解讀，也不回填舊 trace 缺口。PM 在短 ROS 容器重新 build，部署 Python 的 colcon 收集 10 項、全部通過且無 skip；獨立新舊 tracer 的序列化發布／pending 對照與實際 node callback 探針確認既有發布、timeout、reset 行為一致。
+
+camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准實作或新增回放。PM 本次只做離線重算、短 CPU 容器重現與覆核，未執行 GPU replay、Gazebo 或正式訓練。

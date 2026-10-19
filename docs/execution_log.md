@@ -38,6 +38,29 @@
 - ROS：在 `flytrack-ros:0.1` 映像（Python 3.14、rclpy）掛載新程式做節點層級煙霧測試，佈局、事件、`target_mover` 軌跡重建與 legacy 參數均通過；Gazebo 閉環未執行。
 - 小規模端到端驗證（VO seed 0，`runs/validation_20261017/`）：結果見 fixes 文件。
 
+### 2026-10-18～19：兩台 GPU 主機與 #4、#19 的實驗
+
+這段期間的重度工作都在 teammate 的主機上執行，證據放在 GitHub Issue 與 prerelease，不在本機 `runs/`：
+
+| 項目 | 主機 | 結果 | 證據 |
+| --- | --- | --- | --- |
+| 主機基準與交叉驗證 | RTX 4060、RTX 4070 Laptop | 同版本指標相對差 < 1e-3；跨主機評估同一 artifact 相對差 < 3e-8；PPO 雙程序約 340–350 步／秒 | #21、release `host-calibration` |
+| #4 縮小鏈 G0–G3（seed 0）與 G0–G2（seed 1） | 4060、4070 | 採用 G2：BC normal／occlusion 成功率 0.43／0.40（現行流程 0.25／0.15）；BC 後氣味／視覺比值仍 < 0.005 | #4、release `explore-4` |
+| T3 重跑（V、seed 0，兩組 PPO 各 500k） | 4060 | 撞牆誘因修好（從 pretrain 開始，碰撞率 1.00 → 0.07），但 PPO 沒有改善 BC | #19、#35 |
+| 遮蔽氣味 teacher 校準 | 4070（CPU） | 20%／50% 遮蔽：19/20、16/20，無碰撞 | #24、`docs/teacher/issue24/` |
+| 測試 | 本機 i7-9700 | 2026-10-19 的 `main`：165 passed，`ruff check` 通過 | — |
+
+### 2026-10-19：PM 接手後的 ROS 證據覆核
+
+- [#44 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/44#pullrequestreview-5567304481)：完整差異審查後，在本機 `flytrack-ros:0.1`（映像 `ed4b8b4d8331`、Lyrical／Python 3.14.4）的一次性容器覆入 `916bed7` 的三個 Python 套件並重新 build。colcon 收集 4 項測試，正常 exit 0；只在容器副本改錯 3 處預期值後，3 failed／1 passed、exit 1。#44 已合併為 `a0c8cfb`，#42 關閉；policy/world 的空集合與獨立 launch_test 邊界不變。
+- [#45 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/45#pullrequestreview-5567311087)：下載 release `explore-4` 的 CPU 首輪及 GPU 追加證據包，壓縮包 SHA-256 與全部 56＋36 個逐檔 hash 一致。以 rclpy 獨立解碼原始 db3、依最舊有效來源 sample 重算，CPU／GPU 完整端到端 p95 為 55.6233651／56.4599500 ms，active 為 54.1289413／55.08554345 ms；與報告一致，仍未達 50 ms。兩份五回合 bag 均 quick_check=ok、13 個 topic 有資料。
+- 使用實際 rclpy.Future 及 production callback 獨立重現取消 future 的假 `NoneType.success` 錯誤，另開 #46，由原 ROS DRI 修正。[#47 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/47#pullrequestreview-5567356008) 完整審查後在本機 ROS 容器重新 build world，colcon 收集 5 項真實 Future 測試，5 passed／exit 0；Ruff check／format check 與 diff check 通過。#47 已合併為 `525db6a`，#46 關閉；真正服務拒絕與例外仍會回報。
+- [#20 的後續 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20#issuecomment-6260437085)：保留完整端到端門檻與頻率，先從既有 bag 做同 sample、同 wall-clock 的逐筆 stage 診斷；撤回先前將 simulation-clock age 與 wall time 相加的推論。
+- #48／#50 後續覆核：#48 的普通 pytest 入口 5 passed，分析工具搬移後不影響訓練 source fingerprint；逐筆資料與既有 4,707 筆覆核一致。#50 的普通 pytest 目標測試 2 passed（含既有 watchdog），部署 ROS 容器 colcon 4 passed／0 skipped，獨立 callback probe 確認錯誤／後續成功 trace 關聯為 null／0。兩 PR 已合併，固定 main `1563a93` 的 #49 短回放由原 DRI 執行。
+- #49／#51 回放診斷驗收：原 DRI 在同一 4070 上以固定 main `1563a93` 完成 CPU／CUDA 各一組 off/on，兩組約 379 秒，未超預算；PM 沒有重跑。#51 報告與 ROS 專用 analyzer 已覆核合併為 `0f795c4`，#49 結案。PM 重新下載 release 原始包，SHA 與全部 18 個 manifest 通過；執行 analyzer 並與另一份獨立分析比對 54 個分位數及相應 cohort／callback 數一致，Ruff／format／py_compile／diff check 通過，50 個 training-fingerprinted 來源與固定 main 一致。數據與 cold/warm、掉落及 trace 缺口限制見 [回放報告](ros_policy_replay_profile_2026-10-19.md)。
+- #52／#53 觀測性修正：PM 先以真正 ROS message 及實際 ControlTracer 短 CPU 重現未發布 pending 被 reset 清除；原 DRI 的 schema2 修正經完整8檔覆核後已合併為 `388d481`，#52 結案。PM 部署 Python／Lyrical 容器重新 build policy，colcon 實際收集 10 項、10 passed／0 skipped；獨立對照新舊 tracer 的 ROS 序列化發布／pending 內容，在立即／延遲／timeout／reset 路徑均一致；實際 node callback 與 reset 探針正確記錄 pending→publisher_called，以及丟棄 sequence。Ruff／format／compileall／diff check 通過，未改 production 發布／timeout／reset 語意、未回填歷史 trace。下一個效能候選只選定 camera hex-eye 投影等價優化作設計提案，未實作、未驗證加速，也沒有追加回放授權。
+- 本次 **NOT RUN**：新增 Gazebo 閉環、GPU 推論、正式訓練、#23 一致性實驗與真值隔離 launch_test。上述延遲是既有資料的獨立重算，不是新增量測；本次容器均已移除。
+
 ### 已知限制
 
 - ~~教師校準 20 回合結果逐位相同~~：2026-10-17 已在隨機化世界重做（見上）。

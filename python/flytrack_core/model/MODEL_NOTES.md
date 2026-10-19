@@ -102,7 +102,7 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 
 **嗅覺通路選項（#4，都是可選設定）。** 已訓練的 VO 策略動作完全不受氣味影響：非運動神經元的 ReLU 把氣味訊號截斷，關掉後梯度也是 0；訓練前氣味對 ω 的影響也只有視覺的約 1/2500。兩個可選設定：
 - `olfactory_rate_beta`（預設 `None` = ReLU）：嗅覺 population 中非運動 DN 的節點改用 `softplus(v, beta)`，讓負電位時仍有梯度。和運動 DN 的 softplus 一樣是工程假設，不是生物測量；分支遮罩照常把關閉分支的 rate 設為 0。
-- `odor_input_gain`（預設 1）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以也會受影響。
+- `odor_input_gain`（程式預設 1；**正式設定是 100**，見 `configs/model/variants.yaml` 的 `common`，#4 的 G2、#36）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以六個變體都套用。
 
 量測工具是 `scripts/diagnostics/modality_sensitivity.py`（teacher 駕駛 200 步，最大 |Δω|，單位 rad/s）。目前的證據：
 

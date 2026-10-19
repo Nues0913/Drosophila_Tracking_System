@@ -37,6 +37,7 @@ class PolicyProfiler:
         self._write(
             {
                 "event": "run_start",
+                "schema_version": 2,
                 "run_id": self.run_id,
                 "monotonic_ns": time.monotonic_ns(),
                 "clock": "CLOCK_MONOTONIC",
@@ -152,23 +153,48 @@ class PolicyProfiler:
         )
         self._sensor_callbacks = []
 
+    def record_trace_state(
+        self, trace_sequence: int, state: str, reason: str, monotonic_ns: int
+    ) -> None:
+        if not self.enabled:
+            return
+        self._write(
+            {
+                "event": "control_trace_state",
+                "run_id": self.run_id,
+                "trace_sequence": int(trace_sequence),
+                "state": state,
+                "reason": reason,
+                "monotonic_ns": int(monotonic_ns),
+            }
+        )
+
     def next_command_sequence(self) -> int:
         sequence = self.command_sequence
         self.command_sequence += 1
         return sequence
 
-    def record_reset(self, sim_stamp, monotonic_ns: int) -> None:
+    def record_reset(
+        self,
+        sim_stamp,
+        monotonic_ns: int,
+        discarded_trace_sequences: list[int] | None = None,
+    ) -> None:
         if not self.enabled:
             return
-        self._write(
-            {
-                "event": "reset",
-                "run_id": self.run_id,
-                "sim_stamp": [int(sim_stamp.sec), int(sim_stamp.nanosec)],
-                "monotonic_ns": int(monotonic_ns),
-                "sensor_callbacks_since_previous_command": self._sensor_callbacks,
-            }
-        )
+        discarded = [int(sequence) for sequence in (discarded_trace_sequences or [])]
+        record = {
+            "event": "reset",
+            "run_id": self.run_id,
+            "sim_stamp": [int(sim_stamp.sec), int(sim_stamp.nanosec)],
+            "monotonic_ns": int(monotonic_ns),
+            "sensor_callbacks_since_previous_command": self._sensor_callbacks,
+            "discarded_pending_count": len(discarded),
+            "discarded_pending_trace_sequences": discarded,
+        }
+        if discarded:
+            record["discard_reason"] = "reset_cleared_pending"
+        self._write(record)
         self._sensor_callbacks = []
         self._sensor_rows.clear()
 

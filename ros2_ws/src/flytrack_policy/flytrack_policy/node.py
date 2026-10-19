@@ -23,6 +23,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 from std_srvs.srv import Trigger
 
+from .profiling import PolicyProfiler
 from .runtime import PolicyRuntime
 from .timing import ControlTracer
 
@@ -88,6 +89,12 @@ class ConnectomePolicyNode(Node):
         self.declare_parameter("artifact", "")
         self.declare_parameter("sensor_contract_json", "")
         self.declare_parameter("device", "cpu")
+        self.declare_parameter("profiler_enabled", False)
+        self.declare_parameter("profiler_output_path", "")
+        profiler_enabled = bool(self.get_parameter("profiler_enabled").value)
+        profiler_output_path = str(self.get_parameter("profiler_output_path").value)
+        if profiler_enabled and not profiler_output_path:
+            raise ValueError("profiler_output_path is required when profiler_enabled=true")
         artifact = str(self.get_parameter("artifact").value)
         if not artifact:
             raise ValueError(
@@ -104,7 +111,7 @@ class ConnectomePolicyNode(Node):
                 raise ValueError("Deployment sensor contract differs from model artifact")
         self.contract = contract
         self.eye = HexEye(contract)
-        self.runtime = PolicyRuntime(policy, contract, device)
+        self.runtime = PolicyRuntime(policy, contract, device, profiler_enabled=profiler_enabled)
         self.tracer = ControlTracer(self)
         camera_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=2, reliability=ReliabilityPolicy.BEST_EFFORT
@@ -140,6 +147,11 @@ class ConnectomePolicyNode(Node):
             Trigger, "/connectome_policy_node/reset", self.reset_callback
         )
         self.timer = self.create_timer(contract.control_dt, self.control_callback)
+        self.profiler = PolicyProfiler(
+            profiler_enabled,
+            profiler_output_path,
+            metadata={"device": device, "control_dt_s": contract.control_dt},
+        )
         self.last_activity_stamp = -float("inf")
         self.get_logger().info(
             f"Loaded {self.card['variant']} policy with "
@@ -148,37 +160,64 @@ class ConnectomePolicyNode(Node):
 
     def camera_callback(self, message: Image, eye: int) -> None:
         received_ns = time.monotonic_ns()
+        sensor = ("left", "right")[eye]
+        profile = self.profiler.begin_sensor_callback(sensor, message.header, received_ns)
+        accepted = False
         try:
             if (
                 message.width != self.contract.camera_width
                 or message.height != self.contract.camera_height
             ):
                 raise ValueError("Image dimensions differ from sensor contract")
+            decode_started_ns = time.monotonic_ns() if profile is not None else 0
             gray = image_to_grayscale(message)
+            if profile is not None:
+                self.profiler.span(profile, "image_decode", decode_started_ns, time.monotonic_ns())
             if not np.isfinite(gray).all():
                 self.runtime.mark_missing(eye, stamp_seconds(message.header))
                 return
+            sample_started_ns = time.monotonic_ns() if profile is not None else 0
             values = self.eye.sample_image(gray, eye=eye)
-            if self.runtime.update_vision(eye, values, stamp_seconds(message.header)):
+            if profile is not None:
+                self.profiler.span(
+                    profile, "hex_eye_sample", sample_started_ns, time.monotonic_ns()
+                )
+            update_started_ns = time.monotonic_ns() if profile is not None else 0
+            accepted = self.runtime.update_vision(eye, values, stamp_seconds(message.header))
+            if profile is not None:
+                self.profiler.span(profile, "buffer_update", update_started_ns, time.monotonic_ns())
+            if accepted:
                 self.tracer.received(eye, message.header, received_ns)
         except (ValueError, TypeError) as error:
             self.runtime.mark_missing(eye, stamp_seconds(message.header))
             self.get_logger().warning(f"Rejected camera sample: {error}", throttle_duration_sec=5)
+        finally:
+            self.profiler.end_sensor_callback(profile, time.monotonic_ns(), accepted)
 
     def odor_callback(self, message: OdorReading) -> None:
         received_ns = time.monotonic_ns()
-        accepted = self.runtime.update_odor(
-            np.array([message.left, message.right], dtype=np.float32),
-            stamp_seconds(message.header),
-            valid=bool(message.valid),
-        )
-        if accepted:
-            self.tracer.received(2, message.header, received_ns)
+        profile = self.profiler.begin_sensor_callback("odor", message.header, received_ns)
+        accepted = False
+        try:
+            update_started_ns = time.monotonic_ns() if profile is not None else 0
+            accepted = self.runtime.update_odor(
+                np.array([message.left, message.right], dtype=np.float32),
+                stamp_seconds(message.header),
+                valid=bool(message.valid),
+            )
+            if profile is not None:
+                self.profiler.span(profile, "buffer_update", update_started_ns, time.monotonic_ns())
+            if accepted:
+                self.tracer.received(2, message.header, received_ns)
+        finally:
+            self.profiler.end_sensor_callback(profile, time.monotonic_ns(), accepted)
 
     def reset_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
-        self.runtime.reset(minimum_stamp=self.get_clock().now().nanoseconds * 1e-9)
+        now = self.get_clock().now()
+        self.profiler.record_reset(now.to_msg(), time.monotonic_ns())
+        self.runtime.reset(minimum_stamp=now.nanoseconds * 1e-9)
         self.tracer.reset()
         self.last_activity_stamp = -float("inf")
         self.publish_stop()
@@ -187,19 +226,39 @@ class ConnectomePolicyNode(Node):
 
     def control_callback(self) -> None:
         started_ns = time.monotonic_ns()
+        profile_sequence = self.profiler.next_command_sequence()
         now = self.get_clock().now()
         seconds = now.nanoseconds * 1e-9
         try:
             command, activity, valid = self.runtime.tick(seconds)
         except (ValueError, RuntimeError) as error:
             self.runtime.reset(minimum_stamp=seconds)
+            publish_started_ns = time.monotonic_ns()
             self.publish_stop()
+            published_ns = time.monotonic_ns()
             self.get_logger().error(f"Policy inference failed: {error}", throttle_duration_sec=5)
+            self.profiler.record_command(
+                command_sequence=profile_sequence,
+                trace_sequence=self.tracer.sequence,
+                sim_stamp=now.to_msg(),
+                callback_entry_ns=started_ns,
+                callback_exit_ns=time.monotonic_ns(),
+                publish_start_ns=publish_started_ns,
+                publish_done_ns=published_ns,
+                spans_ns={"tick_error": [started_ns, publish_started_ns]},
+                samples=self.profiler.sensor_references(
+                    self.runtime.stamps, self.tracer.latest, [False, False, False]
+                ),
+                inference_performed=False,
+                valid=[False, False, False],
+            )
             return
         message = Twist()
         message.linear.x, message.angular.z = float(command[0]), float(command[1])
+        publish_started_ns = time.monotonic_ns()
         self.command_publisher.publish(message)
         published_ns = time.monotonic_ns()
+        samples = self.profiler.sensor_references(self.runtime.stamps, self.tracer.latest, valid)
         self.tracer.command(
             now.to_msg(),
             started_ns,
@@ -223,6 +282,19 @@ class ConnectomePolicyNode(Node):
             activity_message.variant = self.card["variant"]
             self.activity_publisher.publish(activity_message)
             self.last_activity_stamp = seconds
+        self.profiler.record_command(
+            command_sequence=profile_sequence,
+            trace_sequence=self.tracer.sequence - 1,
+            sim_stamp=now.to_msg(),
+            callback_entry_ns=started_ns,
+            callback_exit_ns=time.monotonic_ns(),
+            publish_start_ns=publish_started_ns,
+            publish_done_ns=published_ns,
+            spans_ns=self.runtime.last_profile_spans_ns,
+            samples=samples,
+            inference_performed=self.runtime.last_inference_latency_ms is not None,
+            valid=valid,
+        )
 
     def publish_stop(self) -> None:
         self.command_publisher.publish(Twist())
@@ -259,6 +331,7 @@ def main(args=None) -> None:
         if executor is not None:
             executor.shutdown()
         if node is not None:
+            node.profiler.close()
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

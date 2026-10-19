@@ -54,7 +54,7 @@
 
 - [#44 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/44#pullrequestreview-5567304481)：完整差異審查後，在本機 `flytrack-ros:0.1`（映像 `ed4b8b4d8331`、Lyrical／Python 3.14.4）的一次性容器覆入 `916bed7` 的三個 Python 套件並重新 build。colcon 收集 4 項測試，正常 exit 0；只在容器副本改錯 3 處預期值後，3 failed／1 passed、exit 1。#44 已合併為 `a0c8cfb`，#42 關閉；policy/world 的空集合與獨立 launch_test 邊界不變。
 - [#45 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/45#pullrequestreview-5567311087)：下載 release `explore-4` 的 CPU 首輪及 GPU 追加證據包，壓縮包 SHA-256 與全部 56＋36 個逐檔 hash 一致。以 rclpy 獨立解碼原始 db3、依最舊有效來源 sample 重算，CPU／GPU 完整端到端 p95 為 55.6233651／56.4599500 ms，active 為 54.1289413／55.08554345 ms；與報告一致，仍未達 50 ms。兩份五回合 bag 均 quick_check=ok、13 個 topic 有資料。
-- 使用實際 rclpy.Future 及 production callback 獨立重現取消 future 的假 `NoneType.success` 錯誤，另開 #46，由原 ROS DRI 修正。這不代表真實服務失敗可以忽略。
+- 使用實際 rclpy.Future 及 production callback 獨立重現取消 future 的假 `NoneType.success` 錯誤，另開 #46，由原 ROS DRI 修正。[#47 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/47#pullrequestreview-5567356008) 完整審查後在本機 ROS 容器重新 build world，colcon 收集 5 項真實 Future 測試，5 passed／exit 0；Ruff check／format check 與 diff check 通過。#47 已合併為 `525db6a`，#46 關閉；真正服務拒絕與例外仍會回報。
 - [#20 的後續 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20#issuecomment-6260437085)：保留完整端到端門檻與頻率，先從既有 bag 做同 sample、同 wall-clock 的逐筆 stage 診斷；撤回先前將 simulation-clock age 與 wall time 相加的推論。
 - 本次 **NOT RUN**：新增 Gazebo 閉環、GPU 推論、正式訓練、#23 一致性實驗與真值隔離 launch_test。上述延遲是既有資料的獨立重算，不是新增量測；本次容器均已移除。
 

@@ -130,3 +130,19 @@ source stamp的正向相鄰間距中位數：雙眼30.303Hz、odor50Hz、agent/t
 ```
 
 完整artifact與同名SHA-256將以 `issue22_cweiting731_2009798.tar.gz` 交回 `explore-4`；此為部署驗證產物，不是正式結果。Issue #22維持開啟等待PM覆核；延遲數據同時回覆#15的要求。
+
+## colcon 的 Python 測試收集（#42）
+
+ROS Python 套件以 `extras_require={"test": ["pytest"]}` 宣告測試工具，讓 colcon 選用 pytest。
+Lyrical 映像中的新版 setuptools 已不接受 `tests_require`；只加這個舊參數仍會落回 unittest，
+造成既有 pytest 函式未被收集，且 Python 3.14 在沒有 unittest 時回傳 5。
+
+各套件的 `setup.cfg` 固定本地 testpaths，避免 pytest 向上找到專案根目錄的設定後誤跑核心測試。
+`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_policy`、`flytrack_world` 目前沒有套件內測試，
+colcon 的 pytest adapter 接受空集合，但這不代表兩套件有測試覆蓋。
+需要 artifact 的真值隔離檢查仍以 `launch_test` 獨立執行，不混進無 artifact 的預設測試集合。
+
+在實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
+回傳 0，`colcon test-result --verbose` 為 **4 tests、0 errors、0 failures、0 skipped**。
+另只在臨時容器副本將預期延遲 5 ms 改為 6 ms，確認相同指令回傳 1，結果列出 3 個失敗；
+此負向驗證沒有修改提交的測試，證明失敗會傳回，而非忽略所有非零狀態。

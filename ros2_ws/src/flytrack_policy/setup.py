@@ -11,6 +11,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
     ],
     install_requires=["setuptools", "numpy", "torch"],
+    extras_require={"test": ["pytest"]},
     zip_safe=True,
     maintainer="FlyTrack contributors",
     maintainer_email="maintainers@example.invalid",

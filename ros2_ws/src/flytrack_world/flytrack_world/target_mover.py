@@ -43,8 +43,7 @@ class TargetMoverNode(WorldNode):
     def _scenario(self, message):
         new, values = self.consume_event(message)
         if not self.active and self.pending is not None:
-            self.pending.cancel()
-            self.pending = None
+            self._cancel_pending()
         if new:
             self.trajectory = TargetTrajectory(
                 {
@@ -58,11 +57,21 @@ class TargetMoverNode(WorldNode):
         if future is not self.pending:
             return
         self.pending = None
+        if future.cancelled():
+            return
         try:
             if not future.result().success:
                 self.get_logger().error("Gazebo rejected target SetEntityPose")
         except Exception as error:
             self.get_logger().error(f"target SetEntityPose failed: {error}")
+
+    def _cancel_pending(self):
+        future = self.pending
+        if future is None:
+            return
+        # Detach before cancel(): rclpy may call _complete synchronously inside cancel().
+        self.pending = None
+        future.cancel()
 
     def _tick(self):
         if not self.active:

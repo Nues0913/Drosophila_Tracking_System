@@ -138,8 +138,8 @@ Lyrical 映像中的新版 setuptools 已不接受 `tests_require`；只加這�
 造成既有 pytest 函式未被收集，且 Python 3.14 在沒有 unittest 時回傳 5。
 
 各套件的 `setup.cfg` 固定本地 testpaths，避免 pytest 向上找到專案根目錄的設定後誤跑核心測試。
-`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_policy`、`flytrack_world` 目前沒有套件內測試，
-colcon 的 pytest adapter 接受空集合，但這不代表兩套件有測試覆蓋。
+`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_world` 收集 `test/` 的 5 項取消回呼測試；
+`flytrack_policy` 目前沒有套件內測試，colcon 的 pytest adapter 接受空集合，但這不代表該套件有測試覆蓋。
 需要 artifact 的真值隔離檢查仍以 `launch_test` 獨立執行，不混進無 artifact 的預設測試集合。
 
 在實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`

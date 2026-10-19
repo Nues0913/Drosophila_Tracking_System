@@ -9,6 +9,7 @@ setup(
         ("share/flytrack_world", ["package.xml"]),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
+    extras_require={"test": ["pytest"]},
     zip_safe=True,
     maintainer="FlyTrack contributors",
     maintainer_email="maintainers@example.invalid",

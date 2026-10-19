@@ -205,4 +205,6 @@ inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記�
 
 回放保留 cold start、CUDA 掉落的 sensor callbacks 與 reset 前 73–74 筆 trace 缺口。off/on 處理時間只是一個配對的觀察，固定排程的 case elapsed 不能單獨估計 probe overhead；publish→callback 等待含 DDS 與排程，不能當成純 executor 等待。原 bag 的 monotonic 不與新執行相減，也不以回放結果宣稱原 G3 通過。
 
-[#52](https://github.com/Nues0913/Drosophila_Tracking_System/issues/52) 獨立修正 profiler 的 trace 提交／發布狀態及 reset 清除 pending 的可觀測性，目前僅核准輕量 CPU／ROS 測試，保留既有 production 發布與 reset 行為。camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准實作或新增回放。PM 本次只做離線重算、短 CPU 容器重現與覆核，未執行 GPU replay、Gazebo 或正式訓練。
+[#52](https://github.com/Nues0913/Drosophila_Tracking_System/issues/52) 已由 #53 合併為 `388d481` 並結案。[Sidecar schema2](policy_profiler_sidecar.md) 區分 pending、publisher_called 與 not_submitted，另記 reset 丟棄的 sequence／數量／原因；publisher_called 只表示本機 publisher 呼叫，不保證外部 subscriber 收到。歷史 emitted 不重新解讀，也不回填舊 trace 缺口。PM 在短 ROS 容器重新 build，部署 Python 的 colcon 收集 10 項、全部通過且無 skip；獨立新舊 tracer 的序列化發布／pending 對照與實際 node callback 探針確認既有發布、timeout、reset 行為一致。
+
+camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准實作或新增回放。PM 本次只做離線重算、短 CPU 容器重現與覆核，未執行 GPU replay、Gazebo 或正式訓練。

@@ -1,8 +1,15 @@
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from scripts.diagnostics.analyze_ros_latency_bag import analyze_trace
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ANALYZER_PATH = _REPO_ROOT / "scripts/diagnostics/analyze_ros_latency_bag.py"
+_SPEC = importlib.util.spec_from_file_location("ros_latency_analyzer", _ANALYZER_PATH)
+_ANALYZER = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_ANALYZER)
+analyze_trace = _ANALYZER.analyze_trace
 
 
 def sample(sensor, source, *, domain="same-host", ingress=None, forward=None):

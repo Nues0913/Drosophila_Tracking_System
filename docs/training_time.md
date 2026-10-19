@@ -1,5 +1,7 @@
 # 訓練時間：加速結果與縮短選項（2026-10-16）
 
+> **2026-10-19 更新**：兩台 GPU 主機的同版本基準見 [#21](https://github.com/Nues0913/Drosophila_Tracking_System/issues/21) 與 [status.md](status.md#速度2026-10-1821)。調整 Windows 電源模式和 HAGS 之後，RTX 4060 的 PPO 單程序從 103 升到 239 步／秒，雙程序合計 351；RTX 4070 是 307／337。兩台分攤時，2M 步的 PPO 矩陣每台約 1.5～2 天。下方的 104 步／秒和「265 工作小時」是 2026-10-16 的舊數字，只保留作歷史紀錄。縮短方案（選項 3「PPO 降到 500k」）要等 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35) 證明 PPO 能改善 BC 才能決定，見 [#10](https://github.com/Nues0913/Drosophila_Tracking_System/issues/10)。選項 2 已改成兩台主機分攤；選項 4「種子降到 3 個」不採用。
+
 硬體：RTX 4060 Laptop 8 GB、Ryzen 7 7735HS（16 執行緒）、16 GB RAM（WSL 配置 12 GB＋4 GB swap）。加速的程式在 commit `8496452`，細節見 [status.md](status.md) 與 [gpu_hosts.md](gpu_hosts.md)。
 
 ## 已完成的加速（實測）

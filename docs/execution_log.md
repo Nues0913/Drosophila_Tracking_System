@@ -38,6 +38,18 @@
 - ROS：在 `flytrack-ros:0.1` 映像（Python 3.14、rclpy）掛載新程式做節點層級煙霧測試，佈局、事件、`target_mover` 軌跡重建與 legacy 參數均通過；Gazebo 閉環未執行。
 - 小規模端到端驗證（VO seed 0，`runs/validation_20261017/`）：結果見 fixes 文件。
 
+### 2026-10-18～19：兩台 GPU 主機與 #4、#19 的實驗
+
+這段期間的重度工作都在 teammate 的主機上執行，證據放在 GitHub Issue 與 prerelease，不在本機 `runs/`：
+
+| 項目 | 主機 | 結果 | 證據 |
+| --- | --- | --- | --- |
+| 主機基準與交叉驗證 | RTX 4060、RTX 4070 Laptop | 同版本指標相對差 < 1e-3；跨主機評估同一 artifact 相對差 < 3e-8；PPO 雙程序約 340–350 步／秒 | #21、release `host-calibration` |
+| #4 縮小鏈 G0–G3（seed 0）與 G0–G2（seed 1） | 4060、4070 | 採用 G2：BC normal／occlusion 成功率 0.43／0.40（現行流程 0.25／0.15）；BC 後氣味／視覺比值仍 < 0.005 | #4、release `explore-4` |
+| T3 重跑（V、seed 0，兩組 PPO 各 500k） | 4060 | 撞牆誘因修好（從 pretrain 開始，碰撞率 1.00 → 0.07），但 PPO 沒有改善 BC | #19、#35 |
+| 遮蔽氣味 teacher 校準 | 4070（CPU） | 20%／50% 遮蔽：19/20、16/20，無碰撞 | #24、`docs/teacher/issue24/` |
+| 測試 | 本機 i7-9700 | 2026-10-19 的 `main`：165 passed，`ruff check` 通過 | — |
+
 ### 已知限制
 
 - ~~教師校準 20 回合結果逐位相同~~：2026-10-17 已在隨機化世界重做（見上）。

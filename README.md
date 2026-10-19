@@ -2,7 +2,7 @@
 
 以 flyvis 預訓練早期視覺前端（方案 A）加上 MaleCNS v1.0 中央子圖組成感測策略：先在 2D 模擬器訓練，再匯出模型，最後透過 ROS 2 Lyrical／Gazebo Jetty 做閉環評估。研究問題是比較六個變體（V、O、VO、VO-late、GRU、RS）在相同感測前端之後的追蹤表現。
 
-> **目前進度：** 資料、前端、子圖、測試與小規模訓練流程都已完成驗證，**正式訓練還沒開始**。2026-10-17 修正了「固定繞圈環境讓盲目的固定左轉也能成功」的根本問題，訓練與評估前會自動檢查環境（見 [docs/fixes_2026-10-17.md](docs/fixes_2026-10-17.md)）。正式訓練需要比 3 GB 更大的 GPU，請組員在自己的主機執行。詳細進度與已知問題見 [docs/status.md](docs/status.md)，逐項檢查清單見 [後續計畫.md](後續計畫.md)。
+> **目前進度（2026-10-19）：** 資料、前端、子圖、訓練鏈都已實際跑通，兩台 GPU 主機已校準。**正式訓練還沒開始**，要先解決策略不用氣味（#4）、PPO 沒有改善 BC（#35），並凍結評估協定（#20）。詳細進度見 [docs/status.md](docs/status.md)，待辦與分工見 GitHub Issue [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
 
 ## 組員快速上手
 

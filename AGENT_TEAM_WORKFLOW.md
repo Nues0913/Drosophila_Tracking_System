@@ -237,21 +237,21 @@ PM merge decision: @Nues0913
 | 想減少 seed 數、PPO 步數或放寬 gate | 開 `needs:pm-approval` Issue 並附量化依據；**批准前沿用原設計** |
 | PR 審查意見衝突 | 以資料、需求和驗收標準討論；必要 Reviewer 提出的重大問題要先解決，PM 在 PR 記錄最終決定。禁止互相覆蓋修改，或以作者身分自我核准 |
 
-## 7. 目前 Issue 的指派（本文件合併後由 PM 在 GitHub 執行）
+## 7. 目前 Issue 的指派
 
-| Issue | DRI | 協作方式 |
-| --- | --- | --- |
-| [#4 氣味無法影響策略](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4) | @milong9487 | 模型診斷、ORN/DN、bias 和訓練策略本來就是其工作；涉及世界或感測時請 @cweiting731 協作 |
-| [#9 雜訊強度與 BC 擴增](https://github.com/Nues0913/Drosophila_Tracking_System/issues/9) | @milong9487 | 實驗方案、訓練與評估由其主責；雜訊情境的實作由 @cweiting731 支援；是否調整正式情境由 PM 核准 |
-| [#10 正式訓練時間方案](https://github.com/Nues0913/Drosophila_Tracking_System/issues/10) | @Nues0913（決策 Issue） | @milong9487 提交效能與方案比較；@cweiting731 回報 GPU 主機的容量與可用時段；PM 批准排程與公平性變更 |
-| ROS／Gazebo 正式閉環與測試（新 Issue） | @cweiting731 | 2D／Gazebo 一致性、回合 reset、真值隔離、端到端延遲與長時間測試 |
-| 訓練矩陣的各 `(variant, seed)`（拆成執行 Issue） | 各自負責被指派的批次 | @milong9487 最後彙整模型結果，PM 最終驗收 |
+2026-10-18 起，所有待辦都已建成 GitHub Issue，並設定 Assignee（DRI）與 label。**以 GitHub 上的 Assignee 為準**，總追蹤是 [#28 正式訓練矩陣：前置條件追蹤與派工](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。大致分工：
+
+| DRI | 範圍 |
+| --- | --- |
+| @milong9487 | 氣味通路與方向 3（#4）、PPO 更新量（#35）、雜訊曲線（#9）、新 gate（#25）、生物對應查證（#27）、lesion 腳本（#29） |
+| @cweiting731 | Gazebo 閉環（#22）、2D／Gazebo 一致性（#23）、遮蔽時的氣味 teacher（#24，實作已合併，啟用待決定） |
+| @Nues0913 | 訓練時間方案（#10）、門檻與協定凍結（#20）、程式審計（#26）、總追蹤（#28） |
 
 派工前先看 [docs/status.md](docs/status.md) 的未完成事項。歷史 PR 已合併，不代表相關的**實驗問題**已經解決。
 
 ## 8. 導入順序與 GitHub 現況
 
-GitHub 現況（2026-10-18 查詢）：@MiLong9487 和 @cweiting731 都有 write 權限；repo 只有 GitHub 預設的 label；`main` 沒有自動強制的 Review 規則，第 5.1 節由 PM 人工把關。
+GitHub 現況（2026-10-19）：repo 已設為 private；@MiLong9487 和 @cweiting731 都有 write 權限；第 4.5 節的 label 已建立；`main` 沒有自動強制的 Review 規則（private repo 在免費方案下無法設定），第 5.1 節由 PM 人工把關。第 1～5 步已完成，目前依第 6 步運作。產物交回位置是 GitHub prerelease（`host-calibration`、`explore-4`）；正式矩陣的交回位置在 #28 決定。
 
 1. 本文件經兩名 teammate Review 後合併，三個 Agent 開始新任務前先讀。
    - 合併前已經在跑的長時間工作不中斷：PM 在對應 Issue 補上 `Decision:`，把它納入本規範。

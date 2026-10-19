@@ -7,7 +7,7 @@
 資料 → 前端 → 子圖 → 模型 → 訓練鏈都已實際跑通，兩台 GPU 主機也已校準完成，結果可以互換。**正式訓練（6 變體 × 5 種子）還沒開始**，開跑前還有三個前提沒解決：
 
 1. 策略還不會用氣味（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)）。
-2. PPO 幾乎沒在更新，沒有改善 BC（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）。
+2. 目前實驗中 PPO 未改善 BC；觀察到 KL 偏小，但這只是診斷線索，尚不足以確立未改善的原因，仍在持續診斷（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）。
 3. 評估協定還有兩項沒凍結：noise 強度和 occlusion 長度（[#20](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20)）。
 
 ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)，2026-10-19，CPU／GPU 各 5 回合 invalid 0）；完整端到端延遲 p95 分別為 55.62／56.46 ms，均未達 50 ms。
@@ -59,7 +59,7 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 ### 正式訓練的前提（P0）
 
 1. **策略還不會用氣味（#4）。** G2 之後，氣味的影響在 pretrain 後保住了，但 BC 只用 normal 情境，只靠視覺就能完成。BC 把視覺的影響拉高約 200 倍，氣味／視覺的 |Δω| 比值掉到 0.005 以下，odor lesion 幾乎沒有影響。**所以現有的 VO 結果實際上只用了視覺，VO／V／O 的比較和 lesion 結論都還不成立。** 下一步是方向 3：BC 世界混合長遮蔽，遮蔽時啟用 #33 的氣味 teacher，等 @MiLong9487 貼出設計後由 PM 核准。
-2. **PPO 幾乎沒在更新（#35）。** reward 修好之後，T3 重跑（V、seed 0、各 500k）的 `approx_kl` 中位數只有 1e-4～2e-5。從 BC 開始的 PPO，碰撞率 0.60（BC 是 0.27），成功率 0.03（BC 是 0.20）；從 pretrain 開始的那組不撞牆，但方位誤差約 90°。正在做 CPU 診斷：各參數組的更新量、critic 暖身、learning rate。
+2. **目前實驗中 PPO 未改善 BC（#35）。** 觀察到 KL 偏小，但這只是診斷線索，尚不足以確立未改善的原因，仍在持續診斷。reward 修好之後，T3 重跑（V、seed 0、各 500k）的 `approx_kl` 中位數只有 1e-4～2e-5。從 BC 開始的 PPO，碰撞率 0.60（BC 是 0.27），成功率 0.03（BC 是 0.20）；從 pretrain 開始的那組不撞牆，但方位誤差約 90°。正在做 CPU 診斷：各參數組的更新量、critic 暖身、learning rate。
 3. **評估協定還沒完全凍結（#20）。** 2026-10-19 已凍結：成功判定（≤ 2 m、方位 ≤ 45°、≥ 80% 時間）、環境審計（teacher ≥ 90%、盲目策略 ≤ 10%）、BC gate、運動 DN 輸入增益 100、主要終點與非劣容許差，以及 wander 列為次要情境（主要終點維持 curved）。**還沒凍結：noise 強度（等 #9）、occlusion 長度（等 #4 方向 3）**。兩項定案後，會一起更新 `configs/evaluation_protocol.yaml`。
 
 ### 其他未解決

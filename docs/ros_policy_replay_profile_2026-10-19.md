@@ -1,6 +1,6 @@
 # #49 ROS policy 短回放 profiler 結果
 
-日期：2026-10-19。固定 main `1563a936bc75f4db2e82e1c9c9df3fd6b0929a13`，在同一台 RTX 4070 Laptop 上，以同一 policy artifact、sensor contract 和 #22 五回合 input bag，分別跑 CPU 與 CUDA；每種 device 各做一次 profiler 關閉／開啟配對。沒有啟動 Gazebo、訓練或正式評估。完整命令、原始 monitor／profiler JSONL 與 policy log 收在 [`issue49_replay_evidence_2026-10-19.tar.gz`](ros_artifacts/issue49_replay_evidence_2026-10-19.tar.gz)。
+日期：2026-10-19。固定 main `1563a936bc75f4db2e82e1c9c9df3fd6b0929a13`，在同一台 RTX 4070 Laptop 上，以同一 policy artifact、sensor contract 和 #22 五回合 input bag，分別跑 CPU 與 CUDA；每種 device 各做一次 profiler 關閉／開啟配對。沒有啟動 Gazebo、訓練或正式評估。完整命令、原始 monitor／profiler JSONL 與 policy log 已上傳至 [explore-4 原始證據包](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue49_replay_evidence_2026-10-19.tar.gz)；SHA-256：`7c58f954575cbbfb125a2e477f67d3ba03b87b9593ceb2a20a5a62a694277cef`（[校驗檔](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue49_replay_evidence_2026-10-19.tar.gz.sha256)）。原始包保持 byte-for-byte 不變。
 
 ## 執行與覆蓋
 
@@ -15,22 +15,48 @@ CPU profile-on 的 measured command callback 有 3435 筆 timing row；CUDA 有 
 
 ## 時間分解
 
-下表為 profile-on、command callback 進入 measurement 區間的 p50／p95／p99，單位 ms。tick 各段依本次 `CLOCK_MONOTONIC` 時間戳相減；不包含 ROS/Gazebo closed-loop、訊息網路或完整 sensor-to-command 端到端延遲。
+下表為 profile-on、command callback 進入 measurement 區間的 p50／p95／p99，單位 ms；分位數使用線性插值，位置為 `(n−1)×p`。Command callback 與 publish spans 的 n=CPU/CUDA 3435/3423；inference-only tick spans 的 n=2364/2352。tick 各段依本次 `CLOCK_MONOTONIC` 時間戳相減；不包含 ROS/Gazebo closed-loop、訊息網路或完整 sensor-to-command 端到端延遲。
 
 | Span | CPU p50／p95／p99 | CUDA p50／p95／p99 |
 | --- | ---: | ---: |
-| 最近一個 sensor callback 結束至 control callback 開始 | 1.699／11.967／12.871 | 1.092／11.903／13.103 |
-| control callback entry → exit | 13.452／19.991／24.038 | 18.128／22.549／25.822 |
-| entry → command publish start | 12.956／19.379／23.511 | 17.637／21.954／25.269 |
-| command publish call | 0.105／0.140／0.205 | 0.091／0.131／0.180 |
-| tick input conversion | 0.080／0.113／0.149 | 1.111／1.603／3.885 |
-| device sync before forward | — | 0.035／0.051／0.077 |
-| model forward and completion | 13.092／20.474／23.380 | 16.524／20.406／25.636 |
-| finite check | 0.185／0.357／0.470 | 0.480／0.838／1.274 |
-| device-to-host | 0.024／0.037／0.051 | 0.138／0.255／0.350 |
-| action limiting | 0.060／0.080／0.110 | 0.053／0.073／0.103 |
+| 最近一個 sensor callback 結束至 control callback 開始（只含有 callback 的 command） | 1.700／11.969／12.879 | 1.106／11.904／13.161 |
+| control callback entry → exit（所有 command） | 13.452／19.991／24.060 | 18.128／22.570／25.891 |
+| entry → command publish start（所有 command） | 12.956／19.383／23.532 | 17.637／21.979／25.274 |
+| command publish call（所有 command） | 0.105／0.140／0.207 | 0.091／0.131／0.182 |
+| tick input conversion（inference） | 0.080／0.113／0.149 | 1.111／1.603／3.886 |
+| device sync before forward（inference） | — | 0.035／0.051／0.077 |
+| model forward and completion（inference） | 13.092／20.487／23.468 | 16.525／20.416／26.105 |
+| finite check（inference） | 0.185／0.358／0.470 | 0.480／0.838／1.287 |
+| device-to-host（inference） | 0.024／0.036／0.051 | 0.138／0.255／0.350 |
+| action limiting（inference） | 0.060／0.080／0.110 | 0.052／0.073／0.103 |
 
-本輪量測中，callback 進入前的 sensor-to-control 間隔 p95 約 12 ms，forward p95 約 20–26 ms；CUDA input conversion、finite check、device-to-host 也比 CPU 高。這些是該 smoke artifact、該 bag 與單次重播的觀察值，不能外推為穩定硬體基準，也不能直接解釋舊 Gazebo p95。
+本輪量測中，最近 sensor callback 結束至 control callback 開始的 p95 約 12 ms。原先容易把不同 cohort 混讀：全 command callback p95 是 CPU/CUDA 19.991/22.570 ms（n=3435/3423），model-forward p95 僅計實際 inference，是 20.487/20.416 ms（n=2364/2352）；inference-only 整個 callback p95 為 21.582/23.529 ms。CUDA model-forward p99 是 26.105 ms，並非 p95。CUDA input conversion、finite check、device-to-host 也比 CPU 高。這些是該 smoke artifact、該 bag 與單次重播的觀察值，不能外推為穩定硬體基準，也不能直接解釋舊 Gazebo p95。
+
+## 離線補分析：同 cohort 配對、感測 callback 等待與處理
+
+以下由原始 monitor／profiler JSONL 重算，沒有修改或重跑原始資料。量測區間以 monitor 的 `phase_start/phase_end(measurement)` 定義；同一 run 的 `CLOCK_MONOTONIC` 時間戳相減。分位數使用線性插值，位置為 `(n−1)×p`。Profile-on cohort 要求 command callback entry 在 measurement 內、三個 `valid` 都為 true，且 monitor 確實收到同 command sequence 的 `ControlTrace`；profile-off 使用 measurement 內 monitor 收到且三路皆 valid 的 ControlTrace。Profile-off start→publish 使用 `control_started_monotonic_ns` 至 `command_published_monotonic_ns`；profile-on 使用 profiler callback entry 至 publish done。這兩個量都表示策略 callback 開始到 command publish 完成，並非固定排程 replay 的 case elapsed。
+
+| Device / profiler | Valid trace cohort n | Start → command publish p50 / p95 / p99 (ms) |
+|---|---:|---:|
+| CPU off | 2289 | 13.690 / 21.275 / 24.520 |
+| CPU on | 2289 | 13.660 / 21.110 / 23.867 |
+| CUDA off | 2270 | 18.089 / 22.186 / 33.884 |
+| CUDA on | 2278 | 18.631 / 23.133 / 29.155 |
+
+這是每種 device 各一次的配對觀察，不能據此推論 profiler 的普遍或因果 overhead。Profile-on sidecar 寫檔成本也沒有被這個 span 隔離；case elapsed 主要受固定 bag 發布時序支配，不能單獨估 probe overhead。總 measurement command callback 數為 CPU/CUDA 3435/3423，實際 inference 數為 2364/2352，收到 ControlTrace 數為 3361/3350；因此不能把完整 command 集或 callback 與 model span 當成同一個 cohort。舊報告的「最近 callback 結束→control」只涵蓋有一筆以上 accepted sensor callback since previous command 的 2350/2322 筆 command，不代表每筆 command 的等待時間。
+
+Sensor publish 記錄依 sensor 與 `header_stamp` 配對到 profiler 收集的 accepted sensor callback；同一 identity 有多筆發布時，採 callback entry 前最近的一筆。表中保留發布、accepted callback 與配對數，能看出 CUDA best-effort 輸入有掉落；publish→callback entry 同時含 DDS 傳遞與 executor 排程，不是單獨的 executor 等待時間。
+
+| Device | Sensor | Published | Accepted callback / matched | Publish → callback entry p50 / p95 / p99 (ms) | Decode p95 | Hex-eye sample p95 | Buffer update p95 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CPU | left | 3554 | 3554 / 3554 | 0.293 / 11.706 / 15.324 | 0.057 | 5.207 | 0.046 |
+| CPU | right | 3552 | 3552 / 3552 | 0.997 / 13.921 / 16.805 | 0.050 | 4.912 | 0.045 |
+| CPU | odor | 5861 | 5861 / 5861 | 2.671 / 15.744 / 20.769 | — | — | 0.058 |
+| CUDA | left | 3554 | 3499 / 3499 | 0.273 / 21.099 / 40.104 | 0.052 | 4.904 | 0.043 |
+| CUDA | right | 3552 | 3486 / 3486 | 1.320 / 22.164 / 41.280 | 0.051 | 4.728 | 0.041 |
+| CUDA | odor | 5861 | 5777 / 5777 | 4.240 / 38.027 / 74.728 | — | — | 0.045 |
+
+可由 PR 內的 `scripts/diagnostics/analyze_policy_replay.py` 重算上述摘要。解開 release 原始包後執行：`python3 scripts/diagnostics/analyze_policy_replay.py /path/to/package --output analysis.md --json analysis.json`。此 analyzer 僅處理 ROS replay 證據，未改訓練工具或資料 fingerprint；原始包不包含 analyzer，避免改寫其固定 SHA。
 
 CPU profile-on 記錄 3554／3552／5861 個 left／right／odor callback，均 accepted，與對應 sensor publish 數相同。CUDA 記錄 3499／3486／5777 個 accepted callbacks，約比發布數少 1.4–1.9%；ROS best-effort queue 下這次重播有少數 callback 未被策略處理。這不等於 active episode 失敗：每個 active episode 的第一個有效推論都等到三路新樣本。
 

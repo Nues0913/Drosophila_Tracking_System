@@ -23,6 +23,11 @@ env:
 train:
   modality: vision
   total_steps: 120000
+  # #4 G2 Decision: frozen neuron-type biases keep the DN working point (vision
+  # pretraining otherwise silenced DNa01 and the odor path); PPO/ES keep them trainable.
+  core_bias_learning_rate: 0.0
+  # Population-RMS decoder inputs keep odor pretraining stable at odor_input_gain 100.
+  decoder_input_scale: population_rms
   # Upper bound only: held-out early stopping decides (V seed 0 vision stopped at 11).
   epochs: 40
   batch_episodes: 16

@@ -10,9 +10,10 @@ common:
   # Edges into the six motor DNs keep a fixed x100 conductance gain; the global
   # spectral cap is computed with it (it does not change the radius on the real graph).
   motor_input_gain: 100.0
-  # ORN input drive (#4). 100 raised odor's effect at init but diverged the
-  # odor-pretrain decoder; keep 1 until a pretrain -> BC chain shows it holds.
-  odor_input_gain: 1.0
+  # ORN input drive (#4, G2 Decision): x100 keeps odor's effect alive through pretrain
+  # with frozen pretrain biases and the population-RMS decoder (seeds 0 and 1). A
+  # constant input scale, not a parameter; GRU shares the encoder, so all six match.
+  odor_input_gain: 100.0
   # Offset for the DN left/right structural asymmetry (not a behavioural turn bias).
   readout_turn_bias: true
   dense_threshold: 5000

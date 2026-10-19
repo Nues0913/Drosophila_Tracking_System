@@ -40,6 +40,7 @@ def test_enabled_profiler_correlates_sensor_identity_and_command(tmp_path):
     profiler.record_command(
         command_sequence=0,
         trace_sequence=0,
+        trace_status="emitted",
         sim_stamp=header(sec=2, nanosec=0).stamp,
         callback_entry_ns=90,
         callback_exit_ns=250,
@@ -59,6 +60,7 @@ def test_enabled_profiler_correlates_sensor_identity_and_command(tmp_path):
     assert command_row["run_id"] == reset_row["run_id"]
     assert command_row["event"] == "command_profile"
     assert command_row["command_sequence"] == command_row["control_trace_sequence"] == 0
+    assert command_row["control_trace_status"] == "emitted"
     assert command_row["samples"][0]["header_stamp"] == [1, 250_000_000]
     assert command_row["sensor_callbacks_since_previous_command"][0]["sensor"] == "left"
     assert reset_row["event"] == "reset"

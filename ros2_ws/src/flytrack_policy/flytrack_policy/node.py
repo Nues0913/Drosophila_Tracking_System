@@ -239,7 +239,8 @@ class ConnectomePolicyNode(Node):
             self.get_logger().error(f"Policy inference failed: {error}", throttle_duration_sec=5)
             self.profiler.record_command(
                 command_sequence=profile_sequence,
-                trace_sequence=self.tracer.sequence,
+                trace_sequence=None,
+                trace_status="not_emitted",
                 sim_stamp=now.to_msg(),
                 callback_entry_ns=started_ns,
                 callback_exit_ns=time.monotonic_ns(),
@@ -285,6 +286,7 @@ class ConnectomePolicyNode(Node):
         self.profiler.record_command(
             command_sequence=profile_sequence,
             trace_sequence=self.tracer.sequence - 1,
+            trace_status="emitted",
             sim_stamp=now.to_msg(),
             callback_entry_ns=started_ns,
             callback_exit_ns=time.monotonic_ns(),

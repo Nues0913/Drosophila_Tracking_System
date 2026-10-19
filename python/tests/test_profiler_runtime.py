@@ -1,8 +1,17 @@
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import torch
-from flytrack_policy.runtime import PolicyRuntime
+
+_RUNTIME_PATH = (
+    Path(__file__).resolve().parents[2] / "ros2_ws/src/flytrack_policy/flytrack_policy/runtime.py"
+)
+_RUNTIME_SPEC = importlib.util.spec_from_file_location("policy_runtime", _RUNTIME_PATH)
+_RUNTIME_MODULE = importlib.util.module_from_spec(_RUNTIME_SPEC)
+_RUNTIME_SPEC.loader.exec_module(_RUNTIME_MODULE)
+PolicyRuntime = _RUNTIME_MODULE.PolicyRuntime
 
 
 class TinyPolicy:

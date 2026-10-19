@@ -1,6 +1,6 @@
 # ROS／Gazebo 實際執行紀錄
 
-日期：2026-10-15。使用者已授權執行完整計畫；以下只記錄已觀察的狀態，持續更新，未完成項目不當作通過。
+起始紀錄：2026-10-15。本頁按日期保留歷史狀態；當時的待驗證項目不代表目前仍未執行。後續閉環證據與測試收集結果見下方 2026-10-19 各節，最新離線診斷與 profiler 進度見本頁末節。
 
 ## 環境與秘密隔離
 
@@ -138,11 +138,11 @@ Lyrical 映像中的新版 setuptools 已不接受 `tests_require`；只加這�
 造成既有 pytest 函式未被收集，且 Python 3.14 在沒有 unittest 時回傳 5。
 
 各套件的 `setup.cfg` 固定本地 testpaths，避免 pytest 向上找到專案根目錄的設定後誤跑核心測試。
-`flytrack_eval` 收集 `test/` 的 4 項延遲測試；`flytrack_world` 收集 `test/` 的 5 項取消回呼測試；
-`flytrack_policy` 目前沒有套件內測試，colcon 的 pytest adapter 接受空集合，但這不代表該套件有測試覆蓋。
+`flytrack_eval` 收集 `test/` 的 4 項延遲測試；後續 #47 的 `flytrack_world` 收集 5 項取消回呼測試，
+#50 的 `flytrack_policy` 收集 4 項 profiler／callback 測試，兩者均已分別通過部署映像內的 colcon 驗證。
 需要 artifact 的真值隔離檢查仍以 `launch_test` 獨立執行，不混進無 artifact 的預設測試集合。
 
-在實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
+在 #42 最初修正時，實際 Lyrical／Python 3.14 映像內重新 build 後，普通 `colcon test --return-code-on-test-failure`
 回傳 0，`colcon test-result --verbose` 為 **4 tests、0 errors、0 failures、0 skipped**。
 另只在臨時容器副本將預期延遲 5 ms 改為 6 ms，確認相同指令回傳 1，結果列出 3 個失敗；
 此負向驗證沒有修改提交的測試，證明失敗會傳回，而非忽略所有非零狀態。
@@ -187,3 +187,13 @@ CPU 比較摘要、#42 的正常／負向 colcon 驗證 log，以及取消回呼
 inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記錄錯誤；先 detach pending 再 cancel
 則沒有訊息。這定位到取消回呼的誤報路徑，不能由該行直接推斷 Gazebo SetPose 服務失敗。
 本次未修改此 production 路徑；原始證據包與 SHA 保持不變。
+
+
+## 2026-10-19：離線診斷與預設關閉的 profiler（#48、#50）
+
+[#48 的同時鐘診斷報告](ros_latency_diagnostic_2026-10-19.md) 與
+`scripts/diagnostics/analyze_ros_latency_bag.py` 已合併。每筆命令先驗證全部有效 contributing samples 的時鐘與因果順序，再選最舊來源分段；4,707 筆原始資料與統計經 PM 獨立核對一致。這是既有資料的離線診斷，完整端到端 50 ms 門檻仍未通過。
+
+#50 已合併預設關閉的 ROS policy profiler：以 `profiler_enabled` 和 `profiler_output_path` 明確啟用 JSONL sidecar；以 run／command／sensor-header 身分關聯 callback 與 tick 區段，未發出 ControlTrace 的錯誤命令標記 `null/not_emitted`。PM 在部署映像內重新 build 並以 colcon 驗證 4 項測試通過、無 skip；普通 pytest 入口的分析 5 項與 profiler／既有 watchdog 目標測試 2 項也通過。
+
+實際回放由原 DRI 在 [#49](https://github.com/Nues0913/Drosophila_Tracking_System/issues/49) 執行，固定 main `1563a93`，同一 4070 的 CPU／GPU 各最多 10 分鐘、總回放最多 20 分鐘。需量出 profile-off/on 開銷，不能將原 bag 的 monotonic 與新執行相減，也不能以回放結果宣稱原 G3 通過。PM 本次只做輕量測試與覆核，未執行 GPU replay、Gazebo 或正式訓練。

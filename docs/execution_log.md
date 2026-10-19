@@ -56,6 +56,7 @@
 - [#45 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/45#pullrequestreview-5567311087)：下載 release `explore-4` 的 CPU 首輪及 GPU 追加證據包，壓縮包 SHA-256 與全部 56＋36 個逐檔 hash 一致。以 rclpy 獨立解碼原始 db3、依最舊有效來源 sample 重算，CPU／GPU 完整端到端 p95 為 55.6233651／56.4599500 ms，active 為 54.1289413／55.08554345 ms；與報告一致，仍未達 50 ms。兩份五回合 bag 均 quick_check=ok、13 個 topic 有資料。
 - 使用實際 rclpy.Future 及 production callback 獨立重現取消 future 的假 `NoneType.success` 錯誤，另開 #46，由原 ROS DRI 修正。[#47 的 PM review](https://github.com/Nues0913/Drosophila_Tracking_System/pull/47#pullrequestreview-5567356008) 完整審查後在本機 ROS 容器重新 build world，colcon 收集 5 項真實 Future 測試，5 passed／exit 0；Ruff check／format check 與 diff check 通過。#47 已合併為 `525db6a`，#46 關閉；真正服務拒絕與例外仍會回報。
 - [#20 的後續 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20#issuecomment-6260437085)：保留完整端到端門檻與頻率，先從既有 bag 做同 sample、同 wall-clock 的逐筆 stage 診斷；撤回先前將 simulation-clock age 與 wall time 相加的推論。
+- #48／#50 後續覆核：#48 的普通 pytest 入口 5 passed，分析工具搬移後不影響訓練 source fingerprint；逐筆資料與既有 4,707 筆覆核一致。#50 的普通 pytest 目標測試 2 passed（含既有 watchdog），部署 ROS 容器 colcon 4 passed／0 skipped，獨立 callback probe 確認錯誤／後續成功 trace 關聯為 null／0。兩 PR 已合併，固定 main `1563a93` 的 #49 短回放由原 DRI 執行。
 - 本次 **NOT RUN**：新增 Gazebo 閉環、GPU 推論、正式訓練、#23 一致性實驗與真值隔離 launch_test。上述延遲是既有資料的獨立重算，不是新增量測；本次容器均已移除。
 
 ### 已知限制

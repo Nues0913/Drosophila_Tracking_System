@@ -22,7 +22,7 @@ GPU 建議 8 GB 以上。3 GB 的 GTX 1050 已確認不夠（PPO 更新時 OOM�
 
 ### Windows／WSL2 的效能設定
 
-PPO 每一步都是很小的 GPU kernel，速度受啟動延遲限制，Windows 端的設定影響很大（#21，RTX 4060 Laptop 實測）：
+Windows 端的設定對 PPO 速度影響很大（#21，RTX 4060 Laptop 實測）。根本的瓶頸還沒定位：推測是每步很小的 GPU kernel 受啟動延遲限制，但沒有用 profiler 或環境 worker 對照驗證過。
 
 | 設定 | PPO 單程序 | 雙程序合計 |
 | --- | ---: | ---: |
@@ -61,7 +61,7 @@ bash runs/experiment_configs/run_all.sh --variants VO --seeds 0 --jobs 1
 - **不要修改** `configs/`、`python/` 後再跑正式實驗；要改就先提 PR，合併後所有人一起重跑，否則六變體不可比較。
 - 開跑前記下 `git rev-parse HEAD`；訓練產物的 `model_card.json` 也會記錄程式指紋。
 - 先跑 `pytest python/tests`，確認與其他人結果一致（2026-10-19 的 `main` 為 165 passed）。
-- 兩台主機實測的速度都是 `--jobs 2` 最划算，開更多沒有幫助；`--jobs 3` 沒有量過。
+- 依 #21 的決定，兩台主機都用 `--jobs 2`。#21 只量過 1 個和 2 個程序，`--jobs 3` 沒有量過，不要自行提高。
 - 從固定 commit 的 detached worktree 執行，並明確設定 `PYTHONPATH` 指向該 worktree 的 `python/`，避免載入其他工作目錄的程式。
 - 跑完把 `runs/<variant>/seed_<n>/`（含 `actor/` 與 log）打包交回；`runs/` 不進 git。
 - 第一次跑請記錄每階段耗時與 `nvidia-smi` 顯存峰值，回報到 [status.md](status.md)。

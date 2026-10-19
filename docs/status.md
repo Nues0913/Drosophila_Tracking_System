@@ -8,7 +8,7 @@
 
 1. 策略還不會用氣味（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)）。
 2. PPO 幾乎沒在更新，沒有改善 BC（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）。
-3. 門檻與評估協定還沒凍結（[#20](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20)）。
+3. 評估協定還有兩項沒凍結：noise 強度和 occlusion 長度（[#20](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20)）。
 
 ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)）可以和上面並行，還沒開始跑。
 
@@ -33,7 +33,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 | @cweiting731：RTX 4070 Laptop、i7-13700HX、WSL2 | 36.6 分 | 307 步／秒 | 337 步／秒 |
 
 - 4060 最初只有 103 步／秒，主因是 Windows 的電源模式「平衡」。改成「最佳效能」後約 2.2 倍，再關掉「硬體加速 GPU 排程」（HAGS）約再快 20%。設定方式見 [gpu_hosts.md](gpu_hosts.md#windowswsl2-的效能設定)。
-- PPO 每一步都是很小的 GPU kernel，受啟動延遲限制，GPU 使用率約 35–55%。兩台都用 `--jobs 2`。
+- PPO 期間 GPU 使用率約 35–55%。瓶頸還沒定位：推測是每步很小的 GPU kernel 受啟動延遲限制，但沒有用 profiler 或環境 worker 對照驗證過。依 #21 的決定，兩台都用 `--jobs 2`（只量過 1 和 2 個程序）。
 - 粗估：2M 步的正式 PPO 矩陣由兩台分攤，每台約 1.5～2 天。是否縮短見 [#10](https://github.com/Nues0913/Drosophila_Tracking_System/issues/10)，要等 #35。
 
 ## 已修正的重大問題
@@ -58,7 +58,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 
 1. **策略還不會用氣味（#4）。** G2 之後，氣味的影響在 pretrain 後保住了，但 BC 只用 normal 情境，只靠視覺就能完成。BC 把視覺的影響拉高約 200 倍，氣味／視覺的 |Δω| 比值掉到 0.005 以下，odor lesion 幾乎沒有影響。**所以現有的 VO 結果實際上只用了視覺，VO／V／O 的比較和 lesion 結論都還不成立。** 下一步是方向 3：BC 世界混合長遮蔽，遮蔽時啟用 #33 的氣味 teacher，等 @MiLong9487 貼出設計後由 PM 核准。
 2. **PPO 幾乎沒在更新（#35）。** reward 修好之後，T3 重跑（V、seed 0、各 500k）的 `approx_kl` 中位數只有 1e-4～2e-5。從 BC 開始的 PPO，碰撞率 0.60（BC 是 0.27），成功率 0.03（BC 是 0.20）；從 pretrain 開始的那組不撞牆，但方位誤差約 90°。正在做 CPU 診斷：各參數組的更新量、critic 暖身、learning rate。
-3. **門檻與評估協定還沒凍結（#20）。** 包括朝向 45°、環境審計、BC gate、DN 輸入增益、wander 是否進正式評估、主要終點、noise 強度。
+3. **評估協定還沒完全凍結（#20）。** 2026-10-19 已凍結：成功判定（≤ 2 m、方位 ≤ 45°、≥ 80% 時間）、環境審計（teacher ≥ 90%、盲目策略 ≤ 10%）、BC gate、運動 DN 輸入增益 100、主要終點與非劣容許差，以及 wander 列為次要情境（主要終點維持 curved）。**還沒凍結：noise 強度（等 #9）、occlusion 長度（等 #4 方向 3）**。兩項定案後，會一起更新 `configs/evaluation_protocol.yaml`。
 
 ### 其他未解決
 
@@ -92,7 +92,7 @@ ROS／Gazebo 閉環驗證（[#22](https://github.com/Nues0913/Drosophila_Trackin
 
 1. #4 方向 3（@MiLong9487 設計，PM 核准後在兩台主機各跑一個 seed）。
 2. #35 PPO 診斷與一次 T3 重跑（@MiLong9487）。
-3. #20 凍結門檻與評估協定（PM），#25 加入新 gate（@MiLong9487）。
+3. #20 凍結剩下的 noise 強度和 occlusion 長度，更新評估協定（PM）；#25 加入新 gate（@MiLong9487）。
 4. 全部完成後，PM 凍結一個 `main` commit，依 #21 的分配開執行 Issue：4060 跑 seed 0、2、4，4070 跑 seed 1、3。
 5. 並行：#22 Gazebo 閉環、#23 2D／Gazebo 一致性（@cweiting731）。
 6. 2D 正式評估 → Gazebo 主要比較 → lesion 分析 → 報告與展示。

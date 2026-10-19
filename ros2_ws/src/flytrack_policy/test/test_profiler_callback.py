@@ -34,8 +34,10 @@ class FakeTracer:
         self.emitted = []
 
     def command(self, *args, **kwargs):
-        self.emitted.append(self.sequence)
+        sequence = self.sequence
+        self.emitted.append(sequence)
         self.sequence += 1
+        return sequence, "publisher_called"
 
 
 def test_control_callback_does_not_claim_trace_for_failed_tick(tmp_path):
@@ -76,5 +78,8 @@ def test_control_callback_does_not_claim_trace_for_failed_tick(tmp_path):
         (0, None),
         (1, 0),
     ]
-    assert [row["control_trace_status"] for row in commands] == ["not_emitted", "emitted"]
+    assert [row["control_trace_status"] for row in commands] == [
+        "not_submitted",
+        "publisher_called",
+    ]
     assert tracer.emitted == [0]

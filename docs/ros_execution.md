@@ -183,6 +183,11 @@ SQLite quick_check=ok。policy/eval SIGINT 停止 1.02 秒（timeout 10），沒
 CPU 比較摘要、#42 的正常／負向 colcon 驗證 log，以及取消回呼警告的重現輸出。
 交付位於 release `explore-4`，附同名 SHA-256 檔。
 
+另依 #49 在固定 artifact／bag 上完成一次獨立的 CPU／CUDA policy 短回放 profiler 診斷；
+結果與限制見 [#49 replay 報告](ros_policy_replay_profile_2026-10-19.md)。其 sidecar trace 狀態
+與 reset 清除 pending 欄位格式見 [profiler sidecar 說明](policy_profiler_sidecar.md)。
+該診斷不回填本節原始 trace，也不代表 G3 通過。
+
 另補首輪 log 的 `target SetEntityPose failed: NoneType.success`：真正 rclpy.Future 的最小重現顯示，
 inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記錄錯誤；先 detach pending 再 cancel
 則沒有訊息。這定位到取消回呼的誤報路徑，不能由該行直接推斷 Gazebo SetPose 服務失敗。

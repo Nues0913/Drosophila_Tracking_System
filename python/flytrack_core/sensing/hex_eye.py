@@ -49,9 +49,9 @@ def compute_directions(contract: SensorContract | None = None) -> np.ndarray:
 
 @dataclass(frozen=True)
 class GaussianProjection:
-    """COO-like N×(height*width) matrix, without dense zero storage."""
+    """CSR-like N×(height*width) matrix, without dense zero storage."""
 
-    rows: np.ndarray
+    row_offsets: np.ndarray
     columns: np.ndarray
     weights: np.ndarray
     n_rows: int
@@ -73,9 +73,19 @@ class GaussianProjection:
         if np.issubdtype(source_dtype, np.integer):
             values = values / np.iinfo(source_dtype).max
         values = np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0)
-        result = np.bincount(
-            self.rows, weights=self.weights * values.ravel()[self.columns], minlength=self.n_rows
-        )
+        products = self.weights * values.ravel()[self.columns]
+        result = np.zeros(self.n_rows, dtype=np.float64)
+        # Per-row bincount keeps the original serial float64 accumulation order
+        # while avoiding a persistent COO row-index array.
+        for row, (start, stop) in enumerate(
+            zip(self.row_offsets[:-1], self.row_offsets[1:], strict=True)
+        ):
+            if stop > start:
+                result[row] = np.bincount(
+                    np.zeros(stop - start, dtype=np.int8),
+                    weights=products[start:stop],
+                    minlength=1,
+                )[0]
         return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
@@ -124,8 +134,12 @@ class HexEye:
             rows.extend([index] * xx.size)
             columns.extend((yy * width + xx).ravel().tolist())
             weights.extend(local_weights.ravel().tolist())
+        row_counts = np.bincount(np.asarray(rows, dtype=np.int64), minlength=len(self.axial))
+        row_offsets = np.empty(len(self.axial) + 1, dtype=np.int64)
+        row_offsets[0] = 0
+        np.cumsum(row_counts, out=row_offsets[1:])
         projector = GaussianProjection(
-            np.asarray(rows, dtype=np.int64),
+            row_offsets,
             np.asarray(columns, dtype=np.int64),
             np.asarray(weights, dtype=np.float32),
             len(self.axial),

@@ -310,3 +310,43 @@ def test_teacher_steps_aside_from_a_target_driving_at_it():
             teacher_action(agent, pose, still, contract, target_velocity=np.asarray(velocity)),
             teacher_action(agent, pose, still, contract),
         )
+
+
+def test_csr_hex_projection_offsets_and_empty_rows_match_coo_bits():
+    from flytrack_core.sensing.hex_eye import GaussianProjection
+
+    projection = GaussianProjection(
+        row_offsets=np.asarray([0, 0, 3, 3, 5, 5], dtype=np.int64),
+        columns=np.asarray([0, 1, 2, 1, 2], dtype=np.int64),
+        weights=np.asarray([0.1, 0.2, 0.7, 0.3, 0.7], dtype=np.float32),
+        n_rows=5,
+        image_shape=(1, 3),
+    )
+    image = np.asarray([[0.25, 0.5, 0.75]], dtype=np.float32)
+    actual = projection.sample(image)
+    rows = np.repeat(np.arange(projection.n_rows), np.diff(projection.row_offsets))
+    values = projection.weights * image.ravel()[projection.columns]
+    expected = np.clip(
+        np.bincount(rows, weights=values, minlength=projection.n_rows), 0.0, 1.0
+    ).astype(np.float32)
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+    np.testing.assert_array_equal(actual[[0, 2, 4]], 0.0)
+
+
+def test_csr_hex_projection_cache_and_bilateral_bitwise_samples():
+    contract = SensorContract(eye_radius=2, camera_width=32, camera_height=24)
+    eye = HexEye(contract)
+    assert eye.projection(0) is eye.projection(0)
+    for image in (
+        np.zeros((24, 32), dtype=np.uint8),
+        np.full((24, 32), 65535, dtype=np.uint16),
+        np.random.default_rng(54).random((24, 32), dtype=np.float32),
+        np.repeat(np.full((24, 32, 1), 0.5, dtype=np.float32), 3, axis=-1),
+    ):
+        for side in (0, 1):
+            result = eye.sample_image(image, side)
+            assert result.dtype == np.float32
+            assert result.shape == (contract.n_ommatidia,)
+            offsets = eye.projection(side).row_offsets
+            assert offsets[0] == 0 and offsets[-1] == eye.projection(side).weights.size
+            assert np.all(np.diff(offsets) >= 0)

@@ -49,6 +49,12 @@
 
 **NOT RUN：** 新圖pretrain／BC／PPO、訓練後模態使用gate、兩台GPU成本、ROS/Gazebo與G3。連通、初始化反應、非零梯度均不能證明 #4 已解決。尤其BC資料與teacher、bias動態、氣味通道語意仍可能使新圖學不到氣味，需MiLong依#4／#27獨立覆核。
 
+## 證據位置
+
+可直接比對[獨立驗證](../artifacts/data_execution/olfactory_v2_verification.json)、[數值／投射探針](../artifacts/data_execution/olfactory_v2_numeric.json)、[六變體參數](../artifacts/data_execution/olfactory_v2_parameter_budget.json)及[兩次萃取雜湊](../artifacts/data_execution/olfactory_v2_reproducibility.json)。
+
+[CPU原始證據包](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue55_olfactory_v2_cpu_evidence.tar.gz)包含log、31項逐檔manifest及實際source／圖／輔助表格；封存來源commit `1a3421e`，extractor仍為manifest記錄的 `8c183b5`。壓縮包SHA-256：`9f8f8492bb6027bdab0cfc683294357a0b2b5f713799dca731db15d136839127`。raw大型原始表不重複打包，依graph manifest SHA取得。
+
 ## 參數公平與2–3天目標
 
 六變體實際建構，沿用共同G2設定並重新解GRU預算：
@@ -81,11 +87,11 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 .venv/bin/python scripts/prepare_experiments.py --graph data/subgraphs/olfactory_v2/graph.npz --output runs/issue55/resolved --seeds 0 --jobs 2
 ```
 
-最後命令**只解析參數，勿執行產生的run_all.sh**：該工具的正式stage輸出仍使用歷史runs位置。接著用獨立校準產生器隔離輸出，兩套seed供並行測試；沒有啟動任何訓練。
+最後命令**只解析參數，勿執行產生的run_all.sh**：該工具的正式stage輸出仍使用歷史runs位置。接著用獨立校準產生器隔離輸出，兩套seed供並行測試；沒有啟動任何訓練。下列是4060的seed0／2；4070請分別把兩個 `--seed` 改為1／3，其他設定相同。主機／seed必須寫入交付，兩台不重複認領同一組。
 
 ```bash
 .venv/bin/python scripts/diagnostics/prepare_graph_calibration.py --parameter-budget runs/issue55/resolved/parameter_budget.json --output runs/issue55/probe0 --seed 0
-.venv/bin/python scripts/diagnostics/prepare_graph_calibration.py --parameter-budget runs/issue55/resolved/parameter_budget.json --output runs/issue55/probe1 --seed 1
+.venv/bin/python scripts/diagnostics/prepare_graph_calibration.py --parameter-budget runs/issue55/resolved/parameter_budget.json --output runs/issue55/probe1 --seed 2
 ```
 
 每套產生22份獨立stage設定：pretrain 12k／2epoch、BC 12k teacher＋1×6k DAgger／2epoch、PPO8192；正式batch／sequence_length不動。全部移除init_artifact，拒絕覆蓋既有校準目錄，沒有使用舊graph的checkpoint。`plan.json` 同時記錄探針與正式模板，短預算只屬校準，不會改正式YAML。

@@ -1,5 +1,6 @@
 """Independent checks against serialized artifacts and the original public tables."""
 
+import argparse
 import hashlib
 import json
 from collections import defaultdict, deque
@@ -19,7 +20,13 @@ from flytrack_core.contracts import (
     GROUP_VISUAL,
 )
 
-output = Path("data/subgraphs/main")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--graph-dir", type=Path, default=Path("data/subgraphs/main"))
+parser.add_argument(
+    "--output", type=Path, default=Path("artifacts/data_execution/graph_verification.json")
+)
+args = parser.parse_args()
+output = args.graph_dir
 manifest = json.loads((output / "manifest.json").read_text())
 config = manifest["config"]
 nodes = pq.read_table(output / "nodes.parquet").to_pandas()
@@ -41,7 +48,9 @@ checks["raw_table_hashes"] = all(
     sha(Path(config["raw_dir"]) / FILES[key]) == expected
     for key, expected in manifest["source_sha256"].items()
 )
-checks["budget"] = config["min_neurons"] <= len(nodes) <= config["max_neurons"]
+checks["budget"] = config["min_neurons"] <= len(nodes) and (
+    config["max_neurons"] is None or len(nodes) <= config["max_neurons"]
+)
 checks["node_id_order"] = np.array_equal(nodes.id.to_numpy(), graph["node_ids"])
 checks["edge_id_order"] = (
     np.array_equal(edges.pre.to_numpy(), graph["node_ids"][graph["pre"]])
@@ -94,7 +103,10 @@ t = set(np.flatnonzero(graph["group_mask"] & GROUP_TURN).tolist())
 f = set(np.flatnonzero(graph["group_mask"] & GROUP_FORWARD).tolist())
 vd, od, md = bfs(v, adjacency), bfs(o, adjacency), bfs(t | f, reverse)
 checks["every_node_on_bounded_path"] = all(
-    min(vd.get(i, 10**9), od.get(i, 10**9)) <= config["downstream_hops"]
+    (
+        vd.get(i, 10**9) <= config["downstream_hops"]
+        or od.get(i, 10**9) <= config.get("odor_downstream_hops", config["downstream_hops"])
+    )
     and md.get(i, 10**9) <= config["upstream_hops"]
     for i in range(len(nodes))
 )
@@ -126,6 +138,29 @@ convergence = {
 checks["convergence_annotation"] = convergence == set(
     np.flatnonzero(graph["group_mask"] & GROUP_CONVERGENCE).tolist()
 )
+branch_paths = {}
+for name, flag, seeds in (("visual", GROUP_VISUAL, v), ("olfactory", GROUP_OLFACTORY, o)):
+    active = set(np.flatnonzero(graph["group_mask"] & flag).tolist()) | t | f
+    branch_reverse = {i: [j for j in reverse[i] if j in active] for i in active}
+    rows = {}
+    for motor in sorted(t | f):
+        distances = bfs({motor}, branch_reverse)
+        hops = [distances[seed] for seed in seeds if seed in distances]
+        rows[str(int(graph["node_ids"][motor]))] = {
+            "reachable_seeds": len(hops),
+            "total_seeds": len(seeds),
+            "min_hops": min(hops) if hops else None,
+            "max_hops": max(hops) if hops else None,
+        }
+    branch_paths[name] = rows
+    if name in config.get("require_branch_motor_paths", []):
+        checks[f"{name}_branch_all_inputs_to_all_motors"] = all(
+            row["reachable_seeds"] == row["total_seeds"] > 0 for row in rows.values()
+        )
+if "branch_motor_paths" in manifest:
+    checks["branch_manifest_matches_independent_bfs"] = (
+        branch_paths == manifest["branch_motor_paths"]
+    )
 
 original_edges = {}
 ids = graph["node_ids"]
@@ -150,10 +185,10 @@ report = {
     "edges": len(edges),
     "convergence_neurons": len(convergence),
     "seed_type_dn_paths": seed_paths,
+    "branch_motor_paths": branch_paths,
     "artifact_sha256": {name: sha(output / name) for name in manifest["artifact_sha256"]},
 }
-Path("artifacts/data_execution/graph_verification.json").write_text(
-    json.dumps(report, indent=2, sort_keys=True) + "\n"
-)
+args.output.parent.mkdir(parents=True, exist_ok=True)
+args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 print(json.dumps(report, indent=2, sort_keys=True))
 assert report["passed"], checks

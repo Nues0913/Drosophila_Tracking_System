@@ -1,0 +1,462 @@
+{
+  "concentration": 0.02,
+  "conditions": [
+    "left_only",
+    "right_only",
+    "both"
+  ],
+  "cpu_threads": 1,
+  "driver_sha256": "1a4962eb80f23686ca66f53ac77a7a15eb46d35b3449b08e58aea2e96dbda22d",
+  "forward_ticks": 40,
+  "frontend_sha256": "47cccf33ad8a5ba708d557e500cf48b7f3946be1b0f9f6eecffec6349955ec69",
+  "gradient_ticks": 16,
+  "model_common": {
+    "allow_unknown_side_mean": false,
+    "alpha_init": 0.01,
+    "bias_init": 0.0,
+    "dense_threshold": 5000,
+    "init_spectral_radius": 0.9,
+    "log_std_init": -0.5,
+    "motor_input_gain": 100.0,
+    "motor_rate_beta": 10.0,
+    "odor_K": [
+      0.1,
+      0.3,
+      1.0
+    ],
+    "odor_adaptation_tau_s": 2.0,
+    "odor_hill_n": 2.0,
+    "odor_input_gain": 100.0,
+    "readout": "structured",
+    "readout_turn_bias": true,
+    "tau_init": 0.05,
+    "visual_bins": 5,
+    "visual_input_mapping": {}
+  },
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "results": [
+    {
+      "alpha_init": 0.00025583799232007965,
+      "central_batch4_40ticks_wall_seconds": 0.4883157540002685,
+      "central_state_f32_bytes_batch16": 164416,
+      "core_dense": true,
+      "dense_adjacency_f32_bytes_if_forced": 26399044,
+      "edges": 14165,
+      "graph": "data/subgraphs/main/graph.npz",
+      "graph_sha256": "a3c70c2759b0c9af179bb40ef0ff6e46ff469c96df0155c8fbe82bc4715f2e71",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          1.5728583093732595e-06
+        ],
+        [
+          0.0,
+          3.5253760870546103e-06
+        ],
+        [
+          0.0,
+          5.261419573798776e-06
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        1.0453164577484131e-05,
+        2.3387372493743896e-05,
+        3.4868717193603516e-05
+      ],
+      "neurons": 2569,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          3.2492381181470353e-12,
+          2.0566335479088593e-06
+        ],
+        "nonzero_count_v_omega": [
+          2132,
+          2158
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 6795,
+      "variant": "VO"
+    },
+    {
+      "alpha_init": 0.00025583799232007965,
+      "central_batch4_40ticks_wall_seconds": 0.4599855229998866,
+      "central_state_f32_bytes_batch16": 164416,
+      "core_dense": true,
+      "dense_adjacency_f32_bytes_if_forced": 26399044,
+      "edges": 14165,
+      "graph": "data/subgraphs/main/graph.npz",
+      "graph_sha256": "a3c70c2759b0c9af179bb40ef0ff6e46ff469c96df0155c8fbe82bc4715f2e71",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          5.587935447692871e-09
+        ],
+        [
+          0.0,
+          1.8149730749428272e-06
+        ],
+        [
+          0.0,
+          3.5304692573845387e-06
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        3.725290298461914e-08,
+        1.2099742889404297e-05,
+        2.3536384105682373e-05
+      ],
+      "neurons": 2569,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          9.403650513167047e-15,
+          2.669674377397957e-11
+        ],
+        "nonzero_count_v_omega": [
+          1380,
+          1397
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 6795,
+      "variant": "O"
+    },
+    {
+      "alpha_init": 0.0002558379924635615,
+      "central_batch4_40ticks_wall_seconds": 0.9752737609996984,
+      "central_state_f32_bytes_batch16": 328832,
+      "core_dense": true,
+      "dense_adjacency_f32_bytes_if_forced": 26399044,
+      "edges": 14165,
+      "graph": "data/subgraphs/main/graph.npz",
+      "graph_sha256": "a3c70c2759b0c9af179bb40ef0ff6e46ff469c96df0155c8fbe82bc4715f2e71",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "neurons": 2569,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          6.106395618511338e-15,
+          1.6309659785912478e-12
+        ],
+        "nonzero_count_v_omega": [
+          1553,
+          1579
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 6767,
+      "variant": "VO-late"
+    },
+    {
+      "alpha_init": 0.00023766919574628602,
+      "central_batch4_40ticks_wall_seconds": 0.08711287599999196,
+      "central_state_f32_bytes_batch16": 399616,
+      "core_dense": false,
+      "dense_adjacency_f32_bytes_if_forced": 155950144,
+      "edges": 35627,
+      "graph": "data/subgraphs/olfactory_v2/graph.npz",
+      "graph_sha256": "f28f28778497c01f8d33ae80196a9844f9d56f5ee72ba1944b0acf219ad1b531",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          5.694612627848983e-05
+        ],
+        [
+          2.9802322387695312e-08,
+          7.867347449064255e-06
+        ],
+        [
+          2.9802322387695312e-08,
+          5.157652776688337e-05
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        0.0006833970546722412,
+        0.0006775930523872375,
+        0.0013298839330673218
+      ],
+      "neurons": 6244,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          1.8533164336531627e-08,
+          8.431222522631288e-05
+        ],
+        "nonzero_count_v_omega": [
+          5844,
+          5870
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 16663,
+      "variant": "VO"
+    },
+    {
+      "alpha_init": 0.00023766919574628602,
+      "central_batch4_40ticks_wall_seconds": 0.08841633299971363,
+      "central_state_f32_bytes_batch16": 399616,
+      "core_dense": false,
+      "dense_adjacency_f32_bytes_if_forced": 155950144,
+      "edges": 35627,
+      "graph": "data/subgraphs/olfactory_v2/graph.npz",
+      "graph_sha256": "f28f28778497c01f8d33ae80196a9844f9d56f5ee72ba1944b0acf219ad1b531",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          6.32934388704598e-05
+        ],
+        [
+          0.0,
+          1.8316786736249924e-06
+        ],
+        [
+          2.9802322387695312e-08,
+          7.021689089015126e-05
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        0.0007276162505149841,
+        0.0006988421082496643,
+        0.0014499947428703308
+      ],
+      "neurons": 6244,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          1.3953538768873841e-08,
+          9.8653748864308e-05
+        ],
+        "nonzero_count_v_omega": [
+          5406,
+          5437
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 16663,
+      "variant": "O"
+    },
+    {
+      "alpha_init": 0.00023766919809694632,
+      "central_batch4_40ticks_wall_seconds": 0.1771578140001111,
+      "central_state_f32_bytes_batch16": 799232,
+      "core_dense": false,
+      "dense_adjacency_f32_bytes_if_forced": 155950144,
+      "edges": 35627,
+      "graph": "data/subgraphs/olfactory_v2/graph.npz",
+      "graph_sha256": "f28f28778497c01f8d33ae80196a9844f9d56f5ee72ba1944b0acf219ad1b531",
+      "max_abs_action_delta_v_omega": [
+        [
+          0.0,
+          6.817953544668853e-05
+        ],
+        [
+          0.0,
+          1.0213610948994756e-05
+        ],
+        [
+          0.0,
+          8.272493141703308e-05
+        ]
+      ],
+      "max_abs_motor_rate_delta": [
+        0.0003674700856208801,
+        0.00035409629344940186,
+        0.0007323697209358215
+      ],
+      "neurons": 6244,
+      "odor_contrast_raw_alpha_gradient": {
+        "max_abs_v_omega": [
+          0.0,
+          0.00010401658801129088
+        ],
+        "nonzero_count_v_omega": [
+          0,
+          2192
+        ]
+      },
+      "projection_checks": {
+        "left_changes_left_ORNs": true,
+        "left_does_not_change_other_side": true,
+        "no_odor_injection_at_nonseed": true,
+        "right_changes_right_ORNs": true,
+        "right_does_not_change_other_side": true
+      },
+      "trainable_parameters": 16179,
+      "variant": "VO-late"
+    }
+  ],
+  "schema_version": 1,
+  "seed": 55,
+  "sensor_contract_sha256": "980a9dc57705e67f6637d7b167a831513f64c8a523ac7a91397cf2d72b437937",
+  "structure": {
+    "data/subgraphs/main/graph.npz": {
+      "ORN_first_targets": [
+        {
+          "id": 10176,
+          "side": 1,
+          "type": "DM1_lPN"
+        },
+        {
+          "id": 10208,
+          "side": -1,
+          "type": "DM1_lPN"
+        },
+        {
+          "id": 10390,
+          "side": 1,
+          "type": "VA2_adPN"
+        },
+        {
+          "id": 10561,
+          "side": -1,
+          "type": "VA2_adPN"
+        }
+      ],
+      "ORN_side_type_counts": [
+        {
+          "count": 34,
+          "side": -1,
+          "type": "ORN_DM1"
+        },
+        {
+          "count": 39,
+          "side": 1,
+          "type": "ORN_DM1"
+        },
+        {
+          "count": 29,
+          "side": -1,
+          "type": "ORN_VA2"
+        },
+        {
+          "count": 40,
+          "side": 1,
+          "type": "ORN_VA2"
+        }
+      ],
+      "odor_exclusive": 609,
+      "olfactory_population": 613,
+      "shared_population": 4,
+      "visual_exclusive": 1956,
+      "visual_population": 1960
+    },
+    "data/subgraphs/olfactory_v2/graph.npz": {
+      "ORN_first_targets": [
+        {
+          "id": 10169,
+          "side": 1,
+          "type": "lLN2F_b"
+        },
+        {
+          "id": 10176,
+          "side": 1,
+          "type": "DM1_lPN"
+        },
+        {
+          "id": 10208,
+          "side": -1,
+          "type": "DM1_lPN"
+        },
+        {
+          "id": 10390,
+          "side": 1,
+          "type": "VA2_adPN"
+        },
+        {
+          "id": 10473,
+          "side": 1,
+          "type": "il3LN6"
+        },
+        {
+          "id": 10561,
+          "side": -1,
+          "type": "VA2_adPN"
+        },
+        {
+          "id": 67052,
+          "side": 1,
+          "type": "lLN2T_b"
+        },
+        {
+          "id": 523591,
+          "side": -1,
+          "type": "il3LN6"
+        }
+      ],
+      "ORN_side_type_counts": [
+        {
+          "count": 35,
+          "side": -1,
+          "type": "ORN_DM1"
+        },
+        {
+          "count": 39,
+          "side": 1,
+          "type": "ORN_DM1"
+        },
+        {
+          "count": 29,
+          "side": -1,
+          "type": "ORN_VA2"
+        },
+        {
+          "count": 40,
+          "side": 1,
+          "type": "ORN_VA2"
+        }
+      ],
+      "odor_exclusive": 2980,
+      "olfactory_population": 3463,
+      "shared_population": 483,
+      "visual_exclusive": 2781,
+      "visual_population": 3264
+    }
+  },
+  "torch": "2.9.1+cu126",
+  "training": false
+}

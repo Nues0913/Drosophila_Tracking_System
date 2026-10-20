@@ -17,11 +17,40 @@ import platform
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from flytrack_core.contracts import SensorContract, file_sha256
 from flytrack_core.model import build_policy, count_trainable_parameters
 from flytrack_core.model.graph import Graph
+
+
+def structure(path: Path) -> dict:
+    graph = Graph.load(path)
+    visual, odor = graph.population("visual"), graph.population("olfactory")
+    seeds = np.flatnonzero(graph.input_mask & 2)
+    targets = np.unique(graph.post[np.isin(graph.pre, seeds)])
+    names = graph.type_names[graph.type_index]
+    return {
+        "olfactory_population": int(odor.sum()),
+        "visual_population": int(visual.sum()),
+        "shared_population": int((visual & odor).sum()),
+        "odor_exclusive": int((odor & ~visual).sum()),
+        "visual_exclusive": int((visual & ~odor).sum()),
+        "ORN_first_targets": [
+            {"id": int(graph.node_ids[i]), "type": str(names[i]), "side": int(graph.side[i])}
+            for i in targets
+        ],
+        "ORN_side_type_counts": [
+            {
+                "type": str(name),
+                "side": side,
+                "count": int(((names[seeds] == name) & (graph.side[seeds] == side)).sum()),
+            }
+            for name in sorted(set(names[seeds]))
+            for side in (-1, 1)
+        ],
+    }
 
 
 def audit(path: Path, variant: str, options: dict) -> dict:
@@ -41,6 +70,26 @@ def audit(path: Path, variant: str, options: dict) -> dict:
         "valid": torch.ones(4, 3),
     }
     code, _ = model.sense(obs, model.encoder.initial_state(4, "cpu"))
+    external, _, _ = model.encoder.project(code)
+    odor_inputs = torch.as_tensor((graph.input_mask & 2) != 0)
+    projection_checks = {
+        "left_changes_left_ORNs": bool(
+            torch.any(external[1, odor_inputs] != external[0, odor_inputs])
+        ),
+        "right_changes_right_ORNs": bool(
+            torch.any(external[2, odor_inputs] != external[0, odor_inputs])
+        ),
+        "left_does_not_change_other_side": bool(
+            torch.all(external[1, graph.side != -1] == external[0, graph.side != -1])
+        ),
+        "right_does_not_change_other_side": bool(
+            torch.all(external[2, graph.side != 1] == external[0, graph.side != 1])
+        ),
+        "no_odor_injection_at_nonseed": bool(
+            torch.all(external[1:, ~odor_inputs] == external[0, ~odor_inputs])
+        ),
+    }
+    assert all(projection_checks.values()), projection_checks
     max_delta = torch.zeros(3, 2)
     motor = torch.as_tensor(graph.population("turn") | graph.population("forward"))
     max_motor_delta = torch.zeros(3)
@@ -75,6 +124,7 @@ def audit(path: Path, variant: str, options: dict) -> dict:
         "trainable_parameters": count_trainable_parameters(model),
         "core_dense": model.core.dense,
         "alpha_init": model.core.init_alpha,
+        "projection_checks": projection_checks,
         "central_batch4_40ticks_wall_seconds": elapsed,
         "max_abs_action_delta_v_omega": max_delta.tolist(),
         "max_abs_motor_rate_delta": max_motor_delta.tolist(),
@@ -113,6 +163,10 @@ def main():
             print(json.dumps(row), flush=True)
     result = {
         "schema_version": 1,
+        "driver_sha256": file_sha256(Path(__file__)),
+        "frontend_sha256": file_sha256("artifacts/frontend/frontend.npz"),
+        "sensor_contract_sha256": file_sha256("configs/sensor_contract.json"),
+        "structure": {str(path): structure(path) for path in args.graphs},
         "training": False,
         "torch": torch.__version__,
         "platform": platform.platform(),

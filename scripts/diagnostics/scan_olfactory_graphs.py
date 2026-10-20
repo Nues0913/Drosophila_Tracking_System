@@ -121,6 +121,7 @@ def main():
         p.error("thresholds and hop budgets must be positive")
     config = yaml.safe_load(args.config.read_text())
     result = {
+        "driver_sha256": file_sha256(Path(__file__)),
         "config": config,
         "source_sha256": {k: file_sha256(Path(config["raw_dir"]) / f) for k, f in FILES.items()},
         "results": scan(config, args.thresholds, args.odor_hops),

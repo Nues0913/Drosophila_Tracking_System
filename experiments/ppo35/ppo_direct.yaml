@@ -1,0 +1,75 @@
+variant: V
+seed: 0
+sensor_contract_path: configs/sensor_contract.json
+graph_path: data/subgraphs/main/graph.npz
+frontend_path: artifacts/frontend/frontend.npz
+init_artifact: null  # Filled by prepare.py from the required actor environment variable.
+model:
+  odor_K:
+  - 0.1
+  - 0.3
+  - 1.0
+  readout: structured
+  visual_bins: 5
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
+env:
+  episode_seconds: 60
+  target_motion: curved
+  plume_model: puff
+train:
+  num_envs: 8
+  total_steps: 500000
+  rollout_steps: 256
+  sequence_length: 32
+  sequence_batch_size: 16
+  update_epochs: 4
+  learning_rate: 0.001
+  readout_learning_rate: 0.01
+  core_bias_learning_rate: 0.0
+  critic_warmup_updates: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  activity_coef: 0.0001
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  critic_hidden_size: 128
+  curriculum:
+  - until: 0.15
+    target_motion: stationary
+    plume_model: gaussian
+    scenario: normal
+  - until: 0.35
+    target_motion: linear
+    plume_model: gaussian
+    scenario: normal
+  - until: 0.6
+    target_motion:
+    - curved
+    - wander
+    plume_model: puff
+    scenario: normal
+  - until: 0.75
+    target_motion:
+    - curved
+    - wander
+    plume_model: puff
+    scenario: occlusion
+  - until: 0.9
+    target_motion:
+    - curved
+    - wander
+    plume_model: puff
+    scenario: noise
+  - until: 1.0
+    target_motion:
+    - curved
+    - wander
+    plume_model: puff
+    scenario: conflict

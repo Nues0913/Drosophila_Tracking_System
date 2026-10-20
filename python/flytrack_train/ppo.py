@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from functools import partial
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +128,25 @@ def _critic_loss(value, value_target, old_value, value_clip):
     )
 
 
+def _set_update_learning_rates(optimizer, policy, train, iteration):
+    """Derive rates from configuration, never from checkpoint optimizer rates."""
+    base = float(train.get("learning_rate", 3e-4))
+    groups = parameter_groups(policy, {**train, "learning_rate": base})
+    warming_up = iteration <= train.get("critic_warmup_updates", 0)
+    for group, configured in zip(optimizer.param_groups[:-1], groups, strict=True):
+        group["lr"] = 0.0 if warming_up else configured["lr"]
+    optimizer.param_groups[-1]["lr"] = base
+    return warming_up
+
+
+def _freeze_zero_rate_gradients(parameters):
+    # Permanently frozen groups skip Adam, including moments and weight decay.
+    # Warmup only sets lr=0, preserving moments as in the diagnostic candidate.
+    # Do this after clipping so default gradient norms/clipping stay unchanged.
+    for parameter in parameters:
+        parameter.grad = None
+
+
 class PrivilegedCritic(nn.Module):
     def __init__(self, state_size: int = 12, hidden_size: int = 128):
         super().__init__()
@@ -201,6 +220,18 @@ def curriculum_stage(train: dict[str, Any], progress: float) -> dict[str, Any]:
 
 def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.device) -> None:
     train = config.get("train", {})
+    warmup = train.get("critic_warmup_updates", 0)
+    if isinstance(warmup, bool) or not isinstance(warmup, Integral) or warmup < 0:
+        raise ValueError("train.critic_warmup_updates must be a nonnegative integer")
+    for key in ("learning_rate", "core_bias_learning_rate", "readout_learning_rate"):
+        rate = train.get(key)
+        if rate is not None and (
+            isinstance(rate, bool)
+            or not isinstance(rate, Real)
+            or not np.isfinite(rate)
+            or rate < 0
+        ):
+            raise ValueError(f"train.{key} must be a finite nonnegative number")
     value_clip = train.get("value_clip")
     if value_clip is not None:
         if (
@@ -233,9 +264,13 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     actor_parameters, critic_parameters = list(policy.parameters()), list(critic.parameters())
     # Actor groups as in pretraining and BC, so a bias freeze (#4) holds through PPO.
     learning_rate = float(train.get("learning_rate", 3e-4))
+    actor_groups = parameter_groups(policy, {**train, "learning_rate": learning_rate})
+    frozen_actor_parameters = [
+        parameter for group in actor_groups if group["lr"] == 0 for parameter in group["params"]
+    ]
     optimizer = torch.optim.Adam(
         [
-            *parameter_groups(policy, {**train, "learning_rate": learning_rate}),
+            *actor_groups,
             {"params": list(critic.parameters()), "lr": learning_rate},
         ],
         eps=1e-5,
@@ -341,6 +376,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         )
         while consumed < total_steps:
             iteration += 1
+            warming_up = _set_update_learning_rates(optimizer, policy, train, iteration)
             steps = min(rollout_steps, (total_steps - consumed) // n_envs)
             buffer = {
                 key: []
@@ -522,6 +558,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                         gradient_norms = _clip_gradients(
                             actor_parameters, critic_parameters, max_grad_norm, separate_grad_clip
                         )
+                        _freeze_zero_rate_gradients(frozen_actor_parameters)
                         optimizer.step()
                         approx_kl = ((ratio - 1) - logratio).mean().detach().item()
                         diagnostics.append(
@@ -545,6 +582,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 {
                     "iteration": iteration,
                     "environment_steps": consumed,
+                    "critic_warmup": warming_up,
+                    "actor_learning_rates": [g["lr"] for g in optimizer.param_groups[:-1]],
                     "actor_loss": float(average[0]),
                     "critic_loss": float(average[1]),
                     "entropy": float(average[2]),
@@ -570,6 +609,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 optimizer=optimizer.state_dict(),
                 environment_steps=consumed,
                 iteration=iteration,
+                critic_warmup=warming_up,
                 reports=reports,
                 episode_returns=episode_returns,
                 running_returns=torch.as_tensor(running_returns),
@@ -592,6 +632,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
             recovery.progress(
                 force=True,
                 phase="checkpoint",
+                critic_warmup=warming_up,
+                actor_learning_rates=reports[-1]["actor_learning_rates"],
                 environment_steps=consumed,
                 total_steps=total_steps,
                 iteration=iteration,

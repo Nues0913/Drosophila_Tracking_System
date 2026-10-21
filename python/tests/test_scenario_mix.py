@@ -100,3 +100,11 @@ def test_bc_collects_from_a_mixed_world(tmp_path):
     torch.manual_seed(0)
     imitation.train_bc(config, tmp_path, 0, torch.device("cpu"))
     load_policy_artifact(tmp_path / "actor", device="cpu")
+
+
+def test_attribute_probe_before_init_is_an_attribute_error():
+    import copy as copy_module
+
+    blank = ScenarioMixEnv.__new__(ScenarioMixEnv)
+    assert not hasattr(blank, "scenario_spec")
+    copy_module.copy(blank)

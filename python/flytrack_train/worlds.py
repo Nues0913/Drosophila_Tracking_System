@@ -117,4 +117,9 @@ class ScenarioMixEnv:
 
     def __getattr__(self, name):
         # Only called for attributes missing on the wrapper: read the active world.
-        return getattr(self.__dict__["active"], name)
+        # Before __init__ sets it (failed init, copy/pickle probes) behave like a
+        # plain object, so hasattr() returns False instead of raising KeyError.
+        active = self.__dict__.get("active")
+        if active is None:
+            raise AttributeError(name)
+        return getattr(active, name)

@@ -1,10 +1,14 @@
 # 目前進度與已知問題
 
-最後更新：2026-10-20（現行正式基準 `main` 0a01595；#55 候選另行送審）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-10-21（#32、#56 已併入 main；#55 的 no-KC 對照另行送審）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
 
-## #55 重新萃取候選（待審查與GPU測試）
+## #55 重新萃取候選（v2 已併入，no-KC 對照待審）
 
-依使用者指派，由PM提交獨立 `olfactory_v2` 圖：6,244節點／35,627邊，嗅覺群3,463、三跳內匯流59；143個ORN在VO-late隔離分支均能到達全部6個DN。舊圖的完整VO路徑可達，但VO-late嗅覺分支實際斷路，新檢查補上這個缺口。新舊圖、權重與證據分開，訓練預設仍是舊圖。全套174測試通過，初始化氣味反應較強但仍弱、前進反應幾乎為零；**沒有宣稱#4解決，4060／4070完整訓練2–3天仍待校準**。詳見[候選報告與兩位teammate測試安排](olfactory_reextraction_55.md)。下方既有訓練／部署數據均屬舊圖。
+`olfactory_v2` 候選圖已由 PR #56 併入 main，但正式預設仍是舊圖。這張圖有 6,244 個節點、35,627 條邊，嗅覺群 3,463、三跳內匯流 59，143 個 ORN 在 VO-late 隔離分支都能到達全部 6 個 DN。
+
+兩台 GPU 的有界校準都沒有 OOM。用這次的數字外推正式矩陣：4060 約 58 小時、4070 約 42 小時（NOT VERIFIED）。
+
+依 #55 的 Decision 另做了 no-KC 對照圖：排除 Kenyon cell、APL 和 DPM 後是 4,502 個節點、31,682 條邊。通路、隔離、參數公平和初始化氣味反應都和 v2 相當。因為這張圖的節點數低於原本的門檻，共同設定的 `dense_threshold` 改為 4000，讓它走 sparse core。採用與否等審查。**這些都沒有宣稱 #4 已解決。** 詳見[候選報告](olfactory_reextraction_55.md)。下方既有的訓練和部署數據都屬於舊圖。
 
 ## 一句話
 

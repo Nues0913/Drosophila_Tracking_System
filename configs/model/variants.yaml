@@ -16,7 +16,10 @@ common:
   odor_input_gain: 100.0
   # Offset for the DN left/right structural asymmetry (not a behavioural turn bias).
   readout_turn_bias: true
-  dense_threshold: 5000
+  # Graphs at or above this node count use the sparse core. 4000 keeps the #55 no-KC
+  # graph (4,502 nodes) sparse: dense was ~2x slower on CUDA (RTX 2060 probe) and ~20x
+  # on one CPU thread, with matching outputs. main (2,569) stays dense, olfactory_v2 sparse.
+  dense_threshold: 4000
   readout: structured
   odor_K: [0.1, 0.3, 1.0]
   odor_hill_n: 2.0

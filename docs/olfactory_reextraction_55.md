@@ -136,7 +136,7 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 | 參數 VO／VO-late／GRU | 16,663／16,179／16,460 | 16,242／15,788（−2.8%）／15,516（−4.5%） |
 | 初始化 40 tick 最大轉向差（VO，左／右／雙側） | 5.69e-5／7.87e-6／5.16e-5 | 5.77e-5／7.29e-6／5.29e-5 |
 
-- **少掉的 1,742 個神經元**：1,681 個 KC、2 個 APL、24 個 MBON、1 個 ALPN，另外 34 個是只能經由 KC／MBON 才接得上的 LH、CRE、SIP 類神經元，在最終剪枝時被移除。no-KC 沒有任何 v2 以外的新節點。整個蕈狀體通路都被拿掉，這正是這張對照圖要測的。
+- **少掉的 1,742 個神經元**：1,681 個 KC、2 個 APL、24 個 MBON、1 個 ALPN，另外 34 個是只能經由 KC／MBON 才接得上的 LH、CRE、SIP 類神經元，在最終剪枝時被移除。no-KC 沒有任何 v2 以外的新節點。KC 和 APL／DPM 全部移除，所以從 ORN 經 KC 到 MBON 的蕈狀體通路已不存在，這正是這張對照圖要測的。但圖裡仍留有 21 個 MBON（v2 是 45 個），它們沒有 KC 輸入，只剩其他來源（@MiLong9487 在 PR #59 的 review 指出）。
 - **初始化的氣味反應幾乎沒變**，三個變體、三種氣味條件都在 ±15% 內，投射檢查也全部通過。這和「固定連接下，KC 對初始轉向沒有作用」一致，但**不代表訓練後不會用到 KC**，也不能取代 #4 和 #25 的 gate。
 - **GRU 參數差 −4.5%**，在 ±5% 以內，但比 v2 更接近邊界。
 - **重現性**：在 commit `09d7043` 萃取兩次，兩次產物逐位元相同（`8a9d133` 的首次萃取與此相比只有 manifest 的 `git_commit` 與 cost rationale 文字不同，graph／parquet 全部相同）。用修改後的萃取器重跑 v2，`graph.npz`、`nodes.parquet`、`edges.parquet` 也都逐位元相同（記錄見 `olfactory_v2_nokc_reproducibility.json`）。

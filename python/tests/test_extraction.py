@@ -269,3 +269,68 @@ def test_separate_odor_depth_repairs_isolated_branch_without_expanding_vision(tm
         # Node 7 is an odor-only PN; its longer budget does not label it visual.
         assert graph["group_mask"][6] & 2
         assert not graph["group_mask"][6] & 1
+
+
+def test_class_exclusion_removes_routes_before_reach_and_guards_seeds(tmp_path):
+    import json
+
+    import pyarrow.feather as feather
+
+    # O -> PN -> OUT -> DNs survives; O -> KC -> OUT and V -> KC must disappear entirely.
+    feather.write_feather(
+        pa.table(
+            {
+                "bodyId": list(range(1, 10)),
+                "type": ["V", "O", "PN", "KC_a", "OUT", "TURN", "TURN", "FWD", "APL"],
+                "somaSide": ["L", "L", "L", "L", "L", "L", "R", "R", "L"],
+                "superclass": ["central"] * 9,
+                "class": [None, None, "ALPN", "Kenyon_Cell", None, None, None, None, None],
+            }
+        ),
+        tmp_path / FILES["annotations"],
+    )
+    feather.write_feather(
+        pa.table({"body": list(range(1, 10)), "consensus_nt": ["acetylcholine"] * 9}),
+        tmp_path / FILES["neurotransmitters"],
+    )
+    feather.write_feather(
+        pa.table(
+            {
+                "body_pre": [2, 3, 2, 4, 1, 1, 9, 5, 5, 5],
+                "body_post": [3, 5, 4, 5, 4, 5, 5, 6, 7, 8],
+                "weight": [8] * 10,
+            }
+        ),
+        tmp_path / FILES["weights"],
+    )
+    config = {
+        "raw_dir": str(tmp_path),
+        "output": str(tmp_path / "out"),
+        "min_synapses": 5,
+        "downstream_hops": 3,
+        "upstream_hops": 3,
+        "selection": {
+            "visual_seed_patterns": ["V"],
+            "odor_seed_patterns": ["O"],
+            "turn_dn_patterns": ["TURN"],
+            "forward_dn_patterns": ["FWD"],
+        },
+    }
+    extract(config)
+    manifest = json.loads((tmp_path / "out/manifest.json").read_text())
+    assert manifest["neurons"] == 8
+    assert "excluded_by_rule" not in manifest
+    config["excluded_classes"] = ["Kenyon_Cell"]
+    config["excluded_type_patterns"] = ["APL", "DPM"]
+    extract(config)
+    manifest = json.loads((tmp_path / "out/manifest.json").read_text())
+    with np.load(tmp_path / "out/graph.npz") as graph:
+        assert graph["node_ids"].tolist() == [1, 2, 3, 5, 6, 7, 8]
+    assert manifest["excluded_by_rule"] == {
+        "classes": ["Kenyon_Cell"],
+        "type_patterns": ["APL", "DPM"],
+        "in_scope_neurons": 2,
+    }
+    config["excluded_type_patterns"] = ["FWD"]
+    with pytest.raises(ValueError, match="removes a sensory seed or motor"):
+        extract(config)

@@ -152,9 +152,16 @@ def main():
         ],
     )
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument(
+        "--dense-threshold",
+        type=int,
+        help="Override the shared dense_threshold to compare dense and sparse cores (#55).",
+    )
     args = p.parse_args()
     torch.set_num_threads(1)
     options = yaml.safe_load(Path("configs/model/variants.yaml").read_text())["common"]
+    if args.dense_threshold is not None:
+        options["dense_threshold"] = args.dense_threshold
     rows = []
     for graph in args.graphs:
         for variant in ("VO", "O", "VO-late"):

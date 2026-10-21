@@ -1,0 +1,60 @@
+{
+  "device": "NVIDIA GeForce RTX 2060",
+  "torch": "2.9.1+cu126",
+  "rows": [
+    {
+      "graph": "olfactory_v2",
+      "variant": "VO",
+      "dense": false,
+      "b4_t40_fwd_median_ms": 38.57,
+      "b4_t40_fwd_peak_MiB": 36.2,
+      "b64_t16_fwdbwd_median_ms": 113.1,
+      "b64_t16_fwdbwd_peak_MiB": 635.7
+    },
+    {
+      "graph": "olfactory_v2",
+      "variant": "VO-late",
+      "dense": false,
+      "b4_t40_fwd_median_ms": 76.02,
+      "b4_t40_fwd_peak_MiB": 45.8,
+      "b64_t16_fwdbwd_median_ms": 234.14,
+      "b64_t16_fwdbwd_peak_MiB": 1191.0
+    },
+    {
+      "graph": "olfactory_v2_nokc",
+      "variant": "VO",
+      "dense": true,
+      "b4_t40_fwd_median_ms": 71.2,
+      "b4_t40_fwd_peak_MiB": 198.2,
+      "b64_t16_fwdbwd_median_ms": 264.28,
+      "b64_t16_fwdbwd_peak_MiB": 785.9
+    },
+    {
+      "graph": "olfactory_v2_nokc",
+      "variant": "VO-late",
+      "dense": true,
+      "b4_t40_fwd_median_ms": 148.54,
+      "b4_t40_fwd_peak_MiB": 276.7,
+      "b64_t16_fwdbwd_median_ms": 534.44,
+      "b64_t16_fwdbwd_peak_MiB": 1310.0
+    },
+    {
+      "graph": "olfactory_v2_nokc",
+      "variant": "VO",
+      "dense": false,
+      "b4_t40_fwd_median_ms": 38.93,
+      "b4_t40_fwd_peak_MiB": 43.5,
+      "b64_t16_fwdbwd_median_ms": 105.93,
+      "b64_t16_fwdbwd_peak_MiB": 486.8
+    },
+    {
+      "graph": "olfactory_v2_nokc",
+      "variant": "VO-late",
+      "dense": false,
+      "b4_t40_fwd_median_ms": 76.73,
+      "b4_t40_fwd_peak_MiB": 44.7,
+      "b64_t16_fwdbwd_median_ms": 217.27,
+      "b64_t16_fwdbwd_peak_MiB": 882.7
+    }
+  ]
+}

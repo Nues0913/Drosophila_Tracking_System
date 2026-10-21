@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 from flytrack_core.contracts import SensorContract
 from flytrack_core.model import (
     assert_parameter_budget,
@@ -152,6 +153,15 @@ def test_dense_and_csr_dynamics_agree(graph):
     torch.testing.assert_close(
         dense(external, state), sparse(external, state), atol=1e-6, rtol=1e-5
     )
+
+
+def test_direct_runs_use_the_matrix_dense_threshold():
+    """pretrain/bc/ppo fall back to DEFAULT_CONFIG; only the matrix reads variants.yaml."""
+    root = Path(__file__).resolve().parents[2]
+    common = yaml.safe_load((root / "configs/model/variants.yaml").read_text())["common"]
+    assert DEFAULT_CONFIG["dense_threshold"] == common["dense_threshold"] == 4000
+    # main (2,569) stays dense; no-KC (4,502) and olfactory_v2 (6,244) are sparse.
+    assert 2569 < DEFAULT_CONFIG["dense_threshold"] <= 4502
 
 
 def test_dense_and_csr_parameter_gradients_agree(graph):

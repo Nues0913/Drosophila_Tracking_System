@@ -121,3 +121,36 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 本PR不改policy方程、前端、感測契約、訓練預設、正式預算或G3完整端到端50ms門檻；主動選新graph才會使用候選。舊圖／模型可留在原固定commit工作樹執行。新graph hash、節點序／type-pair與參數預算不同，**舊pretrain／BC／PPO權重不能遷移或resume到新圖**；需要新一輪訓練驗證。`scripts/verify_subgraph.py`新增CLI也使既有source fingerprint改變，連舊圖resume也應留在舊commit，沒有繞過recovery。匯出artifact內嵌圖的載入流程不變，部署相容仍須review。
 
 兩位必要Review、GPU成本與模態學習結果未齊前，不正式取代main圖、不啟動#28矩陣、不關閉#4。若候選不合用，保留其證據，訓練預設仍指向舊圖；不需回滾ROS／前端工程。
+
+## no-KC 對照（2026-10-21，#55 Decision 6317021016）
+
+@MiLong9487 在 PR #56 的 review 指出，嗅覺群 3,463 個神經元裡有 1,681 個 Kenyon cell。依 Decision，我做了一張對照圖：設定 `configs/extraction/olfactory_v2_nokc.yaml`，萃取規則和 v2 完全相同，只多了一條「在任何 BFS 之前，先排除蕈狀體內在神經元」（`excluded_classes: [Kenyon_Cell]`、`excluded_type_patterns: [APL, DPM]`）。選擇規則在開跑前就定好了：**#56 的檢查全部通過就採用 no-KC**，否則保留 v2。
+
+| 指標 | v2 | no-KC |
+| --- | ---: | ---: |
+| 神經元／邊／type pair | 6,244／35,627／13,165 | 4,502／31,682／12,834 |
+| 嗅覺群／視覺群／共享 | 3,463／3,264／483 | 1,722／3,263／483 |
+| 三跳匯流 | 59 | 59 |
+| 隔離分支：每個種子到 6 個 DN | 嗅 143、視 583 全通 | 同左，跳數範圍也相同（嗅 4–7、視 2–7） |
+| 獨立 verifier | 22/22 | 22/22 |
+| 參數 VO／VO-late／GRU | 16,663／16,179／16,460 | 16,242／15,788（−2.8%）／15,516（−4.5%） |
+| 初始化 40 tick 最大轉向差（VO，左／右／雙側） | 5.69e-5／7.87e-6／5.16e-5 | 5.77e-5／7.29e-6／5.29e-5 |
+
+- **少掉的 1,742 個神經元**：1,681 個 KC、2 個 APL、24 個 MBON、1 個 ALPN，另外 34 個是只能經由 KC／MBON 才接得上的 LH、CRE、SIP 類神經元，在最終剪枝時被移除。no-KC 沒有任何 v2 以外的新節點。KC 和 APL／DPM 全部移除，所以從 ORN 經 KC 到 MBON 的蕈狀體通路已不存在，這正是這張對照圖要測的。但圖裡仍留有 21 個 MBON（v2 是 45 個），它們沒有 KC 輸入，只剩其他來源（@MiLong9487 在 PR #59 的 review 指出）。
+- **初始化的氣味反應幾乎沒變**，三個變體、三種氣味條件都在 ±15% 內，投射檢查也全部通過。這和「固定連接下，KC 對初始轉向沒有作用」一致，但**不代表訓練後不會用到 KC**，也不能取代 #4 和 #25 的 gate。
+- **GRU 參數差 −4.5%**，在 ±5% 以內，但比 v2 更接近邊界。
+- **重現性**：在 commit `09d7043` 萃取兩次，兩次產物逐位元相同（`8a9d133` 的首次萃取與此相比只有 manifest 的 `git_commit` 與 cost rationale 文字不同，graph／parquet 全部相同）。用修改後的萃取器重跑 v2，`graph.npz`、`nodes.parquet`、`edges.parquet` 也都逐位元相同（記錄見 `olfactory_v2_nokc_reproducibility.json`）。
+- **dense／sparse 的陷阱**：4,502 個節點低於原本的 `dense_threshold: 5000`，所以 no-KC 會改走 dense core，輸出相同但慢很多：
+  - 單執行緒 CPU：VO 40 tick 從 0.074 秒變成 1.52 秒。
+  - 本機 RTX 2060 抽查（`scripts/diagnostics/probe_core_cost_cuda.py`）：batch 64 × 16 tick 前向加反向，VO 從 106 ms 變成 264 ms，VO-late 從 217 ms 變成 534 ms。
+
+  因此共同設定的 `dense_threshold` 改成 4000。main 圖（2,569 個節點）仍走 dense，v2 仍走 sparse，兩者都不受影響。no-KC 走 sparse 時：
+  - batch 4 的 rollout 前向和 v2 差不多（VO 38.9 對 38.6 ms）；
+  - batch 64 的更新快約 6–7%，峰值記憶體少約 25%。
+
+  2060 只是本機抽查，數字不能和 4060／4070 的校準比較。
+- **NOT RUN**：no-KC 的 4060／4070 成本校準、所有訓練、ROS／Gazebo、G3。正式矩陣的時間仍沿用 55-A／55-B 的估計。因為 rollout 是延遲瓶頸，預期 no-KC 不會比 v2 慢，但這點未經驗證。
+
+證據：[verifier](../artifacts/data_execution/olfactory_v2_nokc_verification.json)、[數值探針](../artifacts/data_execution/olfactory_v2_nokc_numeric.json)（dense 版本見 [`_dense5000`](../artifacts/data_execution/olfactory_v2_nokc_numeric_dense5000.json)）、[參數預算](../artifacts/data_execution/olfactory_v2_nokc_parameter_budget.json)、[重現性](../artifacts/data_execution/olfactory_v2_nokc_reproducibility.json)、[RTX 2060 抽查](../artifacts/data_execution/olfactory_v2_nokc_cuda_probe_rtx2060.json)。
+
+no-KC 圖的 graph SHA-256：`7c038015d797f6f899c4a2c2eb5a1dd84dc27e793e994612e614084ae98b58a4`。

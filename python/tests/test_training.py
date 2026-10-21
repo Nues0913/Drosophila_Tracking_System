@@ -362,6 +362,83 @@ def _assert_nested_equal(left, right):
         assert left == right
 
 
+@pytest.mark.parametrize("value_clip", ["omitted", None, 0.2, 1])
+def test_ppo_value_clipping_is_independent_of_actor_clip(tmp_path, monkeypatch, value_clip):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import ppo
+
+    monkeypatch.setattr(ppo, "prepare_policy", lambda *args: (_RecoveryPolicy(), SensorContract()))
+    monkeypatch.setattr(ppo, "make_env", lambda *args, **kwargs: _RecoveryEnv())
+    monkeypatch.setattr(ppo, "save_actor", lambda *args, **kwargs: None)
+    observed = []
+    original_loss = ppo._critic_loss
+
+    def record_loss(value, target, old_value, limit):
+        observed.append(limit)
+        return original_loss(value, target, old_value, limit)
+
+    monkeypatch.setattr(ppo, "_critic_loss", record_loss)
+    train = {
+        "num_envs": 1,
+        "total_steps": 2,
+        "rollout_steps": 2,
+        "sequence_length": 2,
+        "sequence_batch_size": 1,
+        "update_epochs": 1,
+        "critic_hidden_size": 4,
+        "clip_coef": 0.1,
+    }
+    if value_clip != "omitted":
+        train["value_clip"] = value_clip
+    ppo.train_ppo({"train": train}, tmp_path, 11, torch.device("cpu"))
+    assert observed == [None if value_clip == "omitted" else value_clip]
+
+
+def test_ppo_normalization_keeps_episode_metrics_in_raw_reward_units(tmp_path, monkeypatch):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import ppo
+
+    monkeypatch.setattr(ppo, "prepare_policy", lambda *args: (_RecoveryPolicy(), SensorContract()))
+    monkeypatch.setattr(ppo, "make_env", lambda *args, **kwargs: _RecoveryEnv())
+    monkeypatch.setattr(ppo, "save_actor", lambda *args, **kwargs: None)
+    running = np.zeros(2)
+    raw_returns, expected_reports, scaled_rewards = [], [], []
+    original_normalize = ppo.RewardNormalizer.normalize
+
+    def record_raw_rewards(self, rewards, terminated, truncated):
+        running[:] += rewards
+        for index, done in enumerate(np.asarray(terminated) | np.asarray(truncated)):
+            if done:
+                raw_returns.append(float(running[index]))
+                running[index] = 0
+        scaled = original_normalize(self, rewards, terminated, truncated)
+        scaled_rewards.append(scaled)
+        if len(scaled_rewards) % 2 == 0:
+            expected_reports.append(float(np.mean(raw_returns[-20:])) if raw_returns else None)
+        return scaled
+
+    monkeypatch.setattr(ppo.RewardNormalizer, "normalize", record_raw_rewards)
+    config = {
+        "train": {
+            "num_envs": 2,
+            "total_steps": 12,
+            "rollout_steps": 2,
+            "sequence_length": 2,
+            "sequence_batch_size": 2,
+            "update_epochs": 1,
+            "critic_hidden_size": 4,
+        }
+    }
+    ppo.train_ppo(config, tmp_path, 11, torch.device("cpu"))
+    checkpoint = torch.load(tmp_path / "training_checkpoint.pt", weights_only=True)
+    assert checkpoint["episode_returns"] == raw_returns
+    assert [row["mean_last_20_episode_return"] for row in checkpoint["reports"]] == expected_reports
+    assert checkpoint["reward_normalizer"]["count"] == 12.0001
+    for row in checkpoint["reports"]:
+        assert row["actor_grad_norm_clipped"] <= 0.5 + 1e-7
+        assert row["critic_grad_norm_clipped"] <= 0.5 + 1e-7
+
+
 @pytest.mark.parametrize(
     "algorithm,interrupt_phase",
     [
@@ -455,6 +532,7 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     if algorithm == "ppo":
         for key in (
             "critic",
+            "reward_normalizer",
             "recurrent_state",
             "observations",
             "privileged",

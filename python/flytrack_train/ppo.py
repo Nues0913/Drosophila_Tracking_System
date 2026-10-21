@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from functools import partial
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,106 @@ from .imitation import parameter_groups
 from .losses import activity_penalty
 from .parallel import EnvPool
 from .recovery import Recovery, restore_rng
+
+
+class RewardNormalizer:
+    """SB3-style discounted-return variance; never center the training reward."""
+
+    def __init__(self, num_envs: int, gamma: float, reward_clip: float = 10.0):
+        if not np.isfinite(reward_clip) or reward_clip <= 0:
+            raise ValueError("reward_clip must be finite and positive")
+        self.gamma = gamma
+        self.reward_clip = reward_clip
+        self.returns = np.zeros(num_envs, dtype=np.float64)
+        # Same small prior as VecNormalize's RunningMeanStd.
+        self.mean, self.var, self.count = 0.0, 1.0, 1e-4
+
+    @property
+    def std(self) -> float:
+        return float(np.sqrt(self.var + 1e-8))
+
+    def normalize(self, rewards, terminated, truncated) -> np.ndarray:
+        rewards = np.asarray(rewards, dtype=np.float64)
+        self.returns = self.gamma * self.returns + rewards
+        batch_mean, batch_var, batch_count = (
+            float(self.returns.mean()),
+            float(self.returns.var()),
+            self.returns.size,
+        )
+        delta = batch_mean - self.mean
+        count = self.count + batch_count
+        m2 = (
+            self.var * self.count
+            + batch_var * batch_count
+            + delta**2 * self.count * batch_count / count
+        )
+        self.mean += delta * batch_count / count
+        self.var, self.count = m2 / count, count
+        normalized = np.clip(rewards / self.std, -self.reward_clip, self.reward_clip)
+        # Terminal returns contribute to the moments before the slot is reset.
+        self.returns[np.asarray(terminated) | np.asarray(truncated)] = 0.0
+        return normalized.astype(np.float32)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "returns": torch.from_numpy(self.returns.copy()),
+            "mean": self.mean,
+            "var": self.var,
+            "count": self.count,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.returns = state["returns"].cpu().numpy().copy()
+        self.mean, self.var, self.count = state["mean"], state["var"], state["count"]
+
+
+def _gradient_norm(parameters: list[nn.Parameter]) -> torch.Tensor:
+    gradients = [
+        parameter.grad.detach().norm(2) for parameter in parameters if parameter.grad is not None
+    ]
+    return torch.stack(gradients).norm(2) if gradients else parameters[0].new_zeros(())
+
+
+def _clip_gradients(actor_parameters, critic_parameters, max_grad_norm, separate):
+    """Return actor/critic norms before and after clipping, in that order."""
+    if separate:
+        actor_norm = nn.utils.clip_grad_norm_(
+            actor_parameters, max_grad_norm, error_if_nonfinite=True
+        )
+        critic_norm = nn.utils.clip_grad_norm_(
+            critic_parameters, max_grad_norm, error_if_nonfinite=True
+        )
+    else:
+        actor_norm, critic_norm = (
+            _gradient_norm(actor_parameters),
+            _gradient_norm(critic_parameters),
+        )
+        # Preserve the original parameter order and single clipping call exactly.
+        nn.utils.clip_grad_norm_(
+            actor_parameters + critic_parameters, max_grad_norm, error_if_nonfinite=True
+        )
+    return tuple(
+        float(norm.detach())
+        for norm in (
+            actor_norm,
+            critic_norm,
+            _gradient_norm(actor_parameters),
+            _gradient_norm(critic_parameters),
+        )
+    )
+
+
+def _critic_loss(value, value_target, old_value, value_clip):
+    if value_clip is None:
+        return 0.5 * (value - value_target).square().mean()
+    value_clipped = old_value + (value - old_value).clamp(-value_clip, value_clip)
+    return (
+        0.5
+        * torch.maximum(
+            (value - value_target).square(),
+            (value_clipped - value_target).square(),
+        ).mean()
+    )
 
 
 class PrivilegedCritic(nn.Module):
@@ -99,9 +200,19 @@ def curriculum_stage(train: dict[str, Any], progress: float) -> dict[str, Any]:
 
 
 def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.device) -> None:
+    train = config.get("train", {})
+    value_clip = train.get("value_clip")
+    if value_clip is not None:
+        if (
+            isinstance(value_clip, bool)
+            or not isinstance(value_clip, Real)
+            or not np.isfinite(value_clip)
+            or value_clip <= 0
+        ):
+            raise ValueError("train.value_clip must be null or a finite positive number")
+        value_clip = float(value_clip)
     seed_all(seed)
     policy, contract = prepare_policy(config, device)
-    train = config.get("train", {})
     n_envs = int(train.get("num_envs", 8))
     rollout_steps = int(train.get("rollout_steps", 256))
     sequence_length = int(train.get("sequence_length", 32))
@@ -119,7 +230,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     if total_steps % n_envs:
         raise ValueError("total_steps must be divisible by num_envs for exact comparison budgets")
     critic = PrivilegedCritic(hidden_size=int(train.get("critic_hidden_size", 128))).to(device)
-    parameters = list(policy.parameters()) + list(critic.parameters())
+    actor_parameters, critic_parameters = list(policy.parameters()), list(critic.parameters())
     # Actor groups as in pretraining and BC, so a bias freeze (#4) holds through PPO.
     learning_rate = float(train.get("learning_rate", 3e-4))
     optimizer = torch.optim.Adam(
@@ -142,6 +253,12 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         or not 0 <= gae_lambda <= 1
     ):
         raise ValueError("Invalid PPO optimization or discount settings")
+    reward_normalizer = (
+        RewardNormalizer(n_envs, gamma, float(train.get("reward_clip", 10.0)))
+        if train.get("reward_normalization", True)
+        else None
+    )
+    separate_grad_clip = bool(train.get("separate_grad_clip", True))
     output.mkdir(parents=True, exist_ok=True)
     observations, infos = [], []
     pool = None
@@ -167,6 +284,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         reports = checkpoint["reports"]
         episode_returns = checkpoint["episode_returns"]
         running_returns = checkpoint["running_returns"].numpy().copy()
+        if reward_normalizer is not None:
+            reward_normalizer.load_state_dict(checkpoint["reward_normalizer"])
         state = checkpoint["recurrent_state"].to(device)
         if checkpoint.get("sensory_state") is not None:
             sensory = checkpoint["sensory_state"].to(device)
@@ -286,6 +405,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     next_infos.append(info)
                 with torch.no_grad():
                     final_values = critic(_privileged(final_infos, device))
+                if reward_normalizer is not None:
+                    rewards = reward_normalizer.normalize(rewards, terminated, truncated)
                 row = {
                     "inputs": inputs,
                     "privileged": privileged,
@@ -383,14 +504,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                             returns[times, indices],
                             data["value"][times, indices],
                         )
-                        value_clipped = old_value + (value - old_value).clamp(-clip, clip)
-                        critic_loss = (
-                            0.5
-                            * torch.maximum(
-                                (value - value_target).square(),
-                                (value_clipped - value_target).square(),
-                            ).mean()
-                        )
+                        critic_loss = _critic_loss(value, value_target, old_value, value_clip)
                         entropy = torch.stack(entropies).mean()
                         activity_loss = torch.stack(activities).mean()
                         loss = (
@@ -405,11 +519,19 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                             )
                         optimizer.zero_grad(set_to_none=True)
                         loss.backward()
-                        nn.utils.clip_grad_norm_(parameters, max_grad_norm, error_if_nonfinite=True)
+                        gradient_norms = _clip_gradients(
+                            actor_parameters, critic_parameters, max_grad_norm, separate_grad_clip
+                        )
                         optimizer.step()
                         approx_kl = ((ratio - 1) - logratio).mean().detach().item()
                         diagnostics.append(
-                            [actor_loss.item(), critic_loss.item(), entropy.item(), approx_kl]
+                            [
+                                actor_loss.item(),
+                                critic_loss.item(),
+                                entropy.item(),
+                                approx_kl,
+                                *gradient_norms,
+                            ]
                         )
                         if train.get("target_kl") and approx_kl > float(train["target_kl"]):
                             stop_early = True
@@ -427,6 +549,12 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     "critic_loss": float(average[1]),
                     "entropy": float(average[2]),
                     "approx_kl": float(average[3]),
+                    "value_mean": float(data["value"].mean()),
+                    "return_std": reward_normalizer.std if reward_normalizer is not None else 1.0,
+                    "actor_grad_norm": float(average[4]),
+                    "critic_grad_norm": float(average[5]),
+                    "actor_grad_norm_clipped": float(average[6]),
+                    "critic_grad_norm_clipped": float(average[7]),
                     "mean_last_20_episode_return": float(np.mean(episode_returns[-20:]))
                     if episode_returns
                     else None,
@@ -445,6 +573,9 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 reports=reports,
                 episode_returns=episode_returns,
                 running_returns=torch.as_tensor(running_returns),
+                reward_normalizer=None
+                if reward_normalizer is None
+                else reward_normalizer.state_dict(),
                 recurrent_state=state.detach().cpu(),
                 sensory_state=None if sensory is None else sensory.detach().cpu(),
                 episode_start=episode_start.cpu(),

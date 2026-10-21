@@ -65,6 +65,12 @@ class FlyTrackEnv(gym.Env):
         self.target_radius_m = float(options.pop("target_radius_m", 0.15))
         self.following_distance_m = float(options.pop("following_distance_m", 1.0))
         self.distance_tolerance_m = float(options.pop("distance_tolerance_m", 0.2))
+        distance_cap = options.pop("distance_penalty_cap_m", 3.0)
+        self.distance_penalty_cap_m = None if distance_cap is None else float(distance_cap)
+        if self.distance_penalty_cap_m is not None and (
+            not np.isfinite(self.distance_penalty_cap_m) or self.distance_penalty_cap_m < 0
+        ):
+            raise ValueError("distance_penalty_cap_m must be finite and nonnegative or null")
         self.success_distance_m = float(options.pop("success_distance_m", 2.0))
         # A tracked step must also face the target: distance alone let a blind
         # circling policy count as "tracking" with ~94 deg bearing error.
@@ -128,13 +134,21 @@ class FlyTrackEnv(gym.Env):
             "smoothness": 0.05,
             "collision": 10.0,
             "lost": 0.5,
+            "survival": "auto",
         }
         supplied_weights = options.pop("reward_weights", {}) or {}
         if set(supplied_weights) - set(self.reward_weights):
             raise ValueError("unknown reward weight name")
         self.reward_weights.update(supplied_weights)
-        if any(not np.isfinite(value) or value < 0 for value in self.reward_weights.values()):
-            raise ValueError("reward weights must be finite and nonnegative")
+        for name, value in self.reward_weights.items():
+            if name == "survival" and isinstance(value, str) and value == "auto":
+                continue
+            try:
+                valid = not isinstance(value, str) and np.isfinite(value) and value >= 0
+            except TypeError:
+                valid = False
+            if not valid:
+                raise ValueError("reward weights must be finite and nonnegative (survival: auto)")
         if options:
             raise ValueError(f"unknown environment options: {sorted(options)}")
         if (
@@ -157,6 +171,13 @@ class FlyTrackEnv(gym.Env):
         )
         self.retina = HexEye(self.contract)
         self.limits = ActionLimits.from_contract(self.contract)
+        self.reward_penalty_bounds = self._step_penalty_bounds()
+        self.max_step_penalty = math.fsum(self.reward_penalty_bounds.values())
+        self.survival_bonus = (
+            self.max_step_penalty
+            if self.reward_weights["survival"] == "auto"
+            else float(self.reward_weights["survival"])
+        )
         self.action_space = gym.spaces.Box(
             np.asarray([0.0, -self.contract.omega_max], np.float32),
             np.asarray([self.contract.v_max, self.contract.omega_max], np.float32),
@@ -171,6 +192,63 @@ class FlyTrackEnv(gym.Env):
         self._episode_id = -1
         self._seeded = False
         self._running = False
+
+    def _step_penalty_bounds(self) -> dict[str, float]:
+        """Bound all non-collision penalties without sampling an episode layout."""
+        speed = float(self.trajectory_config.get("speed_m_s", self.target_speed_m_s))
+        if not np.isfinite(speed) or speed < 0:
+            raise ValueError("target speed must be finite and nonnegative")
+        # Layout sampling never changes speed; explicit trajectory speed wins.
+        # Reflections and wander's clipped/interpolated path cannot exceed it.
+        target_speed = speed if any(m != "stationary" for m in self.motion_choices) else 0.0
+        cap = self.distance_penalty_cap_m
+        if cap is None:
+            # All target motions stay inside their trajectory bounds. Use the
+            # farthest arena/target corners when the distance penalty is uncapped.
+            lower = np.asarray(
+                [
+                    self.trajectory_config.get(k, v + 0.5)
+                    for k, v in zip(("xmin", "ymin"), self.walls[:2], strict=True)
+                ]
+            )
+            upper = np.asarray(
+                [
+                    self.trajectory_config.get(k, v - 0.5)
+                    for k, v in zip(("xmax", "ymax"), self.walls[2:], strict=True)
+                ]
+            )
+            separation = np.maximum(abs(upper - self.walls[:2]), abs(self.walls[2:] - lower))
+            max_distance = float(np.linalg.norm(separation))
+            cap = max(
+                0.0,
+                max_distance - self.following_distance_m - self.distance_tolerance_m,
+                self.following_distance_m - self.distance_tolerance_m,
+            )
+        dt = self.contract.control_dt
+        limits = self.limits
+        delta_v = min(limits.v_max, limits.linear_accel_max * dt)
+        delta_omega = min(2 * limits.omega_max, limits.angular_accel_max * dt)
+        max_delta_squared = max(
+            delta_v**2 + delta_omega**2,
+            # The stale-sensor watchdog bypasses acceleration limits to stop.
+            limits.v_max**2 + limits.omega_max**2,
+        )
+        # Applied actions, their subtraction and dot product use float32;
+        # rounding a speed limit can also slightly increase displacement.
+        rounding_margin = 1 + 8 * float(np.finfo(np.float32).eps)
+        max_delta_squared *= rounding_margin
+        w = self.reward_weights
+        bounds = {
+            "distance": w["distance"] * cap,
+            "lost": w["lost"],
+            "smoothness": w["smoothness"] * max_delta_squared,
+            "progress": w["progress"] * (limits.v_max + target_speed) * dt * rounding_margin,
+        }
+        if any(not np.isfinite(value) or value < 0 for value in bounds.values()):
+            raise ValueError("reward penalty bounds must be finite and nonnegative")
+        if not np.isfinite(math.fsum(bounds.values())):
+            raise ValueError("total reward penalty bound must be finite")
+        return bounds
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         if seed is None and not self._seeded:
@@ -363,14 +441,20 @@ class FlyTrackEnv(gym.Env):
         )
         action_change = applied - self.previous_action
         w = self.reward_weights
+        distance_penalty = max(
+            0, abs(distance - self.following_distance_m) - self.distance_tolerance_m
+        )
+        if self.distance_penalty_cap_m is not None:
+            distance_penalty = min(distance_penalty, self.distance_penalty_cap_m)
         reward = (
             w["progress"] * (self._previous_distance - distance)
-            - w["distance"]
-            * max(0, abs(distance - self.following_distance_m) - self.distance_tolerance_m)
+            - w["distance"] * distance_penalty
             - w["smoothness"] * float(action_change @ action_change)
             - w["collision"] * self.collision
             - w["lost"] * (distance > self.lost_distance_m)
         )
+        if not self.collision and self.survival_bonus:
+            reward += self.survival_bonus
         self._distance_sum += distance
         self._bearing_sum += abs(bearing)
         self._smoothness_sum += abs(float(action_change[1]))

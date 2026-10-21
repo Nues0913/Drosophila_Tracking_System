@@ -31,7 +31,7 @@ selection_rationale:
     three-hop budget.
   convergence: Still defined at three hops for both modalities; population overlap
     is not convergence.
-  cost: Sparse core above 5000 nodes; 4060/4070 full-matrix time is NOT YET measured.
+  cost: "Sparse core: 4502 nodes stays sparse only because dense_threshold is lowered to 4000 (5000 would force dense, ~2.5x slower VO fwd/bwd on RTX 2060, ~20x on one CPU thread; see artifacts/data_execution/olfactory_v2_nokc_cuda_probe_rtx2060.json). 4060/4070 time is NOT YET measured."
 selection:
   visual_seed_patterns:
   - LC10a

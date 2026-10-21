@@ -1,0 +1,64 @@
+raw_dir: data/raw
+output: data/subgraphs/olfactory_v2_nokc
+min_synapses: 50
+min_total_synapses: 5
+downstream_hops: 3
+upstream_hops: 5
+convergence_hops: 3
+min_neurons: 500
+max_neurons: null
+nt_confidence_min: 0.5
+unknown_nt_policy: drop
+unknown_type_policy: drop
+allowed_superclasses:
+- cb_intrinsic
+- visual_projection
+- descending_neuron
+- cb_sensory
+excluded_classes:
+- Kenyon_Cell
+excluded_type_patterns:
+- APL
+- DPM
+selection_rationale:
+  control: '#55 Decision 6317021016: same rules as olfactory_v2 minus mushroom-body
+    intrinsic neurons (Kenyon cells, APL, DPM); adopted only if every #56 check passes.'
+  scope: 'Candidate for #55; preserves seven input types and real synapses; no formal
+    graph replacement.'
+  threshold: 50 restores LC9/LC11 and more central olfactory paths without the 3000-node
+    cap.
+  odor_downstream_hops: 4 expands the olfactory branch independently of the visual
+    three-hop budget.
+  convergence: Still defined at three hops for both modalities; population overlap
+    is not convergence.
+  cost: Sparse core above 5000 nodes; 4060/4070 full-matrix time is NOT YET measured.
+selection:
+  visual_seed_patterns:
+  - LC10a
+  - LC10d
+  - LC9
+  - LC11
+  - LPLC2
+  odor_seed_patterns:
+  - ORN_DM1
+  - ORN_VA2
+  unknown_odor_side_policy: drop
+  turn_dn_patterns:
+  - DNa01
+  - DNa02
+  forward_dn_patterns:
+  - DNp09
+columns:
+  body: bodyId
+  type: type
+  side: somaSide
+  root_side: rootSide
+  nt_body: body
+  nt_prediction: consensus_nt
+  pre: body_pre
+  post: body_post
+  weight: weight
+odor_downstream_hops: 4
+require_branch_motor_paths:
+- olfactory
+- visual

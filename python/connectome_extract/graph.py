@@ -258,6 +258,21 @@ def extract(config: dict) -> Path:
         if not seeds | motors <= scoped:
             raise ValueError("Configured anatomical scope excludes a sensory seed or motor readout")
         allowed &= scoped
+    # #55 control: drop whole publisher classes / types (e.g. mushroom-body intrinsic
+    # neurons) before any reach, so no retained path can route through them.
+    excluded_classes = list(config.get("excluded_classes") or [])
+    excluded_type_patterns = list(config.get("excluded_type_patterns") or [])
+    excluded = set()
+    if excluded_classes:
+        if "class" not in nodes:
+            raise ValueError("Class exclusion requires publisher class annotations")
+        excluded |= set(nodes.loc[nodes["class"].isin(excluded_classes), "id"])
+    for pattern in excluded_type_patterns:
+        excluded |= set(nodes.loc[nodes["type"].str.fullmatch(pattern, na=False), "id"])
+    if excluded & (seeds | motors):
+        raise ValueError("Configured exclusion removes a sensory seed or motor readout")
+    excluded_in_scope = excluded & allowed
+    allowed -= excluded
     untyped_in_scope = set(nodes.loc[nodes.type.eq(""), "id"]) & allowed
     if config.get("unknown_type_policy", "error") == "drop":
         allowed -= untyped_in_scope
@@ -518,5 +533,12 @@ def extract(config: dict) -> Path:
             for name in ("graph.npz", "nodes.parquet", "edges.parquet")
         },
     }
+    if excluded_classes or excluded_type_patterns:
+        # Only exclusion configs record these keys, so existing manifests stay byte-identical.
+        manifest["excluded_by_rule"] = {
+            "classes": excluded_classes,
+            "type_patterns": excluded_type_patterns,
+            "in_scope_neurons": len(excluded_in_scope),
+        }
     (output / "manifest.json").write_text(canonical_json(manifest) + "\n", encoding="utf-8")
     return output

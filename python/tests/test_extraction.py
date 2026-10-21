@@ -12,6 +12,7 @@ from connectome_extract.graph import (  # noqa: E402
     deterministic_npz,
     extract,
     in_sorted,
+    modality_motor_paths,
 )
 from connectome_extract.tables import load_annotations, load_neurotransmitters, table_schema  # noqa: E402
 
@@ -192,3 +193,79 @@ def test_extraction_preserves_true_paths_after_explicit_annotation_exclusions(tm
     }
     extract(config)
     assert all((output / name).read_bytes() == payload for name, payload in original.items())
+
+
+def test_branch_audit_checks_each_input_not_just_union_reachability():
+    edges = pd.DataFrame({"pre": [1, 2, 3], "post": [3, 4, 5]})
+    result = modality_motor_paths(edges, {1, 2}, {1, 2, 3, 4}, {5})
+    assert result["5"] == {"reachable_seeds": 1, "total_seeds": 2, "min_hops": 2, "max_hops": 2}
+    # A node may survive via vision, yet be inactive in the isolated odor branch.
+    assert modality_motor_paths(edges, {1}, {1}, {5})["5"]["reachable_seeds"] == 0
+
+
+def test_separate_odor_depth_repairs_isolated_branch_without_expanding_vision(tmp_path):
+    import json
+
+    import pyarrow.feather as feather
+
+    feather.write_feather(
+        pa.table(
+            {
+                "bodyId": list(range(1, 10)),
+                "type": ["V", "O", "O", "TURN", "TURN", "FWD", "PN", "MID", "OUT"],
+                "somaSide": ["L", "L", "R", "L", "R", "R", "L", "L", "R"],
+                "superclass": ["central"] * 9,
+            }
+        ),
+        tmp_path / FILES["annotations"],
+    )
+    feather.write_feather(
+        pa.table({"body": list(range(1, 10)), "consensus_nt": ["acetylcholine"] * 9}),
+        tmp_path / FILES["neurotransmitters"],
+    )
+    feather.write_feather(
+        pa.table(
+            {
+                "body_pre": [1, 1, 2, 3, 7, 8, 9, 9, 9],
+                "body_post": [8, 9, 7, 7, 8, 9, 4, 5, 6],
+                "weight": [8] * 9,
+            }
+        ),
+        tmp_path / FILES["weights"],
+    )
+    config = {
+        "raw_dir": str(tmp_path),
+        "output": str(tmp_path / "out"),
+        "min_synapses": 5,
+        "downstream_hops": 2,
+        "upstream_hops": 5,
+        "selection": {
+            "visual_seed_patterns": ["V"],
+            "odor_seed_patterns": ["O"],
+            "turn_dn_patterns": ["TURN"],
+            "forward_dn_patterns": ["FWD"],
+        },
+    }
+    # Legacy behavior retains the entire full graph via the visual shortcut.
+    extract(config)
+    manifest = json.loads((tmp_path / "out/manifest.json").read_text())
+    assert manifest["neurons"] == 9
+    assert manifest["branch_motor_paths"]["olfactory"]["6"]["reachable_seeds"] == 0
+    config["require_branch_motor_paths"] = ["olfactory"]
+    with pytest.raises(ValueError, match="every retained seed"):
+        extract(config)
+    config["odor_downstream_hops"] = 3
+    config["max_neurons"] = 8
+    with pytest.raises(ValueError, match="outside"):
+        extract(config)
+    config["max_neurons"] = None
+    extract(config)
+    manifest = json.loads((tmp_path / "out/manifest.json").read_text())
+    assert manifest["neurons"] == 9
+    for row in manifest["branch_motor_paths"]["olfactory"].values():
+        assert row["reachable_seeds"] == row["total_seeds"] == 2
+        assert row["min_hops"] == row["max_hops"] == 4
+    with np.load(tmp_path / "out/graph.npz") as graph:
+        # Node 7 is an odor-only PN; its longer budget does not label it visual.
+        assert graph["group_mask"][6] & 2
+        assert not graph["group_mask"][6] & 1

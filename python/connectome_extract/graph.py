@@ -158,6 +158,29 @@ def deterministic_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
             archive.writestr(info, payload.getvalue())
 
 
+def modality_motor_paths(
+    edges: pd.DataFrame, seeds: set[int], population: set[int], motors: set[int]
+) -> dict[str, dict]:
+    """Audit every seed against every DN inside the actual VO-late branch.
+
+    A union BFS from all seeds can conceal disconnected individual inputs.
+    Motors are active in both branches, matching ConnectomePolicy.
+    """
+    active = population | motors
+    branch = edges[edges.pre.isin(active) & edges.post.isin(active)]
+    result = {}
+    for motor in sorted(motors):
+        distances = bounded_reach_in_memory(branch, {motor}, len(active), reverse=True)
+        hops = [distances[seed] for seed in sorted(seeds) if seed in distances]
+        result[str(motor)] = {
+            "reachable_seeds": len(hops),
+            "total_seeds": len(seeds),
+            "min_hops": min(hops) if hops else None,
+            "max_hops": max(hops) if hops else None,
+        }
+    return result
+
+
 def inventory(raw_dir: Path, output: Path, columns: dict | None = None) -> None:
     nodes = load_annotations(raw_dir, columns)
     output.mkdir(parents=True, exist_ok=True)
@@ -219,9 +242,13 @@ def extract(config: dict) -> Path:
     edges_path = raw_dir / FILES["weights"]
     minimum = float(config.get("min_synapses", 5))
     downstream_hops = int(config.get("downstream_hops", 4))
+    odor_downstream_hops = int(config.get("odor_downstream_hops", downstream_hops))
     upstream_hops = int(config.get("upstream_hops", 4))
     convergence_hops = int(config.get("convergence_hops", 3))
-    if minimum <= 0 or min(downstream_hops, upstream_hops, convergence_hops) < 1:
+    if (
+        minimum <= 0
+        or min(downstream_hops, odor_downstream_hops, upstream_hops, convergence_hops) < 1
+    ):
         raise ValueError("Synapse threshold and hop budgets must be positive")
     allowed = set(int(body) for body in nodes.id)
     if config.get("allowed_superclasses") is not None:
@@ -241,7 +268,9 @@ def extract(config: dict) -> Path:
     visual_reach = bounded_reach(
         edges_path, visual, allowed, downstream_hops, minimum, False, columns
     )
-    odor_reach = bounded_reach(edges_path, odor, allowed, downstream_hops, minimum, False, columns)
+    odor_reach = bounded_reach(
+        edges_path, odor, allowed, odor_downstream_hops, minimum, False, columns
+    )
     retained = (visual_reach.keys() | odor_reach.keys()) & backward.keys()
     LOGGER.info("Initial bounded sensory/motor intersection: %s neurons", len(retained))
     candidate_count_before_nt = len(retained)
@@ -282,7 +311,7 @@ def extract(config: dict) -> Path:
         retained &= set(int(body) for body in total.index[total >= degree_threshold])
         edges = edges[edges.pre.isin(retained) & edges.post.isin(retained)]
         visual_reach = bounded_reach_in_memory(edges, visual & retained, downstream_hops)
-        odor_reach = bounded_reach_in_memory(edges, odor & retained, downstream_hops)
+        odor_reach = bounded_reach_in_memory(edges, odor & retained, odor_downstream_hops)
         motor_reach = bounded_reach_in_memory(edges, motors & retained, upstream_hops, True)
         retained &= (visual_reach.keys() | odor_reach.keys()) & motor_reach.keys()
         edges = edges[edges.pre.isin(retained) & edges.post.isin(retained)]
@@ -290,8 +319,10 @@ def extract(config: dict) -> Path:
             break
     nodes = nodes[nodes.id.isin(retained)].sort_values("id", kind="stable").reset_index(drop=True)
     min_neurons = int(config.get("min_neurons", 1))
-    max_neurons = int(config.get("max_neurons", 3000))
-    if not min_neurons <= len(nodes) <= max_neurons:
+    # Explicit null removes the initial engineering cap; omitted retains legacy behavior.
+    maximum = config.get("max_neurons", 3000)
+    max_neurons = int(maximum) if maximum is not None else None
+    if len(nodes) < min_neurons or (max_neurons is not None and len(nodes) > max_neurons):
         raise ValueError(
             f"Retained {len(nodes)} neurons, outside [{min_neurons}, {max_neurons}] budget"
         )
@@ -319,6 +350,27 @@ def extract(config: dict) -> Path:
             "Subgraph is not weakly connected; "
             "inspect modality convergence or use separate extraction"
         )
+    branch_paths = {
+        "visual": modality_motor_paths(
+            edges, visual & retained, set(visual_reach), motors & retained
+        ),
+        "olfactory": modality_motor_paths(
+            edges, odor & retained, set(odor_reach), motors & retained
+        ),
+    }
+    for role in config.get("require_branch_motor_paths", []):
+        if role not in branch_paths:
+            raise ValueError(f"Unknown required branch: {role}")
+        rows = branch_paths[role]
+        if (
+            not motors <= retained
+            or not rows
+            or any(
+                row["total_seeds"] == 0 or row["reachable_seeds"] != row["total_seeds"]
+                for row in rows.values()
+            )
+        ):
+            raise ValueError(f"{role} branch does not connect every retained seed to every DN")
     groups = np.zeros(len(nodes), dtype=np.uint8)
     input_mask = np.zeros(len(nodes), dtype=np.uint8)
     for index, body in enumerate(nodes.id):
@@ -404,6 +456,7 @@ def extract(config: dict) -> Path:
         "edges": len(edges),
         "type_pairs": len(type_pairs),
         "convergence_neurons": int(np.count_nonzero(groups & GROUP_CONVERGENCE)),
+        "branch_motor_paths": branch_paths,
         "nt_imputed_neurons": int(nodes.nt_imputed.sum()),
         "nt_numeric_confidence_available_neurons": int(nodes.nt_confidence.notna().sum()),
         "nt_confidence_semantics": (

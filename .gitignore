@@ -17,6 +17,13 @@ data/*
 !data/subgraphs/
 data/subgraphs/*
 !data/subgraphs/main/
+!data/subgraphs/olfactory_v2/
+data/subgraphs/olfactory_v2/*
+!data/subgraphs/olfactory_v2/graph.npz
+!data/subgraphs/olfactory_v2/nodes.parquet
+!data/subgraphs/olfactory_v2/edges.parquet
+!data/subgraphs/olfactory_v2/manifest.json
+!data/subgraphs/olfactory_v2/excluded_odor_seed_sides.csv
 runs/
 artifacts/*
 !artifacts/frontend/

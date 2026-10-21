@@ -1,6 +1,10 @@
 # 目前進度與已知問題
 
-最後更新：2026-10-19（已同步 `main` 388d481）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-10-20（現行正式基準 `main` 0a01595；#55 候選另行送審）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+
+## #55 重新萃取候選（待審查與GPU測試）
+
+依使用者指派，由PM提交獨立 `olfactory_v2` 圖：6,244節點／35,627邊，嗅覺群3,463、三跳內匯流59；143個ORN在VO-late隔離分支均能到達全部6個DN。舊圖的完整VO路徑可達，但VO-late嗅覺分支實際斷路，新檢查補上這個缺口。新舊圖、權重與證據分開，訓練預設仍是舊圖。全套174測試通過，初始化氣味反應較強但仍弱、前進反應幾乎為零；**沒有宣稱#4解決，4060／4070完整訓練2–3天仍待校準**。詳見[候選報告與兩位teammate測試安排](olfactory_reextraction_55.md)。下方既有訓練／部署數據均屬舊圖。
 
 ## 一句話
 

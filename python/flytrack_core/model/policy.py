@@ -962,7 +962,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # decoder, and vision pretraining alone cut odor's effect ~150x.
     "olfactory_rate_beta": None,
     "odor_input_gain": 1.0,
-    "dense_threshold": 5000,
+    # Same as configs/model/variants.yaml so direct pretrain/bc/ppo runs match the
+    # formal matrix (#59): the 4,502-node no-KC graph stays on the sparse core.
+    "dense_threshold": 4000,
     "readout": "auto",
     # Offsets the DN left/right structural asymmetry; legacy cards load without it.
     "readout_turn_bias": True,

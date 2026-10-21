@@ -237,7 +237,10 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         if phase == "collect":
             start, act = dagger_actor(model, contract, probability)
             pool = EnvPool(
-                [partial(make_env, config, contract) for _ in range(max(1, default_workers()))]
+                [
+                    partial(make_env, config, contract, allow_scenario_mix=True)
+                    for _ in range(max(1, default_workers()))
+                ]
             )
             try:
                 collect_lockstep(

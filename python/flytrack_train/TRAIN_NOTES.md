@@ -30,6 +30,13 @@ output: runs/VO/seed_0
 
 路徑以執行指令時的工作目錄為基準，建議在儲存庫根目錄執行。感測契約亦可改用 inline `sensor_contract`。`init_artifact` 載入同 variant 完整 actor 權重並驗證契約、子圖、前端來源；不載入 critic 或 optimizer。recovery 的身分包含上游 actor（`init_artifact`、`pretrained_artifacts`）的 `model_card.json` 雜湊：上游階段重跑後，下游的 checkpoint 和已完成的 actor 都會驗證失敗，必須刪除下游輸出後重跑，不會沿用由舊上游訓練出來的結果。`scenario_configs` 可指定情境 → YAML 路徑，依當前環境情境讀取，檔案的 `name` 必須吻合，其餘欄位合併至 `env.scenario_config`；inline 情境欄位優先於檔案。`configs/scenarios/*.yaml` 是情境參數的唯一來源：occlusion、noise、conflict 情境若沒有對應的 `scenario_configs`（也沒有 inline `env.scenario_config`），`make_env` 直接報錯，不再默默改用 `ScenarioSpec` 的程式預設值（#2）；程式預設值已改成與 YAML 相同，只供單元測試與 ROS 未指定檔案時使用。`configs/train/` 下的訓練範本都已加上 `scenario_configs`。
 
+**BC 的情境混合（#4 方向 3）。** 只有 BC 的資料收集可以設 `env.scenario_mix`，PPO、ES、pretrain 和評估遇到會直接報錯。原因是 PPO checkpoint 會讀寫 env 的 `_episode_id`，包裝層無法讓它在各個子世界之間保持一致。
+
+- **格式**：每一項是 `{scenario, weight, scenario_config?}`。inline 的 `scenario_config` 會像 `env.scenario_config` 一樣，覆蓋在該情境的 YAML 之上。設了 `scenario_mix` 就不能再設 `env.scenario` 或 `env.scenario_config`。
+- **抽籤**：每回合要用哪個情境，只由 episode seed 和固定的 RNG stream（`SCENARIO_MIX_STREAM`）決定，跟 worker 數和 reset 順序都無關，所以 recovery 重收時會得到相同的世界。reset 的 info 會多一個 `mix_scenario`。
+- **共用選項**：其他 env 選項，例如 `occlusion_odor_steering`，會套用到每一個子世界。
+- **工具**：`scripts/diagnostics/prepare_odor_task_bc.py` 產生方向 3 的 A／B／C 三組設定；`scripts/diagnostics/odor_reliance_eval.py` 在相同 seed 上，配對比較完整模型和 odor lesion。
+
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision
 python -m flytrack_train bc --config configs/train/bc.yaml --variant VO --seed 0 --output runs/bc/VO/seed_0

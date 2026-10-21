@@ -139,7 +139,7 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 - **少掉的 1,742 個神經元**：1,681 個 KC、2 個 APL、24 個 MBON、1 個 ALPN，另外 34 個是只能經由 KC／MBON 才接得上的 LH、CRE、SIP 類神經元，在最終剪枝時被移除。no-KC 沒有任何 v2 以外的新節點。整個蕈狀體通路都被拿掉，這正是這張對照圖要測的。
 - **初始化的氣味反應幾乎沒變**，三個變體、三種氣味條件都在 ±15% 內，投射檢查也全部通過。這和「固定連接下，KC 對初始轉向沒有作用」一致，但**不代表訓練後不會用到 KC**，也不能取代 #4 和 #25 的 gate。
 - **GRU 參數差 −4.5%**，在 ±5% 以內，但比 v2 更接近邊界。
-- **重現性**：在 commit `8a9d133` 萃取兩次，兩次產物逐位元相同。用修改後的萃取器重跑 v2，`graph.npz`、`nodes.parquet`、`edges.parquet` 也都逐位元相同（記錄見 `olfactory_v2_nokc_reproducibility.json`）。
+- **重現性**：在 commit `09d7043` 萃取兩次，兩次產物逐位元相同（`8a9d133` 的首次萃取與此相比只有 manifest 的 `git_commit` 與 cost rationale 文字不同，graph／parquet 全部相同）。用修改後的萃取器重跑 v2，`graph.npz`、`nodes.parquet`、`edges.parquet` 也都逐位元相同（記錄見 `olfactory_v2_nokc_reproducibility.json`）。
 - **dense／sparse 的陷阱**：4,502 個節點低於原本的 `dense_threshold: 5000`，所以 no-KC 會改走 dense core，輸出相同但慢很多：
   - 單執行緒 CPU：VO 40 tick 從 0.074 秒變成 1.52 秒。
   - 本機 RTX 2060 抽查（`scripts/diagnostics/probe_core_cost_cuda.py`）：batch 64 × 16 tick 前向加反向，VO 從 106 ms 變成 264 ms，VO-late 從 217 ms 變成 534 ms。

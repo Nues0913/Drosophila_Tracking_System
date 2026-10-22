@@ -865,6 +865,37 @@ def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(
     assert load_policy_artifact(destination)[0].encoder.shared_adaptation
 
 
+@pytest.mark.parametrize("shared", [False, True])
+def test_numpy_orn_adapter_matches_the_policy_encoder(graph_path, official_frontend, shared):
+    """The NumPy sensing adapter documents parity with the Torch encoder (#63 review)."""
+    from flytrack_core.sensing import ORNAdapter
+
+    contract = SensorContract()
+    policy = build_policy(
+        "O",
+        graph_path,
+        contract,
+        official_frontend,
+        odor_K=[0.1, 0.3, 1.0],
+        odor_shared_adaptation=shared,
+    )
+    reference = ORNAdapter(num_types=3, K=[0.1, 0.3, 1.0], shared_adaptation=shared)
+    concentrations = np.random.default_rng(0).uniform(0.0, 0.6, (120, 2))
+    concentrations[40:80] = [0.26, 0.24]  # A sustained contrast, where the two modes differ.
+    state = policy.encoder.initial_state(1, "cpu")
+    start = policy.encoder.visual_code_size
+    for c in concentrations:
+        obs = {
+            "vision": torch.zeros(1, 2, contract.n_ommatidia),
+            "odor": torch.tensor([c], dtype=torch.float32),
+            "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+        }
+        code, state = policy.sense(obs, state)
+        expected = reference.update(c.astype(np.float32), contract.control_dt)
+        observed = code[0, start : start + policy.encoder.odor_state_size].reshape(2, 3)
+        np.testing.assert_allclose(observed.numpy(), expected, atol=1e-5)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the cuSPARSE bypass is CUDA-only")
 def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
     from flytrack_core.model.sparse import spmm

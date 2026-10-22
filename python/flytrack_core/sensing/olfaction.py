@@ -21,6 +21,8 @@ class ORNAdapter:
 
     r uses the old K, then K=max(K_floor,K+min(dt/tau,1)*(c-K)). This ordering
     is part of the sensing contract and must match the policy's Torch adapter.
+    shared_adaptation (#4 P2, opt-in diagnostic) replaces c in the K update with the
+    mean over the present sides, as odor_shared_adaptation does in the policy.
     """
 
     def __init__(
@@ -30,6 +32,7 @@ class ORNAdapter:
         hill_n: float = 2,
         adaptation_tau_s: float = 2,
         K_floor: float = 1e-4,
+        shared_adaptation: bool = False,
     ):
         if num_types < 1 or hill_n <= 0 or adaptation_tau_s <= 0 or K_floor <= 0:
             raise ValueError("ORN parameters must be positive")
@@ -39,6 +42,7 @@ class ORNAdapter:
         self.baseline = baseline
         self.num_types, self.hill_n = num_types, hill_n
         self.adaptation_tau_s, self.K_floor = adaptation_tau_s, K_floor
+        self.shared_adaptation = bool(shared_adaptation)
         self.reset()
 
     def reset(self, batch_shape: tuple[int, ...] = ()) -> None:
@@ -65,8 +69,14 @@ class ORNAdapter:
         power = c**self.hill_n
         response = power / (power + self.K**self.hill_n)
         response = np.where(present[..., None], response, 0)
+        target = c
+        if self.shared_adaptation:
+            weight = present[..., None].astype(np.float64)
+            target = (c * weight).sum(-2, keepdims=True) / np.maximum(
+                weight.sum(-2, keepdims=True), 1
+            )
         updated = np.maximum(
-            self.K_floor, self.K + min(dt / self.adaptation_tau_s, 1) * (c - self.K)
+            self.K_floor, self.K + min(dt / self.adaptation_tau_s, 1) * (target - self.K)
         )
         self.K = np.where(present[..., None], updated, self.K)
         return response.astype(np.float32)

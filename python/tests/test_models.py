@@ -663,6 +663,122 @@ def test_optional_turn_bias_sets_mean_turn_without_changing_default(graph):
     torch.testing.assert_close(omega, SensorContract().omega_max * torch.tanh(torch.tensor(0.2)))
 
 
+def test_extra_turn_rows_are_calibrated_normalized_differences_starting_at_zero(graph):
+    rate = torch.rand((3, graph.n_nodes), generator=torch.Generator().manual_seed(0)) + 0.1
+    plain = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
+    assert plain.extra_turn_types == []
+    assert "extra_turn_weight" not in dict(plain.named_parameters())
+    extra = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
+    extra.set_extra_turns(["ORN_DM1"], [0.1], [2.0])
+    # ORN_DM1 is nodes 2 (left) and 3 (right); it stays out of the motor populations.
+    expected = ((rate[:, 2] - rate[:, 3]) / (rate[:, 2] + rate[:, 3] + 1e-6) - 0.1) * 2.0
+    torch.testing.assert_close(extra.extra_turn_features(rate)[:, 0], expected)
+    assert torch.equal(extra([rate]), plain([rate]))  # Zero-initialized row.
+    with torch.no_grad():
+        extra.extra_turn_weight.fill_(0.5)
+    latent = rate @ plain.difference.T @ plain.turn_weight + 0.5 * expected
+    torch.testing.assert_close(
+        extra([rate])[:, 1], SensorContract().omega_max * torch.tanh(latent.detach())
+    )
+    extra.set_extra_turns(["ORN_DM1"], [0.0], [1.0])  # Recalibration keeps the weight.
+    assert float(extra.extra_turn_weight.detach()) == 0.5
+    torch.testing.assert_close(extra.extra_center, torch.zeros(1))
+
+
+@pytest.mark.parametrize(
+    "types, center, scale, message",
+    [
+        (["DNb05"], [0.0], [1.0], "nodes on both sides"),
+        (["DNa01"], [0.0], [1.0], "already a motor DN"),
+        (["ORN_DM1"], [0.0], [], "one center and scale each"),
+        (["ORN_DM1", "ORN_DM1"], [0.0, 0.0], [1.0, 1.0], "unique"),
+        (["ORN_DM1"], [0.0], [0.0], "scales positive"),
+        (["ORN_DM1"], [float("nan")], [1.0], "centers must be finite"),
+    ],
+)
+def test_extra_turn_rows_reject_invalid_definitions(graph, types, center, scale, message):
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    with pytest.raises(ValueError, match=message):
+        readout.set_extra_turns(types, center, scale)
+
+
+def test_extra_turn_rows_cannot_change_types_or_use_the_linear_readout(graph):
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    readout.set_extra_turns(["ORN_DM1"], [0.0], [1.0])
+    with pytest.raises(ValueError, match="cannot change"):
+        readout.set_extra_turns(["LC10a"], [0.0], [1.0])
+    with pytest.raises(ValueError, match="cannot be removed"):
+        readout.set_extra_turns([], [], [])
+    with pytest.raises(ValueError, match="structured readout"):
+        MotorReadout(graph, SensorContract(), "linear").set_extra_turns(["ORN_DM1"], [0.0], [1.0])
+
+
+def test_extra_turn_rows_round_trip_and_warm_start_migration(
+    graph_path, official_frontend, tmp_path
+):
+    with pytest.raises(ValueError, match="connectome policy"):
+        build_policy(
+            "GRU",
+            graph_path,
+            SensorContract(),
+            official_frontend,
+            readout_extra_turn_types=["ORN_DM1"],
+            readout_extra_turn_center=[0.0],
+            readout_extra_turn_scale=[1.0],
+        )
+    base = build_policy("O", graph_path, SensorContract(), official_frontend)
+    assert base.model_config["readout_extra_turn_types"] == []
+    source = tmp_path / "base"
+    save_policy_artifact(
+        source, base, base.model_config, base.contract, graph_path, official_frontend
+    )
+    obs = {
+        "vision": torch.zeros(1, 2, SensorContract().n_ommatidia),
+        "odor": torch.tensor([[1.2, 0.8]]),
+        "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+    }
+    config = {
+        "init_artifact": str(source),
+        "variant": "O",
+        "graph_path": str(graph_path),
+        "frontend_path": str(official_frontend),
+        "model": {
+            "readout_extra_turn_types": ["ORN_DM1"],
+            "readout_extra_turn_center": [0.05],
+            "readout_extra_turn_scale": [3.0],
+        },
+    }
+    migrated, _ = prepare_policy(config, torch.device("cpu"))
+    assert migrated.model_config["readout_extra_turn_center"] == [0.05]
+    assert set(migrated.state_dict()) - set(base.state_dict()) == {"readout.extra_turn_weight"}
+    assert torch.equal(
+        migrated(obs, migrated.initial_state(1, "cpu"))[0],
+        base(obs, base.initial_state(1, "cpu"))[0],
+    )
+    with torch.no_grad():
+        migrated.readout.extra_turn_weight.fill_(0.3)
+    destination = tmp_path / "migrated"
+    save_policy_artifact(
+        destination,
+        migrated,
+        migrated.model_config,
+        migrated.contract,
+        graph_path,
+        official_frontend,
+    )
+    recovered, _, card = load_policy_artifact(destination)
+    assert card["model_config"]["readout_extra_turn_scale"] == [3.0]
+    torch.testing.assert_close(
+        recovered(obs, recovered.initial_state(1, "cpu"))[0],
+        migrated(obs, migrated.initial_state(1, "cpu"))[0],
+    )
+    # Recalibrating an actor that already has the rows keeps the learned weight.
+    recalibrated, _ = prepare_policy(
+        {**config, "init_artifact": str(destination)}, torch.device("cpu")
+    )
+    assert float(recalibrated.readout.extra_turn_weight.detach()) == pytest.approx(0.3)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the cuSPARSE bypass is CUDA-only")
 def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
     from flytrack_core.model.sparse import spmm

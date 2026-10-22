@@ -96,6 +96,15 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             # Explicit warm-start migration; ordinary loading preserves old card semantics.
             policy.core.motor_rate_beta = config["model"]["motor_rate_beta"]
             policy.model_config["motor_rate_beta"] = policy.core.motor_rate_beta
+        model = config.get("model", {})
+        if isinstance(policy, ConnectomePolicy) and model.get("readout_extra_turn_types"):
+            # Explicit warm-start migration (#4 B3): new rows, calibrated on this actor, start
+            # at zero weight, so the loaded behavior is unchanged until training moves them.
+            policy.set_readout_extra_turns(
+                model["readout_extra_turn_types"],
+                model.get("readout_extra_turn_center", []),
+                model.get("readout_extra_turn_scale", []),
+            )
     else:
         policy = build_policy(
             config.get("variant", "VO"),

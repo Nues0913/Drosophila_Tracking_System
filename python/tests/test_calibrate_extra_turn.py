@@ -7,6 +7,7 @@ import math
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 from flytrack_core.model import load_policy_artifact
 from flytrack_train import imitation
@@ -20,7 +21,9 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
     config = copy.deepcopy(read_config("configs/train/smoke.yaml"))
     config.pop("init_artifact", None)
     config["variant"] = "O"
-    config["train"].update(teacher_steps=400, dagger_rounds=0, epochs=1)
+    # DNb05 stays silent for the first ~3 s, so episodes must outlast that warm-up.
+    config["env"]["episode_seconds"] = 5
+    config["train"].update(teacher_steps=1000, dagger_rounds=0, epochs=1)
     imitation.train_bc(config, tmp_path / "bc", 0, torch.device("cpu"))
     count = len(list((tmp_path / "bc/dataset").glob("episode_*.npz")))
     assert count >= 10
@@ -39,6 +42,9 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
             str(count),
             str(tmp_path / "bc/actor"),
             "DNb05",
+            # The smoke world drives DNb05 to only ~0.01 (4-R6's start actor: median 1.98).
+            "--eps",
+            "0.001",
         ],
     )
     module.main()
@@ -48,6 +54,8 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
     assert math.isfinite(model["readout_extra_turn_center"][0])
     assert model["readout_extra_turn_scale"][0] > 0
     assert result["held_out_episodes"] and result["training_steps"] > 0
+    assert 0 <= result["excluded_fraction"][0] < 1 and result["device"] == "cpu"
+    assert model["readout_extra_turn_eps"] == 0.001
     assert all(fit["held_out_corr"] is not None for fit in result["closed_form"].values())
     loaded = load_policy_artifact(tmp_path / "bc/actor")[0]
     warm, _ = prepare_policy(
@@ -63,6 +71,7 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
     for name, value in loaded.state_dict().items():
         assert torch.equal(value, warm.state_dict()[name])
     assert float(warm.readout.extra_turn_weight.detach()) == 0.0
+    assert float(warm.readout.extra_eps) == pytest.approx(0.001)
     assert result["odor_shared_adaptation"] is False
     shared_out = tmp_path / "calibration_shared.json"
     argv = sys.argv[:]

@@ -671,7 +671,8 @@ def test_extra_turn_rows_are_calibrated_normalized_differences_starting_at_zero(
     extra = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
     extra.set_extra_turns(["ORN_DM1"], [0.1], [2.0])
     # ORN_DM1 is nodes 2 (left) and 3 (right); it stays out of the motor populations.
-    expected = ((rate[:, 2] - rate[:, 3]) / (rate[:, 2] + rate[:, 3] + 1e-6) - 0.1) * 2.0
+    total = rate[:, 2] + rate[:, 3]
+    expected = total / (total + 0.1) * ((rate[:, 2] - rate[:, 3]) / total - 0.1) * 2.0
     torch.testing.assert_close(extra.extra_turn_features(rate)[:, 0], expected)
     assert torch.equal(extra([rate]), plain([rate]))  # Zero-initialized row.
     with torch.no_grad():
@@ -685,21 +686,39 @@ def test_extra_turn_rows_are_calibrated_normalized_differences_starting_at_zero(
     torch.testing.assert_close(extra.extra_center, torch.zeros(1))
 
 
+def test_extra_turn_rows_fade_with_bounded_gradients_when_both_sides_are_silent(graph):
+    """#63 review: both DNb05 sides sit near 0 for the first ~3 s of every episode."""
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    readout.set_extra_turns(["ORN_DM1"], [-0.2], [300.0], eps=0.1)
+    rate = torch.zeros((4, graph.n_nodes))
+    rate[:, 2] = torch.tensor([0.0, 1e-9, 1e-6, 1e-3])
+    rate[:, 3] = torch.tensor([0.0, 0.0, 3e-6, 2e-3])
+    rate.requires_grad_()
+    feature = readout.extra_turn_features(rate)[:, 0]
+    assert bool(torch.isfinite(feature).all()) and float(feature.abs().max()) < 3.0
+    assert float(feature[0]) == 0.0
+    (gradient,) = torch.autograd.grad(feature.sum(), rate)
+    # |d feature / d L| <= scale * (|ratio - center| + 2) / eps while S < eps.
+    assert bool(torch.isfinite(gradient).all())
+    assert float(gradient.abs().max()) <= 300.0 * (1.2 + 2) / 0.1
+
+
 @pytest.mark.parametrize(
-    "types, center, scale, message",
+    "types, center, scale, eps, message",
     [
-        (["DNb05"], [0.0], [1.0], "nodes on both sides"),
-        (["DNa01"], [0.0], [1.0], "already a motor DN"),
-        (["ORN_DM1"], [0.0], [], "one center and scale each"),
-        (["ORN_DM1", "ORN_DM1"], [0.0, 0.0], [1.0, 1.0], "unique"),
-        (["ORN_DM1"], [0.0], [0.0], "scales positive"),
-        (["ORN_DM1"], [float("nan")], [1.0], "centers must be finite"),
+        (["DNb05"], [0.0], [1.0], 0.1, "nodes on both sides"),
+        (["DNa01"], [0.0], [1.0], 0.1, "already a motor DN"),
+        (["ORN_DM1"], [0.0], [], 0.1, "one center and scale each"),
+        (["ORN_DM1", "ORN_DM1"], [0.0, 0.0], [1.0, 1.0], 0.1, "unique"),
+        (["ORN_DM1"], [0.0], [0.0], 0.1, "scales positive"),
+        (["ORN_DM1"], [float("nan")], [1.0], 0.1, "centers must be finite"),
+        (["ORN_DM1"], [0.0], [1.0], 0.0, "eps must be positive"),
     ],
 )
-def test_extra_turn_rows_reject_invalid_definitions(graph, types, center, scale, message):
+def test_extra_turn_rows_reject_invalid_definitions(graph, types, center, scale, eps, message):
     readout = MotorReadout(graph, SensorContract(), "structured")
     with pytest.raises(ValueError, match=message):
-        readout.set_extra_turns(types, center, scale)
+        readout.set_extra_turns(types, center, scale, eps)
 
 
 def test_extra_turn_rows_cannot_change_types_or_use_the_linear_readout(graph):
@@ -772,11 +791,17 @@ def test_extra_turn_rows_round_trip_and_warm_start_migration(
         recovered(obs, recovered.initial_state(1, "cpu"))[0],
         migrated(obs, migrated.initial_state(1, "cpu"))[0],
     )
-    # Recalibrating an actor that already has the rows keeps the learned weight.
-    recalibrated, _ = prepare_policy(
+    # Continuing from an actor that already has the rows keeps them only if unchanged.
+    continued, _ = prepare_policy(
         {**config, "init_artifact": str(destination)}, torch.device("cpu")
     )
-    assert float(recalibrated.readout.extra_turn_weight.detach()) == pytest.approx(0.3)
+    assert float(continued.readout.extra_turn_weight.detach()) == pytest.approx(0.3)
+    changed = {**config["model"], "readout_extra_turn_center": [0.0]}
+    with pytest.raises(ValueError, match="already has different extra turn rows"):
+        prepare_policy(
+            {**config, "init_artifact": str(destination), "model": changed},
+            torch.device("cpu"),
+        )
 
 
 def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(

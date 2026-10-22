@@ -20,7 +20,7 @@ from flytrack_core.model import (
     save_policy_artifact,
     transplant_pretrained_modalities,
 )
-from flytrack_core.model.policy import ConnectomePolicy
+from flytrack_core.model.policy import DEFAULT_CONFIG, ConnectomePolicy
 
 from .worlds import make_env  # noqa: F401 - re-exported for trainers
 
@@ -104,11 +104,21 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
         if isinstance(policy, ConnectomePolicy) and model.get("readout_extra_turn_types"):
             # Explicit warm-start migration (#4 B3): new rows, calibrated on this actor, start
             # at zero weight, so the loaded behavior is unchanged until training moves them.
-            policy.set_readout_extra_turns(
-                model["readout_extra_turn_types"],
-                model.get("readout_extra_turn_center", []),
-                model.get("readout_extra_turn_scale", []),
-            )
+            requested = {
+                key: model.get(key, DEFAULT_CONFIG[key])
+                for key in (
+                    "readout_extra_turn_types",
+                    "readout_extra_turn_center",
+                    "readout_extra_turn_scale",
+                    "readout_extra_turn_eps",
+                )
+            }
+            if policy.readout.extra_turn_types and any(
+                policy.model_config[key] != value for key, value in requested.items()
+            ):
+                # Silently recalibrating trained rows would change the loaded behavior.
+                raise ValueError("Initial artifact already has different extra turn rows")
+            policy.set_readout_extra_turns(*requested.values())
     else:
         policy = build_policy(
             config.get("variant", "VO"),

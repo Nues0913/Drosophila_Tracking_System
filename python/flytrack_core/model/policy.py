@@ -353,17 +353,22 @@ class MotorReadout(nn.Module):
         self._graph = graph
         self.extra_turn_types: list[str] = []
 
-    def set_extra_turns(self, types: list[str], center: list[float], scale: list[float]) -> None:
+    def set_extra_turns(
+        self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
+    ) -> None:
         """Add, or recalibrate, extra turn rows read as normalized L/R differences (#4 B3).
 
-        Each type is read as ((L - R) / (L + R) - center) * scale from the mean
-        activity of its left and right nodes; it stays in its own population, so it
-        gets no motor gain. The constants come from teacher rollouts
-        (scripts/diagnostics/calibrate_extra_turn.py): DNb05's static L/R asymmetry
-        (-0.22) is ~160x the odor-driven variation, which a raw difference would
-        hand to turn_bias as an ill-conditioned offset. New rows start at zero weight.
+        Each type is read from the mean activity of its left and right nodes as
+        S / (S + eps) * ((L - R) / max(S, eps) - center) * scale, with S = L + R; it
+        stays in its own population, so it gets no motor gain. The constants come from
+        teacher rollouts (scripts/diagnostics/calibrate_extra_turn.py): DNb05's static
+        L/R asymmetry (-0.22) is ~65x the odor-driven variation, which a raw difference
+        would hand to turn_bias as an ill-conditioned offset. The S / (S + eps) gate
+        fades the row to 0, with bounded gradients, while both sides are silent (the
+        first ~3 s of an episode, #63 review). New rows start at zero weight.
         """
         types, center, scale = list(types), [float(x) for x in center], [float(x) for x in scale]
+        eps = float(eps)
         if not types:
             if self.extra_turn_types:
                 raise ValueError("Extra turn rows cannot be removed from a policy")
@@ -376,6 +381,8 @@ class MotorReadout(nn.Module):
             math.isfinite(x) and x > 0 for x in scale
         ):
             raise ValueError("Extra turn centers must be finite and scales positive and finite")
+        if not math.isfinite(eps) or eps <= 0:
+            raise ValueError("Extra turn eps must be positive and finite")
         if self.extra_turn_types and self.extra_turn_types != types:
             raise ValueError("Extra turn types cannot change once added; only recalibrate")
         graph = self._graph
@@ -396,6 +403,7 @@ class MotorReadout(nn.Module):
             ("extra_right", pools[1]),
             ("extra_center", np.asarray(center, dtype=np.float32)),
             ("extra_scale", np.asarray(scale, dtype=np.float32)),
+            ("extra_eps", np.asarray(eps, dtype=np.float32)),
         ):
             self.register_buffer(name, torch.as_tensor(value, device=device), persistent=False)
         if not self.extra_turn_types:
@@ -404,10 +412,17 @@ class MotorReadout(nn.Module):
             )
         self.extra_turn_types = types
 
-    def extra_turn_features(self, activity: Tensor) -> Tensor:
-        """Centered, scaled normalized L/R differences of the extra turn types."""
+    def extra_turn_terms(self, activity: Tensor) -> tuple[Tensor, Tensor]:
+        """Normalized L/R difference and total activity S of each extra turn type."""
         left, right = activity @ self.extra_left.T, activity @ self.extra_right.T
-        return ((left - right) / (left + right + 1e-6) - self.extra_center) * self.extra_scale
+        total = left + right
+        return (left - right) / total.clamp_min(self.extra_eps), total
+
+    def extra_turn_features(self, activity: Tensor) -> Tensor:
+        """Gated, centered and scaled normalized L/R differences of the extra turn types."""
+        ratio, total = self.extra_turn_terms(activity)
+        gate = total / (total + self.extra_eps)
+        return gate * (ratio - self.extra_center) * self.extra_scale
 
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
@@ -709,18 +724,20 @@ class ConnectomePolicy(nn.Module):
             config["readout_extra_turn_types"],
             config["readout_extra_turn_center"],
             config["readout_extra_turn_scale"],
+            config["readout_extra_turn_eps"],
         )
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
     def set_readout_extra_turns(
-        self, types: list[str], center: list[float], scale: list[float]
+        self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
     ) -> None:
         """Opt-in extra turn rows (#4 B3); also the explicit warm-start migration path."""
-        self.readout.set_extra_turns(types, center, scale)
+        self.readout.set_extra_turns(types, center, scale, eps)
         self.model_config.update(
             readout_extra_turn_types=list(types),
             readout_extra_turn_center=[float(x) for x in center],
             readout_extra_turn_scale=[float(x) for x in scale],
+            readout_extra_turn_eps=float(eps),
         )
 
     def set_lesion(self, mode: str = "none") -> None:
@@ -1052,6 +1069,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "readout_extra_turn_types": [],
     "readout_extra_turn_center": [],
     "readout_extra_turn_scale": [],
+    "readout_extra_turn_eps": 0.1,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

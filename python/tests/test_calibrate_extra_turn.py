@@ -63,3 +63,12 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
     for name, value in loaded.state_dict().items():
         assert torch.equal(value, warm.state_dict()[name])
     assert float(warm.readout.extra_turn_weight.detach()) == 0.0
+    assert result["odor_shared_adaptation"] is False
+    shared_out = tmp_path / "calibration_shared.json"
+    argv = sys.argv[:]
+    argv[1] = str(shared_out)
+    monkeypatch.setattr(sys, "argv", [argv[0], "--shared-adaptation", *argv[1:]])
+    module.main()
+    shared = json.loads(shared_out.read_text())
+    assert shared["odor_shared_adaptation"] is True
+    assert math.isfinite(shared["model"]["readout_extra_turn_center"][0])

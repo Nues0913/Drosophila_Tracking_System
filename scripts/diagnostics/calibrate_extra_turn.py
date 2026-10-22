@@ -1,6 +1,7 @@
 """Calibrate the opt-in extra turn rows (#4 B3) on stored BC episodes.
 
-Usage: calibrate_extra_turn.py OUT.json BC_DATASET_DIR EPISODE_COUNT ARTIFACT TYPE [TYPE ...]
+Usage: calibrate_extra_turn.py [--shared-adaptation] OUT.json BC_DATASET_DIR EPISODE_COUNT
+       ARTIFACT TYPE [TYPE ...]
 The artifact is run over the stored episodes (normally the round-0 teacher episodes
 of a BC run in the target world). For each TYPE the raw normalized L/R difference
 (L - R) / (L + R) is collected on the training episodes (every 10th is held out, as
@@ -8,7 +9,8 @@ in BC), and center = mean, scale = 1 / std are written as the
 ``readout_extra_turn_*`` model entries for the BC config. The held-out episodes
 score a closed-form turn readout, omega = omega_max * tanh(w . x + b) fitted by
 least squares on atanh(teacher omega / omega_max), with and without the extra rows,
-as in readout_closed_form.py.
+as in readout_closed_form.py. --shared-adaptation encodes the episodes with the
+opt-in shared bilateral ORN adaptation (#4 P2), as a warm-started BC run would.
 """
 
 import json
@@ -31,13 +33,10 @@ def branch_activities(policy, activity):
 
 
 def main():
-    out_path, dataset, count, artifact = (
-        Path(sys.argv[1]),
-        Path(sys.argv[2]),
-        int(sys.argv[3]),
-        sys.argv[4],
-    )
-    types = sys.argv[5:]
+    argv = [arg for arg in sys.argv[1:] if arg != "--shared-adaptation"]
+    shared = len(argv) < len(sys.argv) - 1
+    out_path, dataset, count, artifact = Path(argv[0]), Path(argv[1]), int(argv[2]), argv[3]
+    types = argv[4:]
     if not types:
         raise SystemExit("Name at least one extra turn type")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -47,6 +46,7 @@ def main():
     if not isinstance(policy, ConnectomePolicy) or policy.readout.mode != "structured":
         raise SystemExit("Needs a connectome policy with the structured DN readout")
     policy.eval()
+    policy.encoder.shared_adaptation = shared
     readout = policy.readout
     # Raw normalized differences: center 0, scale 1 (in memory only; nothing is saved).
     readout.set_extra_turns(types, [0.0] * len(types), [1.0] * len(types))
@@ -99,6 +99,7 @@ def main():
     result = {
         "artifact": str(artifact),
         "artifact_variant": card["variant"],
+        "odor_shared_adaptation": shared,
         "dataset": str(dataset),
         "episodes": count,
         "held_out_episodes": sorted(held),

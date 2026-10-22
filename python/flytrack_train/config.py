@@ -97,6 +97,10 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             policy.core.motor_rate_beta = config["model"]["motor_rate_beta"]
             policy.model_config["motor_rate_beta"] = policy.core.motor_rate_beta
         model = config.get("model", {})
+        if "odor_shared_adaptation" in model:
+            # Explicit warm-start migration (#4 P2): the ORN encoder is fixed, not learned.
+            policy.encoder.shared_adaptation = bool(model["odor_shared_adaptation"])
+            policy.model_config["odor_shared_adaptation"] = policy.encoder.shared_adaptation
         if isinstance(policy, ConnectomePolicy) and model.get("readout_extra_turn_types"):
             # Explicit warm-start migration (#4 B3): new rows, calibrated on this actor, start
             # at zero weight, so the loaded behavior is unchanged until training moves them.

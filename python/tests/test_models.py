@@ -779,6 +779,67 @@ def test_extra_turn_rows_round_trip_and_warm_start_migration(
     assert float(recalibrated.readout.extra_turn_weight.detach()) == pytest.approx(0.3)
 
 
+def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(
+    graph_path, official_frontend, tmp_path
+):
+    contract = SensorContract()
+    obs = {
+        "vision": torch.zeros(1, 2, contract.n_ommatidia),
+        "odor": torch.tensor([[0.26, 0.24]]),
+        "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+    }
+
+    def adapt(policy, observation, steps, state=None):
+        encoder = policy.encoder
+        state = encoder.initial_state(1, "cpu") if state is None else state
+        for _ in range(steps):  # 400 steps = 20 s = 10 adaptation time constants.
+            code, state = policy.sense(observation, state)
+        start = encoder.visual_code_size
+        response = code[0, start : start + encoder.odor_state_size].reshape(2, -1)
+        return response, state[0, encoder.frontend_state_size :].reshape(2, -1), state
+
+    base = build_policy("O", graph_path, contract, official_frontend)
+    assert base.model_config["odor_shared_adaptation"] is False
+    per_side, _, _ = adapt(base, obs, 400)
+    assert float((per_side[0] - per_side[1]).abs().max()) < 1e-3  # Contrast adapted away.
+    shared = build_policy("O", graph_path, contract, official_frontend, odor_shared_adaptation=True)
+    both, k, state = adapt(shared, obs, 400)
+    assert bool((both[0] - both[1] > 0.03).all())
+    assert torch.equal(k[0], k[1])
+    torch.testing.assert_close(k[0], torch.full_like(k[0], 0.25))
+    missing = {**obs, "valid": torch.zeros(1, 3)}
+    _, frozen, _ = adapt(shared, missing, 5, state)
+    assert torch.equal(frozen, k)  # No odor observation, no adaptation.
+    source = tmp_path / "base"
+    save_policy_artifact(
+        source, base, base.model_config, base.contract, graph_path, official_frontend
+    )
+    migrated, _ = prepare_policy(
+        {
+            "init_artifact": str(source),
+            "variant": "O",
+            "graph_path": str(graph_path),
+            "frontend_path": str(official_frontend),
+            "model": {"odor_shared_adaptation": True},
+        },
+        torch.device("cpu"),
+    )
+    assert migrated.encoder.shared_adaptation
+    assert migrated.model_config["odor_shared_adaptation"] is True
+    for name, weight in base.state_dict().items():
+        assert torch.equal(weight, migrated.state_dict()[name])
+    destination = tmp_path / "migrated"
+    save_policy_artifact(
+        destination,
+        migrated,
+        migrated.model_config,
+        migrated.contract,
+        graph_path,
+        official_frontend,
+    )
+    assert load_policy_artifact(destination)[0].encoder.shared_adaptation
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the cuSPARSE bypass is CUDA-only")
 def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
     from flytrack_core.model.sparse import spmm

@@ -550,6 +550,7 @@ class SensoryEncoder(nn.Module):
             "odor_baseline", torch.tensor(config["odor_K"], dtype=torch.float32), persistent=False
         )
         self.hill_n, self.adaptation_tau = config["odor_hill_n"], config["odor_adaptation_tau_s"]
+        self.shared_adaptation = bool(config["odor_shared_adaptation"])
         self.control_dt = contract.control_dt
         self.frontend_state_size = 2 * self.frontend.n_nodes
         self.odor_state_size = 2 * len(config["odor_K"])
@@ -616,9 +617,12 @@ class SensoryEncoder(nn.Module):
         numerator = concentration.pow(self.hill_n)
         response = numerator / (numerator + k.pow(self.hill_n))
         response = torch.where(valid[:, 2, None, None], response, 0.0)
-        evolved_k = (
-            k + min(self.control_dt / self.adaptation_tau, 1) * (concentration - k)
-        ).clamp_min(1e-4)
+        # Shared adaptation (#4 P2, opt-in) moves both sides' K toward the bilateral mean,
+        # so a sustained L/R difference stays in the code instead of adapting to 0.5/0.5.
+        target = concentration.mean(1, keepdim=True) if self.shared_adaptation else concentration
+        evolved_k = (k + min(self.control_dt / self.adaptation_tau, 1) * (target - k)).clamp_min(
+            1e-4
+        )
         new_k = torch.where(valid[:, 2, None, None], evolved_k, k)
         code = torch.cat((visual.flatten(1), response.flatten(1), valid.to(vision.dtype)), dim=1)
         new_state = torch.cat((visual_state, new_k.flatten(1)), dim=1)
@@ -1051,6 +1055,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,
+    # Opt-in (#4 P2): per-side adaptation erased most of the L/R odor contrast the
+    # occlusion teacher steers by (held-out R^2 0.44 vs 0.96 with a shared K).
+    "odor_shared_adaptation": False,
     "visual_bins": 5,
     "visual_input_mapping": {},
     "visual_seed_types": None,

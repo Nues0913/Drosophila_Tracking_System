@@ -44,7 +44,7 @@ class CausalLatency:
                 sample.source_monotonic_ns,
                 sample.ingress_monotonic_ns,
                 sample.forward_monotonic_ns,
-                trace.policy_received_monotonic_ns[index],
+                int(trace.policy_received_monotonic_ns[index]),
                 trace.control_started_monotonic_ns,
                 trace.command_published_monotonic_ns,
             ]

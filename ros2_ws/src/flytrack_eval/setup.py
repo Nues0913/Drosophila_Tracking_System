@@ -15,6 +15,7 @@ setup(
         ("share/" + package_name + "/launch_testing", glob("launch_testing/*.py")),
     ],
     install_requires=["setuptools"],
+    extras_require={"test": ["pytest"]},
     zip_safe=True,
     maintainer="FlyTrack maintainers",
     maintainer_email="maintainers@example.invalid",

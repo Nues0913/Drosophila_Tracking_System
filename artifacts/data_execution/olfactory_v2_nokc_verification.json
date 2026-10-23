@@ -1,0 +1,150 @@
+{
+  "artifact_sha256": {
+    "edges.parquet": "4a97046613489470460ffe16493fd9b6a85415d889a7f7df171ee842f57dd815",
+    "graph.npz": "7c038015d797f6f899c4a2c2eb5a1dd84dc27e793e994612e614084ae98b58a4",
+    "nodes.parquet": "53634f087dab98590b9b3f5407659db0ce349bc1fd7e03e2b10c79e598ed2dbd"
+  },
+  "branch_motor_paths": {
+    "olfactory": {
+      "10360": {
+        "max_hops": 5,
+        "min_hops": 4,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      },
+      "10442": {
+        "max_hops": 6,
+        "min_hops": 4,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      },
+      "10760": {
+        "max_hops": 6,
+        "min_hops": 4,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      },
+      "10783": {
+        "max_hops": 7,
+        "min_hops": 5,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      },
+      "11177": {
+        "max_hops": 6,
+        "min_hops": 5,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      },
+      "523769": {
+        "max_hops": 5,
+        "min_hops": 4,
+        "reachable_seeds": 143,
+        "total_seeds": 143
+      }
+    },
+    "visual": {
+      "10360": {
+        "max_hops": 5,
+        "min_hops": 2,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      },
+      "10442": {
+        "max_hops": 5,
+        "min_hops": 3,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      },
+      "10760": {
+        "max_hops": 6,
+        "min_hops": 2,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      },
+      "10783": {
+        "max_hops": 7,
+        "min_hops": 3,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      },
+      "11177": {
+        "max_hops": 7,
+        "min_hops": 3,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      },
+      "523769": {
+        "max_hops": 5,
+        "min_hops": 2,
+        "reachable_seeds": 583,
+        "total_seeds": 583
+      }
+    }
+  },
+  "checks": {
+    "all_seed_types_reach_motor": true,
+    "anatomical_scope": true,
+    "artifact_hashes": true,
+    "branch_manifest_matches_independent_bfs": true,
+    "budget": true,
+    "convergence_annotation": true,
+    "edge_id_order": true,
+    "every_node_on_bounded_path": true,
+    "exact_induced_raw_edges": true,
+    "forward_present": true,
+    "node_id_order": true,
+    "odor_side_known": true,
+    "olfactory_branch_all_inputs_to_all_motors": true,
+    "publisher_side_mapping": true,
+    "raw_table_hashes": true,
+    "real_publisher_types": true,
+    "signs": true,
+    "threshold": true,
+    "turn_bilateral": true,
+    "type_index_names": true,
+    "visual_branch_all_inputs_to_all_motors": true,
+    "weakly_connected": true
+  },
+  "convergence_neurons": 59,
+  "edges": 31682,
+  "neurons": 4502,
+  "passed": true,
+  "seed_type_dn_paths": {
+    "LC10a": {
+      "maximum_dn_hops": 4,
+      "minimum_dn_hops": 2,
+      "retained": 217
+    },
+    "LC10d": {
+      "maximum_dn_hops": 4,
+      "minimum_dn_hops": 2,
+      "retained": 170
+    },
+    "LC11": {
+      "maximum_dn_hops": 5,
+      "minimum_dn_hops": 3,
+      "retained": 20
+    },
+    "LC9": {
+      "maximum_dn_hops": 5,
+      "minimum_dn_hops": 2,
+      "retained": 21
+    },
+    "LPLC2": {
+      "maximum_dn_hops": 4,
+      "minimum_dn_hops": 3,
+      "retained": 155
+    },
+    "ORN_DM1": {
+      "maximum_dn_hops": 5,
+      "minimum_dn_hops": 4,
+      "retained": 74
+    },
+    "ORN_VA2": {
+      "maximum_dn_hops": 5,
+      "minimum_dn_hops": 4,
+      "retained": 69
+    }
+  }
+}

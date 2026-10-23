@@ -20,19 +20,30 @@ def key(sensor, stamp):
 
 
 class ControlTracer:
-    def __init__(self, node):
+    def __init__(self, node, on_trace_state=None):
         self.domain = os.environ.get("FLYTRACK_CLOCK_DOMAIN", "")
+        self.on_trace_state = on_trace_state
         self.publisher = node.create_publisher(ControlTrace, "/fly/control_trace", TIMING_QOS)
         self.subscription = node.create_subscription(
             SensorTiming, "/fly/sensor_timing", self.on_timing, TIMING_QOS
         )
         self.sequence = 0
+        self.pending = []
         self.reset()
 
     def reset(self):
+        discarded = self.pending_trace_sequences()
         self.timings = OrderedDict()
         self.latest = [None, None, None]
         self.pending = []
+        return discarded
+
+    def pending_trace_sequences(self):
+        return [trace.command_sequence for _, trace, _ in self.pending]
+
+    def report_state(self, trace, state, reason):
+        if self.on_trace_state is not None:
+            self.on_trace_state(trace.command_sequence, state, reason, time.monotonic_ns())
 
     def on_timing(self, message):
         sample = key(message.sensor, message.header.stamp)
@@ -49,7 +60,8 @@ class ControlTracer:
     def command(self, stamp, started_ns, published_ns, valid, runtime_stamps, inference):
         trace = ControlTrace()
         trace.header.stamp, trace.header.frame_id = stamp, "base_link"
-        trace.command_sequence, self.sequence = self.sequence, self.sequence + 1
+        trace.command_sequence = self.sequence
+        self.sequence += 1
         trace.clock_domain = self.domain
         trace.control_started_monotonic_ns = started_ns
         trace.command_published_monotonic_ns = published_ns
@@ -71,7 +83,14 @@ class ControlTracer:
             trace.samples[index] = sample
             identities.append(identity)
         self.pending.append((time.monotonic_ns() + 1000000000, trace, identities))
+        self.report_state(trace, "pending", "submitted_to_tracer")
         self.drain()
+        status = (
+            "pending"
+            if trace.command_sequence in self.pending_trace_sequences()
+            else "publisher_called"
+        )
+        return trace.command_sequence, status
 
     def drain(self):
         remaining = []
@@ -88,6 +107,8 @@ class ControlTracer:
                     trace.samples[index] = deepcopy(timing)
             if complete or now >= deadline:
                 self.publisher.publish(trace)
+                reason = "required_timings_available" if complete else "deadline_expired"
+                self.report_state(trace, "publisher_called", reason)
             else:
                 remaining.append((deadline, trace, identities))
         self.pending = remaining

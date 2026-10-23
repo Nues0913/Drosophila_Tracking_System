@@ -85,7 +85,7 @@ def train_es(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         )
     # ES has one step size: a zero group rate (#4: core_bias_learning_rate: 0) keeps
     # those parameters out of the search; any other group rate cannot be honoured.
-    for name in ("core_bias_learning_rate", "readout_learning_rate"):
+    for name in ("core_bias_learning_rate", "readout_learning_rate", "readout_bias_learning_rate"):
         if train.get(name) is not None and float(train[name]) != 0:
             raise ValueError(f"ES supports only 0 (frozen) for {name}")
     frozen = {

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 from flytrack_core.contracts import SensorContract
 from flytrack_core.model import (
     assert_parameter_budget,
@@ -152,6 +153,15 @@ def test_dense_and_csr_dynamics_agree(graph):
     torch.testing.assert_close(
         dense(external, state), sparse(external, state), atol=1e-6, rtol=1e-5
     )
+
+
+def test_direct_runs_use_the_matrix_dense_threshold():
+    """pretrain/bc/ppo fall back to DEFAULT_CONFIG; only the matrix reads variants.yaml."""
+    root = Path(__file__).resolve().parents[2]
+    common = yaml.safe_load((root / "configs/model/variants.yaml").read_text())["common"]
+    assert DEFAULT_CONFIG["dense_threshold"] == common["dense_threshold"] == 4000
+    # main (2,569) stays dense; no-KC (4,502) and olfactory_v2 (6,244) are sparse.
+    assert 2569 < DEFAULT_CONFIG["dense_threshold"] <= 4502
 
 
 def test_dense_and_csr_parameter_gradients_agree(graph):
@@ -651,6 +661,239 @@ def test_optional_turn_bias_sets_mean_turn_without_changing_default(graph):
         biased.turn_bias.fill_(0.2)
     omega = biased([rate])[0, 1]
     torch.testing.assert_close(omega, SensorContract().omega_max * torch.tanh(torch.tensor(0.2)))
+
+
+def test_extra_turn_rows_are_calibrated_normalized_differences_starting_at_zero(graph):
+    rate = torch.rand((3, graph.n_nodes), generator=torch.Generator().manual_seed(0)) + 0.1
+    plain = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
+    assert plain.extra_turn_types == []
+    assert "extra_turn_weight" not in dict(plain.named_parameters())
+    extra = MotorReadout(graph, SensorContract(), "structured", turn_bias=True)
+    extra.set_extra_turns(["ORN_DM1"], [0.1], [2.0])
+    # ORN_DM1 is nodes 2 (left) and 3 (right); it stays out of the motor populations.
+    total = rate[:, 2] + rate[:, 3]
+    expected = total / (total + 0.1) * ((rate[:, 2] - rate[:, 3]) / total - 0.1) * 2.0
+    torch.testing.assert_close(extra.extra_turn_features(rate)[:, 0], expected)
+    assert torch.equal(extra([rate]), plain([rate]))  # Zero-initialized row.
+    with torch.no_grad():
+        extra.extra_turn_weight.fill_(0.5)
+    latent = rate @ plain.difference.T @ plain.turn_weight + 0.5 * expected
+    torch.testing.assert_close(
+        extra([rate])[:, 1], SensorContract().omega_max * torch.tanh(latent.detach())
+    )
+    extra.set_extra_turns(["ORN_DM1"], [0.0], [1.0])  # Recalibration keeps the weight.
+    assert float(extra.extra_turn_weight.detach()) == 0.5
+    torch.testing.assert_close(extra.extra_center, torch.zeros(1))
+
+
+def test_extra_turn_rows_fade_with_bounded_gradients_when_both_sides_are_silent(graph):
+    """#63 review: both DNb05 sides sit near 0 for the first ~3 s of every episode."""
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    readout.set_extra_turns(["ORN_DM1"], [-0.2], [300.0], eps=0.1)
+    rate = torch.zeros((4, graph.n_nodes))
+    rate[:, 2] = torch.tensor([0.0, 1e-9, 1e-6, 1e-3])
+    rate[:, 3] = torch.tensor([0.0, 0.0, 3e-6, 2e-3])
+    rate.requires_grad_()
+    feature = readout.extra_turn_features(rate)[:, 0]
+    assert bool(torch.isfinite(feature).all()) and float(feature.abs().max()) < 3.0
+    assert float(feature[0]) == 0.0
+    (gradient,) = torch.autograd.grad(feature.sum(), rate)
+    # |d feature / d L| <= scale * (|ratio - center| + 2) / eps while S < eps.
+    assert bool(torch.isfinite(gradient).all())
+    assert float(gradient.abs().max()) <= 300.0 * (1.2 + 2) / 0.1
+
+
+@pytest.mark.parametrize(
+    "types, center, scale, eps, message",
+    [
+        (["DNb05"], [0.0], [1.0], 0.1, "nodes on both sides"),
+        (["DNa01"], [0.0], [1.0], 0.1, "already a motor DN"),
+        (["ORN_DM1"], [0.0], [], 0.1, "one center and scale each"),
+        (["ORN_DM1", "ORN_DM1"], [0.0, 0.0], [1.0, 1.0], 0.1, "unique"),
+        (["ORN_DM1"], [0.0], [0.0], 0.1, "scales positive"),
+        (["ORN_DM1"], [float("nan")], [1.0], 0.1, "centers must be finite"),
+        (["ORN_DM1"], [0.0], [1.0], 0.0, "eps must be positive"),
+    ],
+)
+def test_extra_turn_rows_reject_invalid_definitions(graph, types, center, scale, eps, message):
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    with pytest.raises(ValueError, match=message):
+        readout.set_extra_turns(types, center, scale, eps)
+
+
+def test_extra_turn_rows_cannot_change_types_or_use_the_linear_readout(graph):
+    readout = MotorReadout(graph, SensorContract(), "structured")
+    readout.set_extra_turns(["ORN_DM1"], [0.0], [1.0])
+    with pytest.raises(ValueError, match="cannot change"):
+        readout.set_extra_turns(["LC10a"], [0.0], [1.0])
+    with pytest.raises(ValueError, match="cannot be removed"):
+        readout.set_extra_turns([], [], [])
+    with pytest.raises(ValueError, match="structured readout"):
+        MotorReadout(graph, SensorContract(), "linear").set_extra_turns(["ORN_DM1"], [0.0], [1.0])
+
+
+def test_extra_turn_rows_round_trip_and_warm_start_migration(
+    graph_path, official_frontend, tmp_path
+):
+    with pytest.raises(ValueError, match="connectome policy"):
+        build_policy(
+            "GRU",
+            graph_path,
+            SensorContract(),
+            official_frontend,
+            readout_extra_turn_types=["ORN_DM1"],
+            readout_extra_turn_center=[0.0],
+            readout_extra_turn_scale=[1.0],
+        )
+    base = build_policy("O", graph_path, SensorContract(), official_frontend)
+    assert base.model_config["readout_extra_turn_types"] == []
+    source = tmp_path / "base"
+    save_policy_artifact(
+        source, base, base.model_config, base.contract, graph_path, official_frontend
+    )
+    obs = {
+        "vision": torch.zeros(1, 2, SensorContract().n_ommatidia),
+        "odor": torch.tensor([[1.2, 0.8]]),
+        "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+    }
+    config = {
+        "init_artifact": str(source),
+        "variant": "O",
+        "graph_path": str(graph_path),
+        "frontend_path": str(official_frontend),
+        "model": {
+            "readout_extra_turn_types": ["ORN_DM1"],
+            "readout_extra_turn_center": [0.05],
+            "readout_extra_turn_scale": [3.0],
+        },
+    }
+    migrated, _ = prepare_policy(config, torch.device("cpu"))
+    assert migrated.model_config["readout_extra_turn_center"] == [0.05]
+    assert set(migrated.state_dict()) - set(base.state_dict()) == {"readout.extra_turn_weight"}
+    assert torch.equal(
+        migrated(obs, migrated.initial_state(1, "cpu"))[0],
+        base(obs, base.initial_state(1, "cpu"))[0],
+    )
+    with torch.no_grad():
+        migrated.readout.extra_turn_weight.fill_(0.3)
+    destination = tmp_path / "migrated"
+    save_policy_artifact(
+        destination,
+        migrated,
+        migrated.model_config,
+        migrated.contract,
+        graph_path,
+        official_frontend,
+    )
+    recovered, _, card = load_policy_artifact(destination)
+    assert card["model_config"]["readout_extra_turn_scale"] == [3.0]
+    torch.testing.assert_close(
+        recovered(obs, recovered.initial_state(1, "cpu"))[0],
+        migrated(obs, migrated.initial_state(1, "cpu"))[0],
+    )
+    # Continuing from an actor that already has the rows keeps them only if unchanged.
+    continued, _ = prepare_policy(
+        {**config, "init_artifact": str(destination)}, torch.device("cpu")
+    )
+    assert float(continued.readout.extra_turn_weight.detach()) == pytest.approx(0.3)
+    changed = {**config["model"], "readout_extra_turn_center": [0.0]}
+    with pytest.raises(ValueError, match="already has different extra turn rows"):
+        prepare_policy(
+            {**config, "init_artifact": str(destination), "model": changed},
+            torch.device("cpu"),
+        )
+
+
+def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(
+    graph_path, official_frontend, tmp_path
+):
+    contract = SensorContract()
+    obs = {
+        "vision": torch.zeros(1, 2, contract.n_ommatidia),
+        "odor": torch.tensor([[0.26, 0.24]]),
+        "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+    }
+
+    def adapt(policy, observation, steps, state=None):
+        encoder = policy.encoder
+        state = encoder.initial_state(1, "cpu") if state is None else state
+        for _ in range(steps):  # 400 steps = 20 s = 10 adaptation time constants.
+            code, state = policy.sense(observation, state)
+        start = encoder.visual_code_size
+        response = code[0, start : start + encoder.odor_state_size].reshape(2, -1)
+        return response, state[0, encoder.frontend_state_size :].reshape(2, -1), state
+
+    base = build_policy("O", graph_path, contract, official_frontend)
+    assert base.model_config["odor_shared_adaptation"] is False
+    per_side, _, _ = adapt(base, obs, 400)
+    assert float((per_side[0] - per_side[1]).abs().max()) < 1e-3  # Contrast adapted away.
+    shared = build_policy("O", graph_path, contract, official_frontend, odor_shared_adaptation=True)
+    both, k, state = adapt(shared, obs, 400)
+    assert bool((both[0] - both[1] > 0.03).all())
+    assert torch.equal(k[0], k[1])
+    torch.testing.assert_close(k[0], torch.full_like(k[0], 0.25))
+    missing = {**obs, "valid": torch.zeros(1, 3)}
+    _, frozen, _ = adapt(shared, missing, 5, state)
+    assert torch.equal(frozen, k)  # No odor observation, no adaptation.
+    source = tmp_path / "base"
+    save_policy_artifact(
+        source, base, base.model_config, base.contract, graph_path, official_frontend
+    )
+    migrated, _ = prepare_policy(
+        {
+            "init_artifact": str(source),
+            "variant": "O",
+            "graph_path": str(graph_path),
+            "frontend_path": str(official_frontend),
+            "model": {"odor_shared_adaptation": True},
+        },
+        torch.device("cpu"),
+    )
+    assert migrated.encoder.shared_adaptation
+    assert migrated.model_config["odor_shared_adaptation"] is True
+    for name, weight in base.state_dict().items():
+        assert torch.equal(weight, migrated.state_dict()[name])
+    destination = tmp_path / "migrated"
+    save_policy_artifact(
+        destination,
+        migrated,
+        migrated.model_config,
+        migrated.contract,
+        graph_path,
+        official_frontend,
+    )
+    assert load_policy_artifact(destination)[0].encoder.shared_adaptation
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_numpy_orn_adapter_matches_the_policy_encoder(graph_path, official_frontend, shared):
+    """The NumPy sensing adapter documents parity with the Torch encoder (#63 review)."""
+    from flytrack_core.sensing import ORNAdapter
+
+    contract = SensorContract()
+    policy = build_policy(
+        "O",
+        graph_path,
+        contract,
+        official_frontend,
+        odor_K=[0.1, 0.3, 1.0],
+        odor_shared_adaptation=shared,
+    )
+    reference = ORNAdapter(num_types=3, K=[0.1, 0.3, 1.0], shared_adaptation=shared)
+    concentrations = np.random.default_rng(0).uniform(0.0, 0.6, (120, 2))
+    concentrations[40:80] = [0.26, 0.24]  # A sustained contrast, where the two modes differ.
+    state = policy.encoder.initial_state(1, "cpu")
+    start = policy.encoder.visual_code_size
+    for c in concentrations:
+        obs = {
+            "vision": torch.zeros(1, 2, contract.n_ommatidia),
+            "odor": torch.tensor([c], dtype=torch.float32),
+            "valid": torch.tensor([[0.0, 0.0, 1.0]]),
+        }
+        code, state = policy.sense(obs, state)
+        expected = reference.update(c.astype(np.float32), contract.control_dt)
+        observed = code[0, start : start + policy.encoder.odor_state_size].reshape(2, 3)
+        np.testing.assert_allclose(observed.numpy(), expected, atol=1e-5)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the cuSPARSE bypass is CUDA-only")

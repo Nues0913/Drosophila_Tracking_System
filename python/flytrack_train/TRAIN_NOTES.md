@@ -30,6 +30,13 @@ output: runs/VO/seed_0
 
 路徑以執行指令時的工作目錄為基準，建議在儲存庫根目錄執行。感測契約亦可改用 inline `sensor_contract`。`init_artifact` 載入同 variant 完整 actor 權重並驗證契約、子圖、前端來源；不載入 critic 或 optimizer。recovery 的身分包含上游 actor（`init_artifact`、`pretrained_artifacts`）的 `model_card.json` 雜湊：上游階段重跑後，下游的 checkpoint 和已完成的 actor 都會驗證失敗，必須刪除下游輸出後重跑，不會沿用由舊上游訓練出來的結果。`scenario_configs` 可指定情境 → YAML 路徑，依當前環境情境讀取，檔案的 `name` 必須吻合，其餘欄位合併至 `env.scenario_config`；inline 情境欄位優先於檔案。`configs/scenarios/*.yaml` 是情境參數的唯一來源：occlusion、noise、conflict 情境若沒有對應的 `scenario_configs`（也沒有 inline `env.scenario_config`），`make_env` 直接報錯，不再默默改用 `ScenarioSpec` 的程式預設值（#2）；程式預設值已改成與 YAML 相同，只供單元測試與 ROS 未指定檔案時使用。`configs/train/` 下的訓練範本都已加上 `scenario_configs`。
 
+**BC 的情境混合（#4 方向 3）。** 只有 BC 的資料收集可以設 `env.scenario_mix`，PPO、ES、pretrain 和評估遇到會直接報錯。原因是 PPO checkpoint 會讀寫 env 的 `_episode_id`，包裝層無法讓它在各個子世界之間保持一致。
+
+- **格式**：每一項是 `{scenario, weight, scenario_config?}`。inline 的 `scenario_config` 會像 `env.scenario_config` 一樣，覆蓋在該情境的 YAML 之上。設了 `scenario_mix` 就不能再設 `env.scenario` 或 `env.scenario_config`。
+- **抽籤**：每回合要用哪個情境，只由 episode seed 和固定的 RNG stream（`SCENARIO_MIX_STREAM`）決定，跟 worker 數和 reset 順序都無關，所以 recovery 重收時會得到相同的世界。reset 的 info 會多一個 `mix_scenario`。
+- **共用選項**：其他 env 選項，例如 `occlusion_odor_steering`，會套用到每一個子世界。
+- **工具**：`scripts/diagnostics/prepare_odor_task_bc.py` 產生方向 3 的 A／B／C 三組設定；`scripts/diagnostics/odor_reliance_eval.py` 在相同 seed 上，配對比較完整模型和 odor lesion。
+
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision
 python -m flytrack_train bc --config configs/train/bc.yaml --variant VO --seed 0 --output runs/bc/VO/seed_0
@@ -117,7 +124,7 @@ train:
 
 `imitation.parameter_groups` 依名稱分組：`core.bias`（神經元型別偏置）在 BC 固定，`readout.*` 以 1e-2 學習，其餘用 `learning_rate`。離線 BC 顯示偏置的梯度比連結強度大 30～1000 倍，優化器先調偏置去配合平均動作，同時把已傳到 DN 的方位資訊破壞（DN 左右差 R² 0.67→−0.12）；固定偏置則保留。GRU 沒有連接體偏置，只套用讀出學習率。`early_stopping_min_delta` 為相對改善門檻，0 時驗證損失每 epoch 只降 0.1% 也永不停止。
 
-PPO 和 ES 也一樣：同一個設定在每個階段都成立，例如 pretrain 和 BC 凍結的 bias 不會在 PPO 又被訓練。PPO 的 critic 另成一組；ES 只有一個步長，所以只接受 0（把該組排除在搜尋向量之外），其他群組學習率會報錯。pretrain 也使用 `parameter_groups`（#4、#7）：可以設 `core_bias_learning_rate`、`readout_learning_rate`，沒設定時和原本一樣只有單一學習率。auxiliary decoder 另成一組，所以 pretrain 的 optimizer 至少有 2 個參數組。**這個版本之前開始、還沒跑完的 pretrain checkpoint 無法 resume**（`optimizer.load_state_dict` 的參數組數對不上），要從頭重跑該階段；已完成的 pretrain actor 不受影響，可以照常當 `init_artifact`。
+PPO 和 ES 也讀同一組設定鍵：在 PPO／ES 的設定裡寫 `core_bias_learning_rate: 0`，bias 就會在該階段凍結。**正式設定刻意不這樣做**：pretrain 和 BC 凍結 bias，PPO／ES 讓 bias 可訓練，因為 bias 佔可訓練參數約 11.5%，全程凍結會讓連接體變體超出和 GRU 的 ±5% 參數預算（#4 Decision、#36）。PPO 的 critic 另成一組；ES 只有一個步長，所以只接受 0（把該組排除在搜尋向量之外），其他群組學習率會報錯。pretrain 也使用 `parameter_groups`（#4、#7）：可以設 `core_bias_learning_rate`、`readout_learning_rate`，沒設定時和原本一樣只有單一學習率。auxiliary decoder 另成一組，所以 pretrain 的 optimizer 至少有 2 個參數組。**這個版本之前開始、還沒跑完的 pretrain checkpoint 無法 resume**（`optimizer.load_state_dict` 的參數組數對不上），要從頭重跑該階段；已完成的 pretrain actor 不受影響，可以照常當 `init_artifact`。
 
 先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
@@ -168,6 +175,7 @@ PPO actor 共用 imitation 的參數組：`train.core_bias_learning_rate` 和
 `3e-4`）；設成 0 時該組不執行 optimizer 更新，包含 Adam moments 與 weight decay。
 critic 獨立成組，始終使用 base learning rate。群組學習率必須有限且非負。
 兩項皆未設且沒有暖身時，保持原本參數順序及更新結果。
+`train.readout_bias_learning_rate` 可覆寫 readout bias 的學習率，必須為有限非負數（不接受 bool），設為 0 時凍結 `readout.turn_bias` 和 `readout.forward_bias`。
 
 `train.critic_warmup_updates` 預設 0，必須為非負整數。設 N 時，第 1～N 次
 rollout update 的 actor 各組 lr 為 0、參數不變，critic 照常更新；

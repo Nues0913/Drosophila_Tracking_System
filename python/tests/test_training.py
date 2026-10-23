@@ -575,6 +575,106 @@ def test_bc_parameter_groups_override_core_bias_and_readout_rates():
         parameter_groups(policy, {"core_bias_learning_rate": -1})
 
 
+@pytest.fixture
+def readout_rate_policy():
+    policy = torch.nn.Module()
+    policy.core = torch.nn.Module()
+    policy.core.bias = torch.nn.Parameter(torch.zeros(3))
+    policy.core.raw_alpha = torch.nn.Parameter(torch.zeros(3))
+    policy.core.turn_bias = torch.nn.Parameter(torch.zeros(3))
+    policy.readout = torch.nn.Module()
+    for name in ("turn_weight", "forward_weight", "turn_bias", "forward_bias"):
+        policy.readout.register_parameter(name, torch.nn.Parameter(torch.zeros(2)))
+    policy.readout.linear = torch.nn.Linear(2, 2)
+    return policy
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"core_bias_learning_rate": 0, "readout_learning_rate": 1e-2}],
+)
+@pytest.mark.parametrize("optional", [{}, {"readout_bias_learning_rate": None}])
+def test_readout_bias_rate_omitted_preserves_legacy_groups(
+    readout_rate_policy, overrides, optional
+):
+    train = {"learning_rate": 1e-3, **overrides, **optional}
+    expected = {}
+    # Original grouping rule, including insertion order and merging equal rates.
+    for name, parameter in readout_rate_policy.named_parameters():
+        rate = next(
+            (
+                train[key]
+                for prefix, key in (
+                    ("core.bias", "core_bias_learning_rate"),
+                    ("readout.", "readout_learning_rate"),
+                )
+                if train.get(key) is not None and name.startswith(prefix)
+            ),
+            train["learning_rate"],
+        )
+        expected.setdefault(float(rate), []).append(id(parameter))
+    actual = parameter_groups(readout_rate_policy, train)
+    assert [(g["lr"], [id(p) for p in g["params"]]) for g in actual] == list(expected.items())
+
+
+def test_zero_readout_bias_rate_freezes_only_matching_parameters(readout_rate_policy):
+    policy = readout_rate_policy
+    before = {name: p.detach().clone() for name, p in policy.named_parameters()}
+    optimizer = torch.optim.Adam(
+        parameter_groups(policy, {"readout_bias_learning_rate": 0, "readout_learning_rate": 1e-2})
+    )
+    sum(p.sum() for p in policy.parameters()).backward()
+    optimizer.step()
+    for name, parameter in policy.named_parameters():
+        if name in ("readout.turn_bias", "readout.forward_bias"):
+            assert torch.equal(parameter.detach().view(torch.uint8), before[name].view(torch.uint8))
+        else:
+            assert not torch.equal(parameter, before[name]), name
+
+
+@pytest.mark.parametrize("readout_rate", [None, 1e-2])
+def test_readout_bias_rate_precedence_and_name_boundaries(readout_rate_policy, readout_rate):
+    train = {
+        "learning_rate": 1e-3,
+        "core_bias_learning_rate": 0,
+        "readout_learning_rate": readout_rate,
+        "readout_bias_learning_rate": 2e-2,
+    }
+    groups = parameter_groups(readout_rate_policy, train)
+    rates = {id(p): g["lr"] for g in groups for p in g["params"]}
+    bias_group = next(g for g in groups if g["lr"] == 2e-2)
+    assert {id(p) for p in bias_group["params"]} == {
+        id(readout_rate_policy.readout.turn_bias),
+        id(readout_rate_policy.readout.forward_bias),
+    }
+    for name, p in readout_rate_policy.named_parameters():
+        expected = 1e-3
+        if name.startswith("core.bias"):
+            expected = 0
+        elif name.startswith("readout."):
+            expected = 2e-2 if name.endswith("_bias") else readout_rate or 1e-3
+        assert rates[id(p)] == expected, name
+
+
+def test_negative_readout_bias_rate_is_rejected(readout_rate_policy):
+    with pytest.raises(ValueError, match="^Group learning rates must be nonnegative$"):
+        parameter_groups(readout_rate_policy, {"readout_bias_learning_rate": -1e-3})
+
+
+@pytest.mark.parametrize("rate", [-1e-3, 1e-3])
+def test_es_rejects_nonzero_readout_bias_rate(tmp_path, monkeypatch, readout_rate_policy, rate):
+    from flytrack_train import es
+
+    monkeypatch.setattr(es, "prepare_policy", lambda *args: (readout_rate_policy, None))
+    with pytest.raises(ValueError, match="ES supports only 0 .* for readout_bias_learning_rate"):
+        es.train_es(
+            {"train": {"readout_bias_learning_rate": rate}},
+            tmp_path,
+            0,
+            torch.device("cpu"),
+        )
+
+
 def test_environment_audit_flags_the_blind_circling_world():
     from flytrack_core.contracts import SensorContract
     from flytrack_train.audit import audit_environment

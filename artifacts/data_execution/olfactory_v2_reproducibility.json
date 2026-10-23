@@ -1,0 +1,16 @@
+{
+  "sha256": {
+    "annotation_columns.json": "65ae30e64583d7a05a7b4dfa636b120419876e3efccaba7f7f5dd267fd32085f",
+    "edges.parquet": "cba159208a831f85463f342896f1ab3e834b9c7c718968660e9f62a878d3faf2",
+    "excluded_odor_seed_sides.csv": "8b45772e907f75baf21c790acc51ef7a8d50b58a4abd83d6c3e77621cc81dc39",
+    "graph.npz": "f28f28778497c01f8d33ae80196a9844f9d56f5ee72ba1944b0acf219ad1b531",
+    "manifest.json": "1bdaa221d1a0ff4d3d09f7502e0fae8a8fc1cb3de6e2d8621c24b9c06ee8eda2",
+    "nodes.parquet": "7ac5452952f22469216f508fe27a082a138641055705c14358a5ae23ee0cf478",
+    "nt_unresolved.csv": "12948931054840036480f6473264a456acd4ca850838415f0ddd6eb290684f09",
+    "raw_schemas.json": "fca770ac983ee3de494cb1e5d4c6181151d60649bccd6abe6f4f6cf11a23181e",
+    "type_inventory.csv": "d5d7ba52a6ea0ff617043b93666ea590821b9baf8600eacd393c8becc83f9298",
+    "untyped_in_scope.csv": "b6a18b88e6cb757a3d1da6d2809d8770578ece5c73af84bbf27bd73785c97b69"
+  },
+  "source_commit": "8c183b5",
+  "two_extractions_byte_identical": true
+}

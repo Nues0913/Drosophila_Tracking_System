@@ -21,6 +21,7 @@ x-ros: &ros
       TORCH_INDEX_URL: ${ROS_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
   network_mode: host
   ipc: host
+  stop_signal: SIGINT
   working_dir: /workspace
   environment:
     ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}

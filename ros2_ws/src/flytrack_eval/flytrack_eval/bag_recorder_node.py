@@ -50,7 +50,7 @@ class BagRecorderNode(Node):
         ]
         if bool(self.get_parameter("use_sim_time").value):
             arguments.append("--use-sim-time")
-        arguments.extend(list(self.get_parameter("topics").value))
+        arguments.extend(["--topics", *self.get_parameter("topics").value])
         self.process = subprocess.Popen(arguments)
         self.reported_exit = False
         self.create_timer(1.0, self.check_process)

@@ -1,0 +1,776 @@
+{
+  "config": {
+    "allowed_superclasses": [
+      "cb_intrinsic",
+      "visual_projection",
+      "descending_neuron",
+      "cb_sensory"
+    ],
+    "columns": {
+      "body": "bodyId",
+      "nt_body": "body",
+      "nt_prediction": "consensus_nt",
+      "post": "body_post",
+      "pre": "body_pre",
+      "root_side": "rootSide",
+      "side": "somaSide",
+      "type": "type",
+      "weight": "weight"
+    },
+    "convergence_hops": 3,
+    "downstream_hops": 3,
+    "max_neurons": 3000,
+    "min_neurons": 500,
+    "min_synapses": 60,
+    "min_total_synapses": 5,
+    "nt_confidence_min": 0.5,
+    "output": "data/subgraphs/main",
+    "raw_dir": "data/raw",
+    "selection": {
+      "forward_dn_patterns": [
+        "DNp09"
+      ],
+      "odor_seed_patterns": [
+        "ORN_DM1",
+        "ORN_VA2"
+      ],
+      "turn_dn_patterns": [
+        "DNa01",
+        "DNa02"
+      ],
+      "unknown_odor_side_policy": "drop",
+      "visual_seed_patterns": [
+        "LC10a",
+        "LC10d",
+        "LC9",
+        "LC11",
+        "LPLC2"
+      ]
+    },
+    "selection_rationale": {
+      "candidate_audit": "artifacts/data_execution/candidate_scan.json",
+      "convergence": "Only four h<=3 convergence neurons; treat biological convergence as sparse and report VO-late fallback",
+      "threshold": "60 retains all seven sensory types within budget; 55/up5 exceeds 3000 and 65 loses LC9/LC11",
+      "upstream_hops": "Increased initial 4 to 5: real ORN_DM1/VA2 and LC11 shortest paths to DN are five edges at theta=60"
+    },
+    "unknown_nt_policy": "drop",
+    "unknown_type_policy": "drop",
+    "upstream_hops": 5
+  },
+  "driver_sha256": "d913da4f198fc6f4cacb03db90b0c8b3e9d01f5515eefc4ff0582ab9925190e6",
+  "results": [
+    {
+      "convergence": 108,
+      "edges": 59518,
+      "neurons": 8868,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10783": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 145
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 145
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        }
+      },
+      "odor_downstream_hops": 3,
+      "olfactory_population": 3834,
+      "retained_seed_counts": {
+        "LC10a": 235,
+        "LC10d": 193,
+        "LC11": 66,
+        "LC9": 101,
+        "LPLC2": 180,
+        "ORN_DM1": 74,
+        "ORN_VA2": 71
+      },
+      "threshold": 40,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 5142
+    },
+    {
+      "convergence": 108,
+      "edges": 65437,
+      "neurons": 9766,
+      "odor_branch_all_inputs_to_all_motors": true,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10442": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10783": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "11177": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        }
+      },
+      "odor_downstream_hops": 4,
+      "olfactory_population": 5504,
+      "retained_seed_counts": {
+        "LC10a": 235,
+        "LC10d": 193,
+        "LC11": 66,
+        "LC9": 101,
+        "LPLC2": 180,
+        "ORN_DM1": 74,
+        "ORN_VA2": 71
+      },
+      "threshold": 40,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 5171
+    },
+    {
+      "convergence": 108,
+      "edges": 82017,
+      "neurons": 11887,
+      "odor_branch_all_inputs_to_all_motors": true,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10442": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "10783": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "11177": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 145,
+          "total_seeds": 145
+        }
+      },
+      "odor_downstream_hops": 5,
+      "olfactory_population": 10114,
+      "retained_seed_counts": {
+        "LC10a": 235,
+        "LC10d": 193,
+        "LC11": 66,
+        "LC9": 101,
+        "LPLC2": 180,
+        "ORN_DM1": 74,
+        "ORN_VA2": 71
+      },
+      "threshold": 40,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 5219
+    },
+    {
+      "convergence": 59,
+      "edges": 30190,
+      "neurons": 4823,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10783": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 143
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 143
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        }
+      },
+      "odor_downstream_hops": 3,
+      "olfactory_population": 1633,
+      "retained_seed_counts": {
+        "LC10a": 217,
+        "LC10d": 170,
+        "LC11": 20,
+        "LC9": 21,
+        "LPLC2": 155,
+        "ORN_DM1": 74,
+        "ORN_VA2": 69
+      },
+      "threshold": 50,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 3249
+    },
+    {
+      "convergence": 59,
+      "edges": 35627,
+      "neurons": 6244,
+      "odor_branch_all_inputs_to_all_motors": true,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10783": {
+          "max_hops": 7,
+          "min_hops": 5,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "11177": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        }
+      },
+      "odor_downstream_hops": 4,
+      "olfactory_population": 3463,
+      "retained_seed_counts": {
+        "LC10a": 217,
+        "LC10d": 170,
+        "LC11": 20,
+        "LC9": 21,
+        "LPLC2": 155,
+        "ORN_DM1": 74,
+        "ORN_VA2": 69
+      },
+      "threshold": 50,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 3264
+    },
+    {
+      "convergence": 59,
+      "edges": 45418,
+      "neurons": 7668,
+      "odor_branch_all_inputs_to_all_motors": true,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "10783": {
+          "max_hops": 7,
+          "min_hops": 5,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "11177": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 143,
+          "total_seeds": 143
+        }
+      },
+      "odor_downstream_hops": 5,
+      "olfactory_population": 6162,
+      "retained_seed_counts": {
+        "LC10a": 217,
+        "LC10d": 170,
+        "LC11": 20,
+        "LC9": 21,
+        "LPLC2": 155,
+        "ORN_DM1": 74,
+        "ORN_VA2": 69
+      },
+      "threshold": 50,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 3307
+    },
+    {
+      "convergence": 42,
+      "edges": 21913,
+      "neurons": 3673,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 3,
+      "olfactory_population": 1154,
+      "retained_seed_counts": {
+        "LC10a": 212,
+        "LC10d": 163,
+        "LC11": 8,
+        "LC9": 5,
+        "LPLC2": 134,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 55,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 2561
+    },
+    {
+      "convergence": 42,
+      "edges": 26049,
+      "neurons": 4764,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": 7,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 4,
+      "olfactory_population": 2519,
+      "retained_seed_counts": {
+        "LC10a": 212,
+        "LC10d": 163,
+        "LC11": 8,
+        "LC9": 5,
+        "LPLC2": 134,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 55,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 2572
+    },
+    {
+      "convergence": 42,
+      "edges": 33939,
+      "neurons": 5989,
+      "odor_branch_all_inputs_to_all_motors": true,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": 7,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": 7,
+          "min_hops": 6,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": 5,
+          "min_hops": 4,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 5,
+      "olfactory_population": 4660,
+      "retained_seed_counts": {
+        "LC10a": 212,
+        "LC10d": 163,
+        "LC11": 8,
+        "LC9": 5,
+        "LPLC2": 134,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 55,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 2603
+    },
+    {
+      "convergence": 4,
+      "edges": 14165,
+      "neurons": 2569,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 3,
+      "olfactory_population": 613,
+      "retained_seed_counts": {
+        "LC10a": 208,
+        "LC10d": 143,
+        "LC11": 1,
+        "LC9": 1,
+        "LPLC2": 112,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 60,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 1960
+    },
+    {
+      "convergence": 7,
+      "edges": 17447,
+      "neurons": 3334,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 4,
+      "olfactory_population": 1402,
+      "retained_seed_counts": {
+        "LC10a": 208,
+        "LC10d": 143,
+        "LC11": 1,
+        "LC9": 1,
+        "LPLC2": 112,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 60,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 1976
+    },
+    {
+      "convergence": 7,
+      "edges": 20151,
+      "neurons": 3820,
+      "odor_branch_all_inputs_to_all_motors": false,
+      "odor_branch_motor_paths": {
+        "10360": {
+          "max_hops": 5,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10442": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10760": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "10783": {
+          "max_hops": 7,
+          "min_hops": 6,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        },
+        "11177": {
+          "max_hops": null,
+          "min_hops": null,
+          "reachable_seeds": 0,
+          "total_seeds": 142
+        },
+        "523769": {
+          "max_hops": 6,
+          "min_hops": 5,
+          "reachable_seeds": 142,
+          "total_seeds": 142
+        }
+      },
+      "odor_downstream_hops": 5,
+      "olfactory_population": 2119,
+      "retained_seed_counts": {
+        "LC10a": 208,
+        "LC10d": 143,
+        "LC11": 1,
+        "LC9": 1,
+        "LPLC2": 112,
+        "ORN_DM1": 73,
+        "ORN_VA2": 69
+      },
+      "threshold": 60,
+      "upstream_hops": 5,
+      "visual_downstream_hops": 3,
+      "visual_population": 1998
+    }
+  ],
+  "source_sha256": {
+    "annotations": "2177e246113e4cfbf1e7772ec37c6da1955ff22e8063d0b1f833101f99a9a3b2",
+    "neurotransmitters": "95c9289220663abeb3409f3ad9e5a7f8a53f8093f5139d15502cd08da8879621",
+    "weights": "e35da783d1c686b2b58b3b87cd6a403ae43bfcfba8bff28e08ef752c1a56afc1"
+  }
+}

@@ -2,7 +2,7 @@
 
 以 flyvis 預訓練早期視覺前端（方案 A）加上 MaleCNS v1.0 中央子圖組成感測策略：先在 2D 模擬器訓練，再匯出模型，最後透過 ROS 2 Lyrical／Gazebo Jetty 做閉環評估。研究問題是比較六個變體（V、O、VO、VO-late、GRU、RS）在相同感測前端之後的追蹤表現。
 
-> **目前進度：** 資料、前端、子圖、測試與小規模訓練流程都已完成驗證，**正式訓練還沒開始**。2026-10-17 修正了「固定繞圈環境讓盲目的固定左轉也能成功」的根本問題，訓練與評估前會自動檢查環境（見 [docs/fixes_2026-10-17.md](docs/fixes_2026-10-17.md)）。正式訓練需要比 3 GB 更大的 GPU，請組員在自己的主機執行。詳細進度與已知問題見 [docs/status.md](docs/status.md)，逐項檢查清單見 [後續計畫.md](後續計畫.md)。
+> **目前進度（2026-10-19）：** 資料、前端、子圖、訓練鏈都已實際跑通，兩台 GPU 主機已校準。**正式訓練還沒開始**，要先解決策略不用氣味（#4）、PPO 沒有改善 BC（#35），並凍結評估協定（#20）。詳細進度見 [docs/status.md](docs/status.md)，待辦與分工見 GitHub Issue [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
 
 ## 組員快速上手
 
@@ -190,11 +190,11 @@ python -m flytrack_train evaluate --config configs/train/evaluate_gazebo_recorde
 python scripts/lesion_analysis.py --artifact artifacts/VO
 ```
 
-lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明。ROS／Gazebo 目前只完成映像建置，閉環驗證進度見 [docs/ros_execution.md](docs/ros_execution.md)。
+lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明。ROS／Gazebo 部署鏈路已通過五回合 smoke 驗證，延遲仍未達標；這不是正式策略品質的驗收，證據與限制見 [docs/ros_execution.md](docs/ros_execution.md) 及 [#22](https://github.com/Nues0913/Drosophila_Tracking_System/issues/22)。
 
 ### 延遲指標的兩種時鐘
 
-`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 端到端延遲尚未完成量測契約，目前不能宣稱達到計劃書的 p95 <50 ms。
+`use_sim_time` 用來計算回合、軌跡、感測過期和行為指標。`/fly/inference_latency_ms` 記錄實際推論的 wall time。完整 sensor-to-command 的因果計時已有契約與實作（`SensorTiming.msg`、`ControlTrace.msg`、`flytrack_eval.latency.CausalLatency`），已在 Gazebo smoke 中實測：CPU／GPU 的完整端到端 p95 為 55.62／56.46 ms（#22、PR #45），均未達計劃書的 50 ms。兩種時鐘不能相加，各階段的 p95 也不能相加代替端到端 p95；#20 維持原門檻，先以既有 bag 做逐筆、同時鐘的延遲診斷。
 
 ## 文件索引
 

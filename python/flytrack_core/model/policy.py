@@ -350,6 +350,79 @@ class MotorReadout(nn.Module):
             self.forward_bias = nn.Parameter(torch.zeros(()))
             # Optional: lets the mean turn rate come from a bias instead of the DN difference.
             self.turn_bias = nn.Parameter(torch.zeros(())) if turn_bias else None
+        self._graph = graph
+        self.extra_turn_types: list[str] = []
+
+    def set_extra_turns(
+        self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
+    ) -> None:
+        """Add, or recalibrate, extra turn rows read as normalized L/R differences (#4 B3).
+
+        Each type is read from the mean activity of its left and right nodes as
+        S / (S + eps) * ((L - R) / max(S, eps) - center) * scale, with S = L + R; it
+        stays in its own population, so it gets no motor gain. The constants come from
+        teacher rollouts (scripts/diagnostics/calibrate_extra_turn.py): DNb05's static
+        L/R asymmetry (-0.22) is ~65x the odor-driven variation, which a raw difference
+        would hand to turn_bias as an ill-conditioned offset. The S / (S + eps) gate
+        fades the row to 0, with bounded gradients, while both sides are silent (the
+        first ~3 s of an episode, #63 review). New rows start at zero weight.
+        """
+        types, center, scale = list(types), [float(x) for x in center], [float(x) for x in scale]
+        eps = float(eps)
+        if not types:
+            if self.extra_turn_types:
+                raise ValueError("Extra turn rows cannot be removed from a policy")
+            return
+        if self.mode != "structured":
+            raise ValueError("Extra turn rows need the structured readout")
+        if len(set(types)) != len(types) or not len(center) == len(scale) == len(types):
+            raise ValueError("Extra turn types must be unique, with one center and scale each")
+        if not all(math.isfinite(x) for x in center) or not all(
+            math.isfinite(x) and x > 0 for x in scale
+        ):
+            raise ValueError("Extra turn centers must be finite and scales positive and finite")
+        if not math.isfinite(eps) or eps <= 0:
+            raise ValueError("Extra turn eps must be positive and finite")
+        if self.extra_turn_types and self.extra_turn_types != types:
+            raise ValueError("Extra turn types cannot change once added; only recalibrate")
+        graph = self._graph
+        names = np.asarray([str(name) for name in graph.type_names])[graph.type_index]
+        motor = graph.population("turn") | graph.population("forward")
+        pools = np.zeros((2, len(types), graph.n_nodes), dtype=np.float32)
+        for row, name in enumerate(types):
+            for column, side in enumerate((-1, 1)):
+                nodes = (names == name) & (graph.side == side)
+                if not nodes.any():
+                    raise ValueError(f"Extra turn type {name} needs nodes on both sides")
+                if (nodes & motor).any():
+                    raise ValueError(f"Extra turn type {name} is already a motor DN")
+                pools[column, row, nodes] = 1 / int(nodes.sum())
+        device = self.difference.device
+        for name, value in (
+            ("extra_left", pools[0]),
+            ("extra_right", pools[1]),
+            ("extra_center", np.asarray(center, dtype=np.float32)),
+            ("extra_scale", np.asarray(scale, dtype=np.float32)),
+            ("extra_eps", np.asarray(eps, dtype=np.float32)),
+        ):
+            self.register_buffer(name, torch.as_tensor(value, device=device), persistent=False)
+        if not self.extra_turn_types:
+            self.extra_turn_weight = nn.Parameter(
+                torch.zeros(len(types) * self.branches, device=device)
+            )
+        self.extra_turn_types = types
+
+    def extra_turn_terms(self, activity: Tensor) -> tuple[Tensor, Tensor]:
+        """Normalized L/R difference and total activity S of each extra turn type."""
+        left, right = activity @ self.extra_left.T, activity @ self.extra_right.T
+        total = left + right
+        return (left - right) / total.clamp_min(self.extra_eps), total
+
+    def extra_turn_features(self, activity: Tensor) -> Tensor:
+        """Gated, centered and scaled normalized L/R differences of the extra turn types."""
+        ratio, total = self.extra_turn_terms(activity)
+        gate = total / (total + self.extra_eps)
+        return gate * (ratio - self.extra_center) * self.extra_scale
 
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
@@ -367,13 +440,14 @@ class MotorReadout(nn.Module):
             )
         turns = torch.cat([activity @ self.difference.T for activity in activities], dim=1)
         forward = torch.cat([activity @ self.forward_pool.T for activity in activities], dim=1)
+        turn = turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
+        if self.extra_turn_types:
+            extra = torch.cat([self.extra_turn_features(activity) for activity in activities], 1)
+            turn = turn + extra @ self.extra_turn_weight
         return torch.stack(
             (
                 self.v_max * torch.sigmoid(forward @ self.forward_weight + self.forward_bias),
-                self.omega_max
-                * torch.tanh(
-                    turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
-                ),
+                self.omega_max * torch.tanh(turn),
             ),
             dim=-1,
         )
@@ -491,6 +565,7 @@ class SensoryEncoder(nn.Module):
             "odor_baseline", torch.tensor(config["odor_K"], dtype=torch.float32), persistent=False
         )
         self.hill_n, self.adaptation_tau = config["odor_hill_n"], config["odor_adaptation_tau_s"]
+        self.shared_adaptation = bool(config["odor_shared_adaptation"])
         self.control_dt = contract.control_dt
         self.frontend_state_size = 2 * self.frontend.n_nodes
         self.odor_state_size = 2 * len(config["odor_K"])
@@ -557,9 +632,12 @@ class SensoryEncoder(nn.Module):
         numerator = concentration.pow(self.hill_n)
         response = numerator / (numerator + k.pow(self.hill_n))
         response = torch.where(valid[:, 2, None, None], response, 0.0)
-        evolved_k = (
-            k + min(self.control_dt / self.adaptation_tau, 1) * (concentration - k)
-        ).clamp_min(1e-4)
+        # Shared adaptation (#4 P2, opt-in) moves both sides' K toward the bilateral mean,
+        # so a sustained L/R difference stays in the code instead of adapting to 0.5/0.5.
+        target = concentration.mean(1, keepdim=True) if self.shared_adaptation else concentration
+        evolved_k = (k + min(self.control_dt / self.adaptation_tau, 1) * (target - k)).clamp_min(
+            1e-4
+        )
         new_k = torch.where(valid[:, 2, None, None], evolved_k, k)
         code = torch.cat((visual.flatten(1), response.flatten(1), valid.to(vision.dtype)), dim=1)
         new_state = torch.cat((visual_state, new_k.flatten(1)), dim=1)
@@ -642,7 +720,25 @@ class ConnectomePolicy(nn.Module):
             graph, contract, config["readout"], self.branches, bool(config["readout_turn_bias"])
         )
         self.model_config["readout"] = self.readout.mode
+        self.set_readout_extra_turns(
+            config["readout_extra_turn_types"],
+            config["readout_extra_turn_center"],
+            config["readout_extra_turn_scale"],
+            config["readout_extra_turn_eps"],
+        )
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
+
+    def set_readout_extra_turns(
+        self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
+    ) -> None:
+        """Opt-in extra turn rows (#4 B3); also the explicit warm-start migration path."""
+        self.readout.set_extra_turns(types, center, scale, eps)
+        self.model_config.update(
+            readout_extra_turn_types=list(types),
+            readout_extra_turn_center=[float(x) for x in center],
+            readout_extra_turn_scale=[float(x) for x in scale],
+            readout_extra_turn_eps=float(eps),
+        )
 
     def set_lesion(self, mode: str = "none") -> None:
         if mode not in ("none", "vision", "odor"):
@@ -962,13 +1058,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # decoder, and vision pretraining alone cut odor's effect ~150x.
     "olfactory_rate_beta": None,
     "odor_input_gain": 1.0,
-    "dense_threshold": 5000,
+    # Same as configs/model/variants.yaml so direct pretrain/bc/ppo runs match the
+    # formal matrix (#59): the 4,502-node no-KC graph stays on the sparse core.
+    "dense_threshold": 4000,
     "readout": "auto",
     # Offsets the DN left/right structural asymmetry; legacy cards load without it.
     "readout_turn_bias": True,
+    # Opt-in extra turn rows (#4 B3), e.g. ["DNb05"]: non-motor types read as
+    # calibrated normalized L/R differences; see MotorReadout.set_extra_turns.
+    "readout_extra_turn_types": [],
+    "readout_extra_turn_center": [],
+    "readout_extra_turn_scale": [],
+    "readout_extra_turn_eps": 0.1,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,
+    # Opt-in (#4 P2): per-side adaptation erased most of the L/R odor contrast the
+    # occlusion teacher steers by (held-out R^2 0.44 vs 0.96 with a shared K).
+    "odor_shared_adaptation": False,
     "visual_bins": 5,
     "visual_input_mapping": {},
     "visual_seed_types": None,
@@ -1031,6 +1138,14 @@ def build_policy(
         raise ValueError("Bias and log_std initializations must be finite")
     if not isinstance(config["dense_threshold"], int) or config["dense_threshold"] < 1:
         raise ValueError("dense_threshold must be a positive integer")
+    for key in (
+        "readout_extra_turn_types",
+        "readout_extra_turn_center",
+        "readout_extra_turn_scale",
+    ):
+        config[key] = list(config[key])
+    if variant == "GRU" and config["readout_extra_turn_types"]:
+        raise ValueError("Extra turn rows need a connectome policy with the structured readout")
     graph = Graph.load(graph_path)
     policy = (
         GRUPolicy(graph, contract, frontend_path, config)

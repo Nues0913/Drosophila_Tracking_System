@@ -218,3 +218,55 @@ def test_readout_rate_controls_actual_adam_step_after_restoring_zero_rates():
 def test_invalid_warmup_is_rejected(tmp_path, warmup):
     with pytest.raises(ValueError, match="nonnegative integer"):
         ppo.train_ppo({"train": {"critic_warmup_updates": warmup}}, tmp_path, 0, "cpu")
+
+
+@pytest.mark.parametrize("rate", [float("nan"), -1e-3, True, False])
+def test_invalid_readout_bias_rate_is_rejected_at_start(tmp_path, monkeypatch, rate):
+    def unexpected_seed(*args):
+        pytest.fail("Invalid rates must be rejected before training setup")
+
+    monkeypatch.setattr(ppo, "seed_all", unexpected_seed)
+    with pytest.raises(
+        ValueError, match=r"train\.readout_bias_learning_rate must be a finite nonnegative number"
+    ):
+        ppo.train_ppo({"train": {"readout_bias_learning_rate": rate}}, tmp_path, 0, "cpu")
+
+
+def test_zero_readout_bias_rate_freezes_biases_through_ppo_update(candidate, tmp_path, monkeypatch):
+    class Readout(torch.nn.Linear):
+        def __init__(self):
+            super().__init__(2, 2)
+            self.forward_bias = torch.nn.Parameter(torch.tensor(0.1))
+            self.turn_bias = torch.nn.Parameter(torch.tensor(-0.1))
+
+        def forward(self, hidden):
+            return super().forward(hidden) + torch.stack((self.forward_bias, self.turn_bias))
+
+    policy = CandidatePolicy()
+    policy.readout = Readout()
+    before = copy.deepcopy(policy.state_dict())
+    monkeypatch.setattr(ppo, "prepare_policy", lambda *args: (policy, SensorContract()))
+    candidate["train"].update(total_steps=4, readout_bias_learning_rate=0)
+    frozen_names = []
+    original = ppo._freeze_zero_rate_gradients
+
+    def record(parameters):
+        frozen_ids = {id(parameter) for parameter in parameters}
+        frozen_names.append(
+            {name for name, parameter in policy.named_parameters() if id(parameter) in frozen_ids}
+        )
+        original(parameters)
+
+    monkeypatch.setattr(ppo, "_freeze_zero_rate_gradients", record)
+    ppo.train_ppo(candidate, tmp_path, 11, torch.device("cpu"))
+    checkpoint = load(tmp_path)
+    assert checkpoint["iteration"] == 1
+    expected = {"readout.turn_bias", "readout.forward_bias"}
+    assert frozen_names
+    assert all(expected <= names for names in frozen_names)
+    for name in expected:
+        assert torch.equal(
+            checkpoint["actor"][name].reshape(-1).view(torch.uint8),
+            before[name].reshape(-1).view(torch.uint8),
+        )
+    assert not torch.equal(checkpoint["actor"]["readout.weight"], before["readout.weight"])

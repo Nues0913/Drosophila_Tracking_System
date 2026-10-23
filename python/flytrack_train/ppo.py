@@ -223,7 +223,12 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     warmup = train.get("critic_warmup_updates", 0)
     if isinstance(warmup, bool) or not isinstance(warmup, Integral) or warmup < 0:
         raise ValueError("train.critic_warmup_updates must be a nonnegative integer")
-    for key in ("learning_rate", "core_bias_learning_rate", "readout_learning_rate"):
+    for key in (
+        "learning_rate",
+        "core_bias_learning_rate",
+        "readout_learning_rate",
+        "readout_bias_learning_rate",
+    ):
         rate = train.get(key)
         if rate is not None and (
             isinstance(rate, bool)

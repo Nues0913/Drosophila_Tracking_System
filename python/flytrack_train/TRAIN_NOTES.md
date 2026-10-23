@@ -175,6 +175,7 @@ PPO actor 共用 imitation 的參數組：`train.core_bias_learning_rate` 和
 `3e-4`）；設成 0 時該組不執行 optimizer 更新，包含 Adam moments 與 weight decay。
 critic 獨立成組，始終使用 base learning rate。群組學習率必須有限且非負。
 兩項皆未設且沒有暖身時，保持原本參數順序及更新結果。
+`train.readout_bias_learning_rate` 可覆寫 readout bias 的學習率，必須為有限非負數（不接受 bool），設為 0 時凍結 `readout.turn_bias` 和 `readout.forward_bias`。
 
 `train.critic_warmup_updates` 預設 0，必須為非負整數。設 N 時，第 1～N 次
 rollout update 的 actor 各組 lr 為 0、參數不變，critic 照常更新；

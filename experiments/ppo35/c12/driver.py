@@ -2,6 +2,7 @@
 
 import csv
 import fcntl
+import importlib
 import math
 import os
 import signal
@@ -35,7 +36,8 @@ from c12.c12_common import (
     seeds,
     write,
 )
-from c12.c12_jobs import acceptance_result, snapshot_actors
+from c12.c12_jobs import acceptance_result as acceptance_result
+from c12.c12_jobs import snapshot_actors
 
 
 def ledger(out):
@@ -93,11 +95,12 @@ def outputs(out, stage):
     return c11_driver.outputs(out / seed, legacy)
 
 
-def validate_snap_rows(out, rows, expected):
+def validate_snap_rows(out, rows, expected, *, seed_guard=None):
     m = read(out / "manifest.json")
     if [{k: r[k] for k in ("step", "actor")} for r in rows] != expected:
         raise ValueError("Snapshot evaluation actor set differs")
-    expected_seeds = seeds(m["snap_seed_start"], m["snap_episodes"], m["smoke"])
+    guard = seeds if seed_guard is None else seed_guard
+    expected_seeds = guard(m["snap_seed_start"], m["snap_episodes"], m["smoke"])
     for row in rows:
         finite(row)
         if row["actor_sha256"] != actor_hashes(row["actor"]) or row["device"] != "cpu":
@@ -108,17 +111,16 @@ def validate_snap_rows(out, rows, expected):
             raise ValueError("Snapshot seed pairing differs")
 
 
-def validate(out, stage):
+def validate(out, stage, *, package="c12"):
+    api = importlib.import_module(f"{package}.driver")
     m = read(out / "manifest.json")
     if stage == "summary":
-        from c12.summarize_c12 import summarize
-
-        summarize(out, validate_only=True)
+        importlib.import_module(f"{package}.summarize_{package}").summarize(out, validate_only=True)
     elif stage == "acceptance":
-        if read(out / "acceptance.json") != acceptance_result(out):
+        if read(out / "acceptance.json") != api.acceptance_result(out):
             raise ValueError("Acceptance result differs")
     elif stage in ("s0_eval", "s1_eval", "bc_eval"):
-        seeds(m["seed_start"], m["episodes"], m["smoke"])
+        api.seeds(m["seed_start"], m["episodes"], m["smoke"])
         actor = (
             m["inputs"]["BC_ACTOR"]
             if stage == "bc_eval"
@@ -133,7 +135,7 @@ def validate(out, stage):
             env=m["configs"]["eval.yaml"]["env"],
         )
     elif stage == "bc_snap_eval":
-        validate_snap_rows(
+        api.validate_snap_rows(
             out,
             read(out / "snap_eval_bc.json")["rows"],
             [{"step": 0, "actor": m["inputs"]["BC_ACTOR"]}],
@@ -147,7 +149,7 @@ def validate(out, stage):
             c11_driver.validate(folder, {"train": "c11_train", "dn": "dn_c11"}.get(kind, kind))
         elif kind == "snap_eval":
             rows = read(folder / "snap_eval.json")["rows"]
-            validate_snap_rows(out, rows, snapshot_actors(out, seed))
+            api.validate_snap_rows(out, rows, snapshot_actors(out, seed))
             if rows[0] != read(out / "snap_eval_bc.json")["rows"][0]:
                 raise ValueError("Shared BC snapshot differs")
         elif kind == "snap_dn":
@@ -174,7 +176,7 @@ def stage_env(stage, smoke):
     return c11_driver.stage_env(legacy_stage, smoke)
 
 
-def run_stage(out, stage, in_chain=False):
+def run_stage(out, stage, in_chain=False, *, package="c12"):
     if stage not in STAGES:
         raise ValueError("Unknown C12 stage")
     m = read(out / "manifest.json")
@@ -182,7 +184,7 @@ def run_stage(out, stage, in_chain=False):
     env = stage_env(stage, m["smoke"])
     if (out / "STOP").exists():
         raise Stopped
-    validation = cpu_command("-m", "c12.driver", "validate", out, stage)
+    validation = cpu_command("-m", f"{package}.driver", "validate", out, stage)
     if receipt.exists():
         if read(receipt) != {str(p): digest(p) for p in outputs(out, stage)}:
             raise ValueError(f"Completed stage changed: {stage}")
@@ -198,7 +200,7 @@ def run_stage(out, stage, in_chain=False):
     available = remaining(out, m) if gpu else None
     if gpu and available <= 5:
         raise BudgetExhausted(f"GPU budget exhausted before {stage}")
-    args = ["-m", "c12.c12_jobs", str(out), stage]
+    args = ["-m", f"{package}.{package}_jobs", str(out), stage]
     command = [sys.executable, *args] if gpu else cpu_command(*args)
     pending = out / f"active_{stage}.json"
     process = sidecar = None
@@ -214,7 +216,12 @@ def run_stage(out, stage, in_chain=False):
                 ready = folder / "sidecar.ready"
                 ready.unlink(missing_ok=True)
                 sidecar = subprocess.Popen(
-                    ["nice", "-n", "10", *cpu_command("-m", "c12.driver", "sidecar", folder)],
+                    [
+                        "nice",
+                        "-n",
+                        "10",
+                        *cpu_command("-m", f"{package}.driver", "sidecar", folder),
+                    ],
                     env={**env, "CUDA_VISIBLE_DEVICES": ""},
                     stdout=stream,
                     stderr=subprocess.STDOUT,
@@ -329,7 +336,8 @@ def not_run(out, reason):
     summarize(out)
 
 
-def cpu_chain(out, seed):
+def cpu_chain(out, seed, *, package="c12"):
+    api = importlib.import_module(f"{package}.driver")
     # This entire process tree inherits nice, affinity, and one-thread BLAS settings.
     os.nice(max(0, 10 - os.getpriority(os.PRIO_PROCESS, 0)))
     if hasattr(os, "sched_getaffinity"):
@@ -338,23 +346,24 @@ def cpu_chain(out, seed):
         selected = allowed[index : index + 2] or allowed[:2]
         os.sched_setaffinity(0, selected)
     for kind in SNAP_KINDS:
-        run_stage(out, f"{seed}_{kind}", in_chain=True)
+        api.run_stage(out, f"{seed}_{kind}", in_chain=True)
 
 
-def snapshot_coordinator(out):
+def snapshot_coordinator(out, *, package="c12"):
+    api = importlib.import_module(f"{package}.driver")
     if any(not (out / f"{s}_train.complete.json").is_file() for s in SEEDS):
         raise ValueError("Both training receipts are required before CPU snapshots")
     children = []
     try:
         os.nice(10)
         for stage in ("bc_snap_eval", "bc_snap_dn"):
-            run_stage(out, stage, in_chain=True)
+            api.run_stage(out, stage, in_chain=True)
         for seed in SEEDS:
             stream = (out / f"{seed}_snap_chain.log").open("a")
             try:
                 # Same process group as coordinator, so STOP kills descendants too.
                 child = subprocess.Popen(
-                    cpu_command("-m", "c12.driver", "cpu-chain", out, seed),
+                    cpu_command("-m", f"{package}.driver", "cpu-chain", out, seed),
                     stdout=stream,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -377,8 +386,9 @@ def snapshot_coordinator(out):
                 p.terminate()
 
 
-def run(out, smoke):
-    from c12.prepare_c12 import prepare
+def run(out, smoke, *, package="c12"):
+    api = importlib.import_module(f"{package}.driver")
+    prepare = importlib.import_module(f"{package}.prepare_{package}").prepare
 
     prepare(out, smoke)
     recover_pending(out)
@@ -401,10 +411,10 @@ def run(out, smoke):
                     start_new_session=True,
                 )
         for stage in ("s0_train", "s1_train"):
-            run_stage(out, stage)
+            api.run_stage(out, stage)
         with (out / "snap_chain.log").open("a") as stream:
             chain = subprocess.Popen(
-                cpu_command("-m", "c12.driver", "snap-chain", out),
+                cpu_command("-m", f"{package}.driver", "snap-chain", out),
                 env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
                 stdout=stream,
                 stderr=subprocess.STDOUT,
@@ -412,7 +422,7 @@ def run(out, smoke):
                 start_new_session=True,
             )
         for stage in ("s0_eval", "s1_eval", "bc_eval", "s0_dn", "s1_dn"):
-            run_stage(out, stage)
+            api.run_stage(out, stage)
         while chain.poll() is None:
             if (out / "STOP").exists():
                 raise Stopped
@@ -420,13 +430,13 @@ def run(out, smoke):
         if chain.wait() != 0:
             raise RuntimeError("CPU snapshot chain failed; see snap_chain.log")
         for stage in ("acceptance", "summary"):
-            run_stage(out, stage)
+            api.run_stage(out, stage)
         log(out, "ALL DONE")
     except BudgetExhausted as error:
         stop_group(chain)
         chain = None
         recover_pending(out)
-        not_run(out, str(error))
+        api.not_run(out, str(error))
         log(out, str(error))
     except Stopped:
         log(out, "STOP present; exiting cleanly")

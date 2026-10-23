@@ -1,5 +1,6 @@
 """C12 stage adapters; reuse C11's trainer, evaluation, snapshots and DN."""
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -42,9 +43,10 @@ def early_rows(out):
     return result
 
 
-def seed_acceptance(out, seed):
+def seed_acceptance(out, seed, *, seed_guard=None):
     m = read(out / "manifest.json")
-    seeds(m["seed_start"], m["episodes"], m["smoke"])
+    guard = seeds if seed_guard is None else seed_guard
+    guard(m["seed_start"], m["episodes"], m["smoke"])
     bc_actor = m["inputs"]["BC_ACTOR"]
     actor = str(out / seed / "ppo_c11/actor")
     baseline = read(out / "eval_bc.json")
@@ -87,22 +89,21 @@ def acceptance_result(out):
     }
 
 
-def execute(out, stage):
+def execute(out, stage, *, package="c12"):
+    api = importlib.import_module(f"{package}.{package}_jobs")
     if stage in ("acceptance", "summary"):
         if stage == "acceptance":
-            write(out / "acceptance.json", acceptance_result(out))
+            write(out / "acceptance.json", api.acceptance_result(out))
         else:
-            from c12.summarize_c12 import summarize
-
-            summarize(out)
+            importlib.import_module(f"{package}.summarize_{package}").summarize(out)
         return
     m = read(out / "manifest.json")
     if stage == "bc_eval":
-        evaluate(out / "s0", "bc", seed_guard=seeds)
+        evaluate(out / "s0", "bc", seed_guard=api.seeds)
         (out / "s0/eval_bc.json").replace(out / "eval_bc.json")
         return
     if stage == "bc_snap_eval":
-        snap_eval(out, items=[{"step": 0, "actor": m["inputs"]["BC_ACTOR"]}], seed_guard=seeds)
+        snap_eval(out, items=[{"step": 0, "actor": m["inputs"]["BC_ACTOR"]}], seed_guard=api.seeds)
         (out / "snap_eval.json").replace(out / "snap_eval_bc.json")
         return
     if stage == "bc_snap_dn":
@@ -116,13 +117,13 @@ def execute(out, stage):
         extra = ["--resume"] if (folder / "ppo_c11/training_checkpoint.pt").exists() else []
         train(folder, extra)
     elif kind == "eval":
-        evaluate(folder, "c11", seed_guard=seeds)
+        evaluate(folder, "c11", seed_guard=api.seeds)
     elif kind == "dn":
         measure(folder, folder / "ppo_c11/actor", folder / "dn_c11.json")
     elif kind == "snap_build":
         build_all(folder)
     elif kind == "snap_eval":
-        snap_eval(folder, items=read(folder / "snap_build.json")["actors"], seed_guard=seeds)
+        snap_eval(folder, items=read(folder / "snap_build.json")["actors"], seed_guard=api.seeds)
         rows = read(out / "snap_eval_bc.json")["rows"] + read(folder / "snap_eval.json")["rows"]
         write(folder / "snap_eval.json", {"rows": rows})
     elif kind == "snap_dn":

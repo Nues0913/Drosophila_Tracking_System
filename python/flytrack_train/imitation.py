@@ -118,8 +118,11 @@ def fit_behavior(
 
 
 def parameter_groups(policy, train: dict[str, Any]) -> list[dict[str, Any]]:
-    """Adam groups; ``core_bias_learning_rate``/``readout_learning_rate`` override the base rate.
+    """Adam groups with optional core-bias, readout, and readout-bias rates.
 
+    ``readout_bias_learning_rate`` matches names starting with ``readout.`` and
+    ending with ``_bias``; it overrides ``readout_learning_rate``, then ``learning_rate``.
+    ``core_bias_learning_rate`` independently overrides the rate for ``core.bias*``.
     A zero rate freezes that group. Without overrides this is one group with every parameter.
     """
     base = float(train.get("learning_rate", 1e-3))
@@ -127,13 +130,16 @@ def parameter_groups(policy, train: dict[str, Any]) -> list[dict[str, Any]]:
         "core.bias": train.get("core_bias_learning_rate"),
         "readout.": train.get("readout_learning_rate"),
     }
-    if any(rate is not None and float(rate) < 0 for rate in rates.values()):
+    readout_bias_rate = train.get("readout_bias_learning_rate")
+    if any(rate is not None and float(rate) < 0 for rate in (*rates.values(), readout_bias_rate)):
         raise ValueError("Group learning rates must be nonnegative")
     groups: dict[float, list[torch.nn.Parameter]] = {}
     for name, parameter in policy.named_parameters():
         rate = next(
             (r for prefix, r in rates.items() if r is not None and name.startswith(prefix)), base
         )
+        if readout_bias_rate is not None and name.startswith("readout.") and name.endswith("_bias"):
+            rate = readout_bias_rate
         groups.setdefault(float(rate), []).append(parameter)
     return [{"params": params, "lr": rate} for rate, params in groups.items()]
 

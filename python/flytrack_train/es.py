@@ -88,6 +88,8 @@ def train_es(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     for name in ("core_bias_learning_rate", "readout_learning_rate", "readout_bias_learning_rate"):
         if train.get(name) is not None and float(train[name]) != 0:
             raise ValueError(f"ES supports only 0 (frozen) for {name}")
+    if train.get("bc_anchor_coef") is not None and float(train["bc_anchor_coef"]) != 0:
+        raise ValueError("ES supports only 0 for bc_anchor_coef")
     frozen = {
         id(p)
         for group in parameter_groups(policy, {**train, "learning_rate": 1.0})

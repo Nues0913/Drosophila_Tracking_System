@@ -187,6 +187,25 @@ rollout update 的 actor 各組 lr 為 0、參數不變，critic 照常更新；
 永久凍結組則不累積。舊 checkpoint 仍受既有 source fingerprint
 限制，這項變更後應重新開始 PPO；本版本產生的 checkpoint 可在暖身期間續跑。
 
+`train.bc_anchor_coef` 預設 0（未設或 null 亦為 0），必須為有限非負實數，
+不接受 bool。只有 PPO 使用這個鍵；imitation 和 pretrain 不使用，ES 只接受
+0 或 null，非 0 報錯 `ES supports only 0 for bc_anchor_coef`。
+設為正數時必須提供 `init_artifact`，在原本含 activity 項的 PPO loss 上加
+`bc_anchor_coef * Σ_p ((p − p_BC)²).sum()`，共用同一次 backward 和梯度裁剪。
+錨定集合只含 actor 中 `requires_grad` 為真的參數，排除設定學習率為 0 的
+`parameter_groups`，不含 critic；critic warmup 暫時把 lr 設為 0 不會排除參數。
+θ_BC 是 `prepare_policy` 載入 `init_artifact` 並完成 warm-start migration 後、
+載入 recovery checkpoint 前的 `detach().clone()` 固定副本，包含 B3 新增的
+零權重 turn row。續跑每次從 `init_artifact` 重建 θ_BC，依錨定集合順序取
+`.cpu().contiguous()` 的 float32 位元組串接，checkpoint 保存
+`bc_anchor_sha256`（SHA-256），不符即報錯。coef 為 0 時不複製參考值、不計算或
+加入錨定 loss，也不保存 SHA 欄位，預設的運算與 metrics 欄位保持原樣。
+正數時 `training_metrics.json` 每次 update 額外記錄 `bc_anchor_loss`
+（所有 minibatch 的加權錨定 loss 平均）和 `bc_anchor_distance`
+（最後一次 optimizer step 後的 ‖θ − θ_BC‖₂，以 float64 累加）；
+`actor_grad_norm` 此時包含錨定梯度。出處：#35 Decision 6372748277，
+選項 A 的 C13 = C12 加上全部可訓練 actor 參數的 BC L2 錨定。
+
 ```yaml
 init_artifact: runs/bc/VO/seed_0/actor
 train:

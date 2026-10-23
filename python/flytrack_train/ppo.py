@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from functools import partial
 from numbers import Integral, Real
@@ -128,6 +129,17 @@ def _critic_loss(value, value_target, old_value, value_clip):
     )
 
 
+def _bc_anchor_loss(parameters, reference, coef):
+    squared_distance = sum(
+        (parameter - initial).square().sum()
+        for parameter, initial in zip(parameters, reference, strict=True)
+    )
+    # All actor groups may be permanently frozen.
+    if not parameters:
+        return torch.tensor(0.0)
+    return coef * squared_distance
+
+
 def _set_update_learning_rates(optimizer, policy, train, iteration):
     """Derive rates from configuration, never from checkpoint optimizer rates."""
     base = float(train.get("learning_rate", 3e-4))
@@ -228,6 +240,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
         "core_bias_learning_rate",
         "readout_learning_rate",
         "readout_bias_learning_rate",
+        "bc_anchor_coef",
     ):
         rate = train.get(key)
         if rate is not None and (
@@ -237,6 +250,9 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
             or rate < 0
         ):
             raise ValueError(f"train.{key} must be a finite nonnegative number")
+    bc_anchor_coef = float(train.get("bc_anchor_coef") or 0)
+    if bc_anchor_coef > 0 and not config.get("init_artifact"):
+        raise ValueError("train.bc_anchor_coef > 0 requires init_artifact")
     value_clip = train.get("value_clip")
     if value_clip is not None:
         if (
@@ -273,6 +289,22 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     frozen_actor_parameters = [
         parameter for group in actor_groups if group["lr"] == 0 for parameter in group["params"]
     ]
+    anchor_checkpoint = {}
+    if bc_anchor_coef > 0:
+        anchor_parameters = [
+            parameter
+            for group in actor_groups
+            if group["lr"] != 0
+            for parameter in group["params"]
+            if parameter.requires_grad
+        ]
+        # prepare_policy has loaded init_artifact and completed warm-start migrations.
+        # Snapshot before recovery replaces the actor with its in-progress weights.
+        anchor_reference = [parameter.detach().clone() for parameter in anchor_parameters]
+        digest = hashlib.sha256()
+        for initial in anchor_reference:
+            digest.update(initial.cpu().contiguous().to(torch.float32).numpy().tobytes())
+        anchor_checkpoint["bc_anchor_sha256"] = digest.hexdigest()
     optimizer = torch.optim.Adam(
         [
             *actor_groups,
@@ -317,6 +349,11 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
     elapsed_offset = 0.0
     checkpoint = recovery.checkpoint
     if checkpoint is not None:
+        if (
+            bc_anchor_coef > 0
+            and checkpoint.get("bc_anchor_sha256") != anchor_checkpoint["bc_anchor_sha256"]
+        ):
+            raise ValueError("train.bc_anchor_coef: BC anchor SHA-256 differs from init_artifact")
         policy.load_state_dict(checkpoint["actor"])
         critic.load_state_dict(checkpoint["critic"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -554,6 +591,11 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                             - float(train.get("entropy_coef", 0.01)) * entropy
                         )
                         loss = loss + float(train.get("activity_coef", 1e-4)) * activity_loss
+                        if bc_anchor_coef > 0:
+                            anchor_loss = _bc_anchor_loss(
+                                anchor_parameters, anchor_reference, bc_anchor_coef
+                            )
+                            loss = loss + anchor_loss
                         if not bool(torch.isfinite(loss)):
                             raise FloatingPointError(
                                 "PPO loss is nonfinite; inspect actor activity and reward scale"
@@ -575,6 +617,8 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                                 *gradient_norms,
                             ]
                         )
+                        if bc_anchor_coef > 0:
+                            diagnostics[-1].append(anchor_loss.item())
                         if train.get("target_kl") and approx_kl > float(train["target_kl"]):
                             stop_early = True
                             break
@@ -605,6 +649,17 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                     "elapsed_s": elapsed_offset + time.perf_counter() - start_time,
                 }
             )
+            if bc_anchor_coef > 0:
+                reports[-1]["bc_anchor_loss"] = float(average[-1])
+                reports[-1]["bc_anchor_distance"] = (
+                    sum(
+                        float((parameter.detach().double() - initial.double()).square().sum())
+                        for parameter, initial in zip(
+                            anchor_parameters, anchor_reference, strict=True
+                        )
+                    )
+                    ** 0.5
+                )
             write_json(output / "training_metrics.json", reports)
             # Keep the critic/optimizer for research recovery; exported actors exclude both.
             recovery.save(
@@ -633,6 +688,7 @@ def train_ppo(config: dict[str, Any], output: Path, seed: int, device: torch.dev
                 action_histories=action_histories,
                 env_episode_ids=[pool.get(index, "_episode_id") for index in range(n_envs)],
                 elapsed_s=elapsed_offset + time.perf_counter() - start_time,
+                **anchor_checkpoint,
             )
             recovery.progress(
                 force=True,

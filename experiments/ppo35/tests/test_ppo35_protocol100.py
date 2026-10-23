@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import yaml
 
-HERE = Path(__file__).resolve().parents[2] / "experiments/ppo35"
+HERE = Path(__file__).resolve().parents[3] / "experiments/ppo35"
 sys.path.insert(0, str(HERE))
 try:
     ACCEPT = runpy.run_path(str(HERE / "accept100.py"))

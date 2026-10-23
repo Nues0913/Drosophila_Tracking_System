@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-CHECK = runpy.run_path(str(Path(__file__).resolve().parents[2] / "experiments/ppo35/check.py"))
+CHECK = runpy.run_path(str(Path(__file__).resolve().parents[3] / "experiments/ppo35/check.py"))
 
 
 def dn(slope):

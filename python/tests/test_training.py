@@ -1,6 +1,8 @@
 """Algorithmic checks to run later; no downloaded data or trained artifact required."""
 
+import hashlib
 import importlib.util
+import json
 import math
 import random
 from pathlib import Path
@@ -443,6 +445,7 @@ def test_ppo_normalization_keeps_episode_metrics_in_raw_reward_units(tmp_path, m
     "algorithm,interrupt_phase",
     [
         ("ppo", None),
+        ("ppo_bc_anchor", None),
         ("es", None),
         ("pretrain", "collect"),
         ("pretrain", "fit"),
@@ -458,15 +461,23 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     from flytrack_core.contracts import SensorContract
     from flytrack_train import es, imitation, ppo, pretrain
 
+    anchored = algorithm == "ppo_bc_anchor"
+    if anchored:
+        algorithm = "ppo"
     scaled = algorithm == "pretrain_population_rms"
     if scaled:
         algorithm = "pretrain"
     module = {"ppo": ppo, "es": es, "pretrain": pretrain, "bc": imitation}[algorithm]
-    monkeypatch.setattr(
-        module,
-        "prepare_policy",
-        lambda config, device: (_RecoveryPolicy().to(device), SensorContract()),
-    )
+
+    def prepare(config, device):
+        policy = _RecoveryPolicy().to(device)
+        if anchored:
+            policy.load_state_dict(
+                torch.load(Path(config["init_artifact"]) / "weights.pt", weights_only=True)
+            )
+        return policy, SensorContract()
+
+    monkeypatch.setattr(module, "prepare_policy", prepare)
     monkeypatch.setattr(module, "make_env", lambda *args, **kwargs: _RecoveryEnv())
     monkeypatch.setattr(module, "save_actor", lambda *args, **kwargs: None)
     # ES delegates environments through its own imported fixed-budget helper.
@@ -491,6 +502,14 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     }
     if scaled:
         config["train"]["decoder_input_scale"] = "population_rms"
+    if anchored:
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        (parent / "model_card.json").write_text("{}")
+        torch.manual_seed(23)
+        torch.save(_RecoveryPolicy().state_dict(), parent / "weights.pt")
+        config["init_artifact"] = str(parent)
+        config["train"].update(bc_anchor_coef=0.5, critic_warmup_updates=1)
     run = {
         "ppo": ppo.train_ppo,
         "es": es.train_es,
@@ -507,6 +526,7 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
             self.output == interrupted
             and (interrupt_phase is None or state.get("phase") == interrupt_phase)
             and (not scaled or interrupt_phase != "fit" or state.get("fit_state") is not None)
+            and (not anchored or state["iteration"] == 2)
         ):
             raise InterruptedError("simulated process interruption after committed checkpoint")
 
@@ -514,6 +534,12 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     with pytest.raises(InterruptedError):
         run(config, interrupted, 11, torch.device("cpu"))
     monkeypatch.setattr(Recovery, "save", original_save)
+    if anchored:
+        saved = torch.load(interrupted / "training_checkpoint.pt", weights_only=True)
+        parent_weights = torch.load(parent / "weights.pt", weights_only=True)
+        assert any(
+            not torch.equal(value, parent_weights[key]) for key, value in saved["actor"].items()
+        )
     if scaled and interrupt_phase == "fit":
         original_initialize = pretrain.initialize_decoder_inputs
 
@@ -530,6 +556,12 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     for key in ("actor", "optimizer", "rng", "environment_steps"):
         _assert_nested_equal(expected[key], observed[key])
     if algorithm == "ppo":
+        if anchored:
+            assert expected["bc_anchor_sha256"] == observed["bc_anchor_sha256"]
+            _assert_nested_equal(
+                [{k: v for k, v in row.items() if k != "elapsed_s"} for row in expected["reports"]],
+                [{k: v for k, v in row.items() if k != "elapsed_s"} for row in observed["reports"]],
+            )
         for key in (
             "critic",
             "reward_normalizer",
@@ -553,6 +585,331 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
                     assert torch.equal(research["decoder"][key], observed["decoder"][key])
                     if interrupt_phase == "fit":
                         assert torch.equal(saved["decoder"][key], observed["decoder"][key])
+
+
+@pytest.mark.parametrize(
+    "coef", [-1, float("nan"), float("inf"), -float("inf"), True, False, "0.1"]
+)
+def test_ppo_bc_anchor_rejects_invalid_coefficients(tmp_path, coef):
+    from flytrack_train.ppo import train_ppo
+
+    with pytest.raises(ValueError, match=r"train\.bc_anchor_coef"):
+        train_ppo({"train": {"bc_anchor_coef": coef}}, tmp_path, 11, torch.device("cpu"))
+
+
+def test_ppo_bc_anchor_requires_initial_artifact(tmp_path):
+    from flytrack_train.ppo import train_ppo
+
+    with pytest.raises(ValueError, match=r"train\.bc_anchor_coef.*init_artifact"):
+        train_ppo({"train": {"bc_anchor_coef": 0.5}}, tmp_path, 11, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("coef", [0.2, 100.0])
+@pytest.mark.parametrize("perturbation", [0.0, 0.1])
+def test_bc_anchor_loss_matches_analytic_gradients(coef, perturbation):
+    from flytrack_train.ppo import _bc_anchor_loss
+
+    rng = torch.Generator().manual_seed(19)
+    reference = [torch.randn(shape, generator=rng) for shape in ((3, 4), (2,), ())]
+    parameters = [
+        torch.nn.Parameter(initial + perturbation * torch.randn(initial.shape, generator=rng))
+        for initial in reference
+    ]
+    loss = _bc_anchor_loss(parameters, reference, coef)
+    torch.testing.assert_close(
+        loss,
+        coef
+        * torch.cat(
+            [(p - initial).flatten() for p, initial in zip(parameters, reference, strict=True)]
+        )
+        .square()
+        .sum(),
+    )
+    loss.backward()
+    for parameter, initial in zip(parameters, reference, strict=True):
+        torch.testing.assert_close(parameter.grad, 2 * coef * (parameter.detach() - initial))
+        assert not initial.requires_grad
+        if perturbation == 0:
+            assert loss.item() == 0
+            assert torch.count_nonzero(parameter.grad) == 0
+
+
+@pytest.mark.parametrize("coef", [None, 0])
+def test_ppo_bc_anchor_disabled_matches_default_bitwise(tmp_path, monkeypatch, coef):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import ppo
+
+    monkeypatch.setattr(ppo, "prepare_policy", lambda *args: (_RecoveryPolicy(), SensorContract()))
+    monkeypatch.setattr(ppo, "make_env", lambda *args, **kwargs: _RecoveryEnv())
+
+    def save_actor(directory, policy, *args, **kwargs):
+        directory.mkdir()
+        torch.save(policy.state_dict(), directory / "weights.pt")
+
+    def reject_anchor(*args):
+        pytest.fail("A disabled BC anchor must not compute the anchor loss")
+
+    monkeypatch.setattr(ppo, "save_actor", save_actor)
+    monkeypatch.setattr(ppo, "_bc_anchor_loss", reject_anchor)
+    train = {
+        "num_envs": 1,
+        "total_steps": 12,
+        "rollout_steps": 4,
+        "sequence_length": 2,
+        "sequence_batch_size": 1,
+        "update_epochs": 2,
+        "critic_hidden_size": 4,
+    }
+    for name, optional in (("default", {}), ("explicit", {"bc_anchor_coef": coef})):
+        ppo.train_ppo({"train": {**train, **optional}}, tmp_path / name, 11, torch.device("cpu"))
+    default, explicit = [
+        torch.load(tmp_path / name / "training_checkpoint.pt", weights_only=True)
+        for name in ("default", "explicit")
+    ]
+    for key in ("actor", "critic", "optimizer", "rng"):
+        _assert_nested_equal(default[key], explicit[key])
+    weights = [
+        torch.load(tmp_path / name / "actor/weights.pt", weights_only=True)
+        for name in ("default", "explicit")
+    ]
+    _assert_nested_equal(*weights)
+    metrics = []
+    for name, checkpoint in (("default", default), ("explicit", explicit)):
+        assert "bc_anchor_sha256" not in checkpoint
+        rows = json.loads((tmp_path / name / "training_metrics.json").read_text())
+        assert all("bc_anchor_loss" not in row and "bc_anchor_distance" not in row for row in rows)
+        metrics.append([{k: v for k, v in row.items() if k != "elapsed_s"} for row in rows])
+    _assert_nested_equal(*metrics)
+
+
+@pytest.fixture
+def bc_anchor_config(tmp_path):
+    from flytrack_train.config import prepare_policy, read_config, save_actor, seed_all
+
+    config = read_config("configs/train/smoke.yaml")
+    config.pop("output", None)
+    config["env"]["episode_seconds"] = 0.1
+    config["train"].update(
+        num_envs=1,
+        total_steps=12,
+        rollout_steps=4,
+        sequence_length=2,
+        sequence_batch_size=1,
+        update_epochs=2,
+        critic_hidden_size=4,
+        learning_rate=1e-3,
+        bc_anchor_coef=0.5,
+    )
+    seed_all(23)
+    policy, contract = prepare_policy(config, torch.device("cpu"))
+    parent = tmp_path / "parent"
+    save_actor(parent, policy, config, contract, stage="bc", seed=23, environment_steps=0)
+    config["init_artifact"] = str(parent)
+    return config
+
+
+def test_ppo_bc_anchor_excludes_frozen_parameters_through_warmup(
+    bc_anchor_config, tmp_path, monkeypatch
+):
+    from flytrack_train import ppo
+
+    config = bc_anchor_config
+    config["train"].update(readout_bias_learning_rate=0, critic_warmup_updates=1)
+    original_prepare, original_loss, original_step = (
+        ppo.prepare_policy,
+        ppo._bc_anchor_loss,
+        torch.optim.Adam.step,
+    )
+    frozen, expected, references, steps = {}, {}, {}, []
+
+    def prepare(config, device):
+        policy, contract = original_prepare(config, device)
+        # requires_grad=False parameters are also excluded even with a positive group rate.
+        policy.core.raw_alpha.requires_grad_(False)
+        for name, parameter in policy.named_parameters():
+            if name in ("readout.turn_bias", "readout.forward_bias"):
+                frozen[name] = parameter
+                references[name] = parameter.detach().clone()
+            elif parameter.requires_grad:
+                expected[name] = parameter
+        return policy, contract
+
+    def check_loss(parameters, reference, coef):
+        assert {id(p) for p in parameters} == {id(p) for p in expected.values()}
+        return original_loss(parameters, reference, coef)
+
+    def check_step(self, *args, **kwargs):
+        assert len(frozen) == 2
+        for parameter in frozen.values():
+            assert parameter.grad is None
+            assert parameter not in self.state
+        steps.append(True)
+        return original_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(ppo, "prepare_policy", prepare)
+    monkeypatch.setattr(ppo, "_bc_anchor_loss", check_loss)
+    monkeypatch.setattr(torch.optim.Adam, "step", check_step)
+    output = tmp_path / "train"
+    ppo.train_ppo(config, output, 11, torch.device("cpu"))
+    trained = torch.load(output / "actor/weights.pt", weights_only=True)
+    assert len(steps) == 12
+    for name, parameter in trained.items():
+        if name in references:
+            assert torch.equal(parameter, references[name])
+    rows = json.loads((output / "training_metrics.json").read_text())
+    assert rows[0]["critic_warmup"]
+    assert rows[0]["bc_anchor_distance"] == rows[0]["bc_anchor_loss"] == 0
+    assert rows[-1]["bc_anchor_distance"] > 0
+
+
+def test_ppo_bc_anchor_metrics_distance_and_strong_anchor(bc_anchor_config, tmp_path, monkeypatch):
+    from flytrack_core.model import load_policy_artifact
+    from flytrack_train import ppo
+
+    config = bc_anchor_config
+    initial, _ = ppo.prepare_policy(config, torch.device("cpu"))
+    reference = [p.detach().clone() for p in initial.parameters() if p.requires_grad]
+    digest = hashlib.sha256(
+        b"".join(p.cpu().contiguous().float().numpy().tobytes() for p in reference)
+    )
+    original_loss = ppo._bc_anchor_loss
+    minibatch_losses = []
+
+    def record_loss(parameters, reference, coef):
+        loss = original_loss(parameters, reference, coef)
+        minibatch_losses.append(loss.item())
+        return loss
+
+    monkeypatch.setattr(ppo, "_bc_anchor_loss", record_loss)
+    distances = {}
+    for coef in (0, 0.5, 100):
+        minibatch_losses.clear()
+        run_config = {**config, "train": {**config["train"], "bc_anchor_coef": coef}}
+        output = tmp_path / f"coef_{coef}"
+        ppo.train_ppo(run_config, output, 11, torch.device("cpu"))
+        trained = load_policy_artifact(output / "actor", device="cpu")[0]
+        difference = torch.cat(
+            [
+                (parameter.detach().double() - start.double()).flatten()
+                for parameter, start in zip(
+                    (p for p in trained.parameters() if p.requires_grad), reference, strict=True
+                )
+            ]
+        )
+        distances[coef] = difference.norm().item()
+        if coef > 0:
+            checkpoint = torch.load(output / "training_checkpoint.pt", weights_only=True)
+            assert checkpoint["bc_anchor_sha256"] == digest.hexdigest()
+            rows = json.loads((output / "training_metrics.json").read_text())
+            assert len(rows) == 3
+            for row, losses in zip(rows, np.asarray(minibatch_losses).reshape(3, 4), strict=True):
+                for key in ("bc_anchor_loss", "bc_anchor_distance"):
+                    assert math.isfinite(row[key]) and row[key] >= 0
+                assert row["bc_anchor_loss"] == float(losses.mean())
+            torch.testing.assert_close(rows[-1]["bc_anchor_distance"], distances[coef])
+    assert distances[100] < distances[0]
+
+
+def test_ppo_bc_anchor_reference_includes_warm_start_migration(
+    bc_anchor_config, tmp_path, monkeypatch
+):
+    from flytrack_train import ppo
+
+    config = bc_anchor_config
+    config["model"].update(
+        readout_extra_turn_types=["DNb05"],
+        readout_extra_turn_center=[1.0],
+        readout_extra_turn_scale=[2.0],
+    )
+    config["train"].update(total_steps=4, critic_warmup_updates=1)
+    migrated, _ = ppo.prepare_policy(config, torch.device("cpu"))
+    expected = [p.detach().clone() for p in migrated.parameters() if p.requires_grad]
+    assert migrated.readout.extra_turn_weight.requires_grad
+    assert torch.count_nonzero(migrated.readout.extra_turn_weight) == 0
+    original_loss = ppo._bc_anchor_loss
+    observed = []
+
+    def check_reference(parameters, reference, coef):
+        _assert_nested_equal(reference, expected)
+        assert all(not p.requires_grad for p in reference)
+        assert all(
+            p.data_ptr() != ref.data_ptr() for p, ref in zip(parameters, reference, strict=True)
+        )
+        observed.append(True)
+        return original_loss(parameters, reference, coef)
+
+    monkeypatch.setattr(ppo, "_bc_anchor_loss", check_reference)
+    output = tmp_path / "train"
+    ppo.train_ppo(config, output, 11, torch.device("cpu"))
+    assert len(observed) == 4
+    checkpoint = torch.load(output / "training_checkpoint.pt", weights_only=True)
+    digest = hashlib.sha256(
+        b"".join(p.cpu().contiguous().float().numpy().tobytes() for p in expected)
+    )
+    assert checkpoint["bc_anchor_sha256"] == digest.hexdigest()
+    assert checkpoint["reports"][-1]["bc_anchor_distance"] == 0
+
+
+@pytest.mark.parametrize("change", ["reference", "sha", "missing_sha"])
+def test_ppo_bc_anchor_resume_rejects_changed_reference(
+    bc_anchor_config, tmp_path, monkeypatch, change
+):
+    from flytrack_train import ppo
+
+    config = bc_anchor_config
+    output = tmp_path / "train"
+    ppo.train_ppo(config, output, 11, torch.device("cpu"))
+    if change == "reference":
+        original_prepare = ppo.prepare_policy
+
+        def changed_prepare(config, device):
+            policy, contract = original_prepare(config, device)
+            with torch.no_grad():
+                policy.log_std.add_(0.25)
+            return policy, contract
+
+        monkeypatch.setattr(ppo, "prepare_policy", changed_prepare)
+    else:
+        checkpoint_path = output / "training_checkpoint.pt"
+        checkpoint = torch.load(checkpoint_path, weights_only=True)
+        if change == "sha":
+            checkpoint["bc_anchor_sha256"] = "0" * 64
+        else:
+            del checkpoint["bc_anchor_sha256"]
+        torch.save(checkpoint, checkpoint_path)
+    with pytest.raises(ValueError, match="BC anchor SHA-256 differs from init_artifact"):
+        ppo.train_ppo({**config, "resume": True}, output, 11, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("coef", [-1e-3, 1e-3, float("nan"), float("inf")])
+def test_es_rejects_nonzero_bc_anchor(tmp_path, monkeypatch, coef):
+    from flytrack_train import es
+
+    monkeypatch.setattr(es, "prepare_policy", lambda *args: (_RecoveryPolicy(), None))
+    with pytest.raises(ValueError, match="^ES supports only 0 for bc_anchor_coef$"):
+        es.train_es({"train": {"bc_anchor_coef": coef}}, tmp_path, 11, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("coef", [0, None])
+def test_es_accepts_disabled_bc_anchor(tmp_path, monkeypatch, coef):
+    from flytrack_core.contracts import SensorContract
+    from flytrack_train import es
+
+    monkeypatch.setattr(es, "prepare_policy", lambda *args: (_RecoveryPolicy(), SensorContract()))
+    monkeypatch.setattr(es, "make_env", lambda *args, **kwargs: _RecoveryEnv())
+    monkeypatch.setattr(es, "save_actor", lambda *args, **kwargs: None)
+    config = {
+        "train": {
+            "total_steps": 4,
+            "population_size": 1,
+            "evaluation_steps": 2,
+            "bc_anchor_coef": coef,
+        }
+    }
+    es.train_es(config, tmp_path, 11, torch.device("cpu"))
+    checkpoint = torch.load(tmp_path / "training_checkpoint.pt", weights_only=True)
+    assert checkpoint["environment_steps"] == 4
+    assert "bc_anchor_sha256" not in checkpoint
 
 
 def test_bc_parameter_groups_override_core_bias_and_readout_rates():

@@ -43,11 +43,14 @@ def train(out, extra):
     main()
 
 
-def evaluate(out, name):
+def evaluate(out, name, *, seed_guard=None):
     import eval100
 
     m = read(out / "manifest.json")
-    seeds(m["seed_start"], m["episodes"], m["smoke"], manifest_profile(m).name)
+    if seed_guard is None:
+        seeds(m["seed_start"], m["episodes"], m["smoke"], manifest_profile(m).name)
+    else:
+        seed_guard(m["seed_start"], m["episodes"], m["smoke"])
     actor = str(out / "ppo_c11/actor") if name == "c11" else m["inputs"]["BC_ACTOR"]
     path = out / f"eval_{name}.tmp.json"
     os.environ.update(EPISODES=str(m["episodes"]), SEED_START=str(m["seed_start"]))
@@ -96,7 +99,7 @@ def snapshot_actors(out):
     return [{"step": 0, "actor": m["inputs"]["BC_ACTOR"]}, *read(out / "snap_build.json")["actors"]]
 
 
-def snap_eval(out):
+def snap_eval(out, *, items=None, seed_guard=None):
     from functools import partial
 
     import numpy as np
@@ -112,7 +115,10 @@ def snap_eval(out):
     m = read(out / "manifest.json")
     config = m["configs"]["eval.yaml"]
     episodes, start = m["snap_episodes"], m["snap_seed_start"]
-    seeds(start, episodes, m["smoke"], manifest_profile(m).name)
+    if seed_guard is None:
+        seeds(start, episodes, m["smoke"], manifest_profile(m).name)
+    else:
+        seed_guard(start, episodes, m["smoke"])
     contract = contract_from_config(config)
 
     class RecordingPool(EnvPool):
@@ -123,7 +129,7 @@ def snap_eval(out):
             return values
 
     rows = []
-    for item in snapshot_actors(out):
+    for item in snapshot_actors(out) if items is None else items:
         omegas = []
         actor = Actor(item["actor"], torch.device("cpu"))
         pool = RecordingPool([partial(make_env, config, contract, scenario="normal")], workers=0)

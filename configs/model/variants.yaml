@@ -25,6 +25,9 @@ common:
   odor_K: [0.1, 0.3, 1.0]
   odor_hill_n: 2.0
   odor_adaptation_tau_s: 2.0
+  # #4 P2 (formal spec since 2026-10-24): one ORN adaptation state for both sides
+  # keeps the L/R contrast; per-side adaptation erased most of it.
+  odor_shared_adaptation: true
   visual_bins: 5
   allow_unknown_side_mean: false
   visual_input_mapping: {}
@@ -32,3 +35,8 @@ common:
 overrides:
   RS: {random_seed: 0, random_swaps_per_edge: 10}
   GRU: {hidden_size: 16}
+# #4 B3 (formal spec since 2026-10-24): DNb05 L/R turn rows, calibrated by BC on its
+# round-0 teacher episodes (train.calibrate_extra_turn). Left out: V, where DNb05 stays
+# silent without odor input (L + R < 1e-5 on teacher episodes); RS, whose rewired right
+# DNb05 gets no input (L/R ratio fixed at 1, no calibratable signal); GRU, no DN readout.
+extra_turn_rows: {types: [DNb05], eps: 0.1, variants: [O, VO, VO-late]}

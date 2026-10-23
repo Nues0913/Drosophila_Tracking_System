@@ -16,7 +16,7 @@ actor 只接受 `vision[2,721]`、`odor[2]`、`valid[3]`。`valid` 順序為左�
 variant: VO
 seed: 0
 sensor_contract_path: configs/sensor_contract.json
-graph_path: data/subgraphs/main/graph.npz
+graph_path: data/subgraphs/olfactory_v2_nokc/graph.npz
 frontend_path: artifacts/frontend/frontend.npz
 model: {}
 env:
@@ -36,6 +36,22 @@ output: runs/VO/seed_0
 - **抽籤**：每回合要用哪個情境，只由 episode seed 和固定的 RNG stream（`SCENARIO_MIX_STREAM`）決定，跟 worker 數和 reset 順序都無關，所以 recovery 重收時會得到相同的世界。reset 的 info 會多一個 `mix_scenario`。
 - **共用選項**：其他 env 選項，例如 `occlusion_odor_steering`，會套用到每一個子世界。
 - **工具**：`scripts/diagnostics/prepare_odor_task_bc.py` 產生方向 3 的 A／B／C 三組設定；`scripts/diagnostics/odor_reliance_eval.py` 在相同 seed 上，配對比較完整模型和 odor lesion。
+
+**正式模型規格（#4、#55，2026-10-24 使用者團隊決定）。** 4-R7 在兩個 seed 都複製成立的組合，納入正式規格：
+
+- **圖**：`configs/train/` 的訓練範本和 `prepare_experiments.py` 預設都改用 no-KC 圖 `data/subgraphs/olfactory_v2_nokc/graph.npz`。`smoke.yaml` 仍用 main 圖，只供測試使用。
+- **P2，左右共用的 ORN 適應**：`odor_shared_adaptation` 的預設改為 `true`，`variants.yaml` 也明確寫出，所以六個變體共用同一個編碼器（GRU 也一樣）。#63 之前的舊 card 沒有這個鍵，會以各側獨立適應載入。
+- **B3，DNb05 轉向列**：
+  - **啟用方式**：在 BC 的 `train.calibrate_extra_turn: {types: [DNb05], eps: 0.1}` 設定。
+  - **加入時機**：BC 在建立 optimizer 之前，先把這一列以權重 0 加進 actor。在第 0 輪收完 teacher 資料、第一次 fit 之前，用訓練用的回合算出 center 和 scale。BC 自己的 validation 回合不參與計算。
+  - **輸出**：計算結果寫進 `extra_turn_calibration.json`，其中包含 closed-form 的 held-out 相關係數（`dn_only`、`dn_plus_extra`、`extra_only`），只做記錄，不當閘門。結果同時存進 checkpoint，resume 時直接沿用，不重新計算。
+  - **前置條件**：起點必須是結構化 readout 的 connectome actor，而且還沒有這一列。
+  - **適用範圍**：`prepare_experiments.py` 只對 `variants.yaml` 中 `extra_turn_rows.variants` 列出的變體（O、VO、VO-late）保留這個鍵，參數預算也把這一列算進去（每個讀出分支 +1）。以下變體不套用：
+    - V：沒有氣味時 DNb05 不活動（teacher 回合中 L+R < 1e-5）。
+    - RS：重接後右側 DNb05 沒有輸入，L/R 比例固定為 1。
+    - GRU：沒有 DN readout。
+  - **單獨校準**：`scripts/diagnostics/calibrate_extra_turn.py` 和 BC 共用 `flytrack_train/extra_turn.py`，可在既有資料集上單獨校準。
+- **B3 中心項的修正**：特徵改為 S/(S+ε)·(L−R−c·S)/max(S,ε)·scale，也就是中心項和比例共用分母。舊公式 (L−R)/max(S,ε) − c 在 0 < S < ε 時，會把 c·scale 依閘門比例漏進轉向（4-R7 的開頭暫態）；S ≥ ε 時兩種公式相同。新公式由 `readout_extra_turn_center_ramp: true` 控制（預設值）。舊 card 沒有這個鍵，以舊公式載入，4-R6／4-R7 的 actor 因此保持原本的行為。暖啟動時可以用這個鍵切換，但起點已經有訓練過的列時會報錯。
 
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision

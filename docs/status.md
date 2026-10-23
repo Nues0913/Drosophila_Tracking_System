@@ -1,8 +1,18 @@
 # 目前進度與已知問題
 
-最後更新：2026-10-21（#32、#56 已併入 main；#55 的 no-KC 對照另行送審）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-10-24（使用者團隊決定 #4 的 P2+B3 納入正式規格，正式圖改為 no-KC；見 #4、#55）。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
 
-## #55 重新萃取候選（v2 已併入，no-KC 對照待審）
+## 2026-10-24 正式模型規格：no-KC 圖 + P2 + B3
+
+#4 的 4-R7 在兩個 seed 上都複製成立：P2（左右共用的 ORN 適應）加上 B3（DNb05 轉向列）後，O 變體在長遮蔽下會用氣味轉向。使用者團隊因此決定把這個組合納入正式規格。驗證是在 no-KC 圖上完成的，所以正式預設圖也改成 no-KC（#55）。
+
+- 實作方式見 `python/flytrack_train/TRAIN_NOTES.md` 的「正式模型規格」。B3 只用在 O、VO、VO-late。
+- 待做：
+  - VO 那一輪（P3）排在 #35 之後。
+  - 遮蔽期間 teacher 的標籤本身就是原始左右比例的函數，報告必須揭露。
+  - DNb05 的生物依據在 #27 查證。
+
+## #55 重新萃取候選（v2 已併入；no-KC 在 2026-10-24 改為正式圖）
 
 `olfactory_v2` 候選圖已由 PR #56 併入 main，但正式預設仍是舊圖。這張圖有 6,244 個節點、35,627 條邊，嗅覺群 3,463、三跳內匯流 59，143 個 ORN 在 VO-late 隔離分支都能到達全部 6 個 DN。
 

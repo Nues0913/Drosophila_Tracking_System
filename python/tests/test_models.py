@@ -162,6 +162,8 @@ def test_direct_runs_use_the_matrix_dense_threshold():
     assert DEFAULT_CONFIG["dense_threshold"] == common["dense_threshold"] == 4000
     # main (2,569) stays dense; no-KC (4,502) and olfactory_v2 (6,244) are sparse.
     assert 2569 < DEFAULT_CONFIG["dense_threshold"] <= 4502
+    # #4 P2 is in the formal spec (2026-10-24): direct runs encode odor the same way.
+    assert DEFAULT_CONFIG["odor_shared_adaptation"] is common["odor_shared_adaptation"] is True
 
 
 def test_dense_and_csr_parameter_gradients_agree(graph):
@@ -823,11 +825,12 @@ def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(
         response = code[0, start : start + encoder.odor_state_size].reshape(2, -1)
         return response, state[0, encoder.frontend_state_size :].reshape(2, -1), state
 
-    base = build_policy("O", graph_path, contract, official_frontend)
+    base = build_policy("O", graph_path, contract, official_frontend, odor_shared_adaptation=False)
     assert base.model_config["odor_shared_adaptation"] is False
     per_side, _, _ = adapt(base, obs, 400)
     assert float((per_side[0] - per_side[1]).abs().max()) < 1e-3  # Contrast adapted away.
-    shared = build_policy("O", graph_path, contract, official_frontend, odor_shared_adaptation=True)
+    shared = build_policy("O", graph_path, contract, official_frontend)
+    assert shared.model_config["odor_shared_adaptation"] is True  # Formal spec since 10-24.
     both, k, state = adapt(shared, obs, 400)
     assert bool((both[0] - both[1] > 0.03).all())
     assert torch.equal(k[0], k[1])
@@ -918,3 +921,71 @@ def test_deterministic_spmm_matches_cusparse_and_repeats_bitwise():
         torch.use_deterministic_algorithms(previous)
     # Outside deterministic mode spmm is torch.sparse.mm unchanged.
     assert torch.equal(spmm(coo.cpu(), dense.cpu()), torch.sparse.mm(coo.cpu(), dense.cpu()))
+
+
+def test_extra_turn_center_shares_the_ratio_denominator(graph):
+    """#4 4-R7: the legacy form leaked the center into the turn while 0 < S < eps."""
+    ramp = MotorReadout(graph, SensorContract(), "structured")
+    legacy = MotorReadout(graph, SensorContract(), "structured", extra_center_ramp=False)
+    for readout in (ramp, legacy):
+        readout.set_extra_turns(["ORN_DM1"], [-0.2], [300.0], eps=0.1)
+    total = torch.tensor([1e-4, 0.01, 0.05, 0.1, 0.5, 3.0])
+    rate = torch.zeros((len(total), graph.n_nodes))
+    rate[:, 2], rate[:, 3] = 0.4 * total, 0.6 * total  # Held at the center ratio -0.2.
+    torch.testing.assert_close(
+        ramp.extra_turn_features(rate)[:, 0], torch.zeros(len(total)), atol=1e-3, rtol=0
+    )
+    leaked = legacy.extra_turn_features(rate)[:, 0]
+    assert float(leaked[1]) > 1.0  # S = 0.01: gate 0.09 x (-0.02 + 0.2) x 300.
+    torch.testing.assert_close(leaked[3:], torch.zeros(3), atol=1e-3, rtol=0)
+    noisy = torch.rand((5, graph.n_nodes), generator=torch.Generator().manual_seed(1)) + 0.1
+    torch.testing.assert_close(  # S >= eps: both forms are the same feature.
+        ramp.extra_turn_features(noisy), legacy.extra_turn_features(noisy)
+    )
+
+
+def test_cards_before_the_spec_keep_per_side_adaptation_and_the_legacy_center(
+    graph_path, official_frontend, tmp_path
+):
+    policy = build_policy(
+        "O",
+        graph_path,
+        SensorContract(),
+        official_frontend,
+        readout_extra_turn_types=["ORN_DM1"],
+        readout_extra_turn_center=[0.0],
+        readout_extra_turn_scale=[1.0],
+    )
+    assert policy.encoder.shared_adaptation and policy.readout.extra_center_ramp
+    destination = tmp_path / "legacy"
+    save_policy_artifact(
+        destination, policy, policy.model_config, policy.contract, graph_path, official_frontend
+    )
+    card_path = destination / "model_card.json"
+    card = json.loads(card_path.read_text())
+    del card["model_config"]["odor_shared_adaptation"]
+    del card["model_config"]["readout_extra_turn_center_ramp"]
+    card_path.write_text(json.dumps(card))
+    recovered, _, _ = load_policy_artifact(destination)
+    assert not recovered.encoder.shared_adaptation
+    assert not recovered.readout.extra_center_ramp
+    config = {
+        "init_artifact": str(destination),
+        "variant": "O",
+        "graph_path": str(graph_path),
+        "frontend_path": str(official_frontend),
+        "model": {"readout_extra_turn_center_ramp": True},
+    }
+    with pytest.raises(ValueError, match="other center form"):
+        prepare_policy(config, torch.device("cpu"))  # Trained rows keep their form.
+    plain = build_policy("O", graph_path, SensorContract(), official_frontend)
+    source = tmp_path / "plain"
+    save_policy_artifact(
+        source, plain, plain.model_config, plain.contract, graph_path, official_frontend
+    )
+    card = json.loads((source / "model_card.json").read_text())
+    del card["model_config"]["readout_extra_turn_center_ramp"]
+    (source / "model_card.json").write_text(json.dumps(card))
+    migrated, _ = prepare_policy({**config, "init_artifact": str(source)}, torch.device("cpu"))
+    assert migrated.readout.extra_center_ramp
+    assert migrated.model_config["readout_extra_turn_center_ramp"] is True

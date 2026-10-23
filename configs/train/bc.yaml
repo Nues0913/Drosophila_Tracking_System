@@ -1,7 +1,8 @@
 variant: VO
 seed: 0
 sensor_contract_path: configs/sensor_contract.json
-graph_path: data/subgraphs/main/graph.npz
+# Formal graph since 2026-10-24 (#55): the no-KC olfactory candidate.
+graph_path: data/subgraphs/olfactory_v2_nokc/graph.npz
 frontend_path: artifacts/frontend/frontend.npz
 init_artifact: runs/pretrain/VO/seed_0/odor/actor
 output: runs/bc/VO/seed_0
@@ -42,3 +43,7 @@ train:
   early_stopping_min_delta: 0.005
   max_grad_norm: 0.5
   activity_coef: 0.0001
+  # #4 B3 (formal spec since 2026-10-24): DNb05 L/R turn rows, calibrated on the
+  # round-0 teacher episodes before the first fit. prepare_experiments.py keeps this
+  # only for the variants in configs/model/variants.yaml extra_turn_rows.
+  calibrate_extra_turn: {types: [DNb05], eps: 0.1}

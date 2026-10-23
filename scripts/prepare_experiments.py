@@ -20,7 +20,9 @@ from flytrack_core.model import assert_parameter_budget, build_policy, count_tra
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-config", type=Path, default=Path("configs/model/variants.yaml"))
-    parser.add_argument("--graph", type=Path, default=Path("data/subgraphs/main/graph.npz"))
+    parser.add_argument(
+        "--graph", type=Path, default=Path("data/subgraphs/olfactory_v2_nokc/graph.npz")
+    )
     parser.add_argument("--frontend", type=Path, default=Path("artifacts/frontend/frontend.npz"))
     parser.add_argument(
         "--sensor-contract", type=Path, default=Path("configs/sensor_contract.json")
@@ -44,7 +46,23 @@ def main():
     contract = SensorContract.from_json(args.sensor_contract)
     reference = options["reference"]
     common = options.get("common", {})
-    reference_policy = build_policy(reference, args.graph, contract, args.frontend, **common)
+    # #4 B3: BC adds these rows (1 weight per branch), so the budget counts them too.
+    extra_turn = dict(options.get("extra_turn_rows") or {})
+    extra_variants = set(extra_turn.pop("variants", []))
+    if not extra_variants <= set(options["variants"]) - {"GRU"}:
+        parser.error("extra_turn_rows variants must be connectome variants of the matrix")
+
+    def with_extra_turn_rows(variant, policy):
+        if variant in extra_variants:
+            types = list(extra_turn["types"])
+            policy.set_readout_extra_turns(
+                types, [0.0] * len(types), [1.0] * len(types), float(extra_turn["eps"])
+            )
+        return policy
+
+    reference_policy = with_extra_turn_rows(
+        reference, build_policy(reference, args.graph, contract, args.frontend, **common)
+    )
     target = count_trainable_parameters(reference_policy)
     configs = {}
     models = {reference: reference_policy}
@@ -55,8 +73,9 @@ def main():
             "budget_target": target,
         }
         model = build_policy(variant, args.graph, contract, args.frontend, **resolved)
-        models[variant] = model
+        # The stage configs build the actor without the rows; BC calibrates them.
         configs[variant] = dict(model.model_config)
+        models[variant] = with_extra_turn_rows(variant, model)
     counts = assert_parameter_budget(
         models, reference=reference, tolerance=float(options["tolerance"])
     )
@@ -69,6 +88,7 @@ def main():
                 "reference": reference,
                 "tolerance": options["tolerance"],
                 "actor_trainable_parameters": counts,
+                "extra_turn_rows": {**extra_turn, "variants": sorted(extra_variants)},
                 "resolved_models": configs,
             },
             indent=2,
@@ -105,6 +125,10 @@ def main():
                 }
                 config.pop("init_artifact", None)
                 config.pop("pretrained_artifacts", None)
+                if template_name == "bc":
+                    config["train"].pop("calibrate_extra_turn", None)
+                    if variant in extra_variants:
+                        config["train"]["calibrate_extra_turn"] = dict(extra_turn)
                 if previous:
                     config["init_artifact"] = str(previous)
                 if modality:

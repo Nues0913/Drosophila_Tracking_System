@@ -81,3 +81,80 @@ def test_calibration_feeds_a_bc_warm_start_that_keeps_the_actor(tmp_path, monkey
     shared = json.loads(shared_out.read_text())
     assert shared["odor_shared_adaptation"] is True
     assert math.isfinite(shared["model"]["readout_extra_turn_center"][0])
+
+
+def _bc_config(**train):
+    config = copy.deepcopy(read_config("configs/train/smoke.yaml"))
+    config.pop("init_artifact", None)
+    config["variant"] = "O"
+    config["env"]["episode_seconds"] = 5  # Outlasts DNb05's silent warm-up.
+    config["train"].update(teacher_steps=1000, epochs=1, **train)
+    return config
+
+
+def test_bc_calibrates_rows_on_round_zero_and_resumes_them(tmp_path, monkeypatch):
+    """Formal spec (#4, 2026-10-24): BC adds and calibrates the rows itself."""
+    monkeypatch.chdir(ROOT)
+    config = _bc_config(
+        dagger_rounds=1,
+        dagger_steps_per_round=200,
+        # The smoke world drives DNb05 to only ~0.01 (4-R6's start actor: median 1.98).
+        calibrate_extra_turn={"types": ["DNb05"], "eps": 0.001},
+    )
+    full, interrupted = tmp_path / "full", tmp_path / "interrupted"
+    imitation.train_bc(config, full, 0, torch.device("cpu"))
+    report = json.loads((full / "extra_turn_calibration.json").read_text())
+    card = json.loads((full / "actor/model_card.json").read_text())
+    assert report["model"]["readout_extra_turn_types"] == ["DNb05"]
+    assert report["model"]["readout_extra_turn_eps"] == 0.001
+    for key, value in report["model"].items():
+        assert card["model_config"][key] == value
+    # BC's own validation episodes stay out of the constants.
+    episodes = len(list((full / "dataset").glob("episode_*.npz")))
+    assert report["held_out_episodes"] and report["training_steps"] < episodes * 100
+    assert float(load_policy_artifact(full / "actor")[0].readout.extra_turn_weight.detach()) != 0
+    original_save = imitation.Recovery.save
+
+    def stop_in_round_one(self, rng, **state):
+        original_save(self, rng, **state)
+        if state["round_index"] == 1:
+            raise InterruptedError("simulated interruption after the calibrated round 0")
+
+    monkeypatch.setattr(imitation.Recovery, "save", stop_in_round_one)
+    with pytest.raises(InterruptedError):
+        imitation.train_bc(config, interrupted, 0, torch.device("cpu"))
+    monkeypatch.setattr(imitation.Recovery, "save", original_save)
+    saved = torch.load(interrupted / "training_checkpoint.pt", weights_only=True)
+    assert saved["extra_turn_calibration"] == report["model"]
+
+    def no_recalibration(*args):
+        raise AssertionError("a resumed BC must reuse the saved constants")
+
+    monkeypatch.setattr(imitation, "calibrate_extra_turns", no_recalibration)
+    imitation.train_bc({**config, "resume": True}, interrupted, 0, torch.device("cpu"))
+    resumed = json.loads((interrupted / "actor/model_card.json").read_text())
+    assert resumed["model_config"] == card["model_config"]
+    expected = load_policy_artifact(full / "actor")[0].state_dict()
+    for name, value in load_policy_artifact(interrupted / "actor")[0].state_dict().items():
+        assert torch.equal(value, expected[name])
+
+
+def test_bc_calibration_needs_a_connectome_actor_without_rows(tmp_path, monkeypatch):
+    monkeypatch.chdir(ROOT)
+    rows = {"types": ["DNb05"], "eps": 0.001}
+    with pytest.raises(ValueError, match="connectome policy"):
+        imitation.train_bc(
+            {**_bc_config(calibrate_extra_turn=rows), "variant": "GRU"},
+            tmp_path / "gru",
+            0,
+            torch.device("cpu"),
+        )
+    config = _bc_config(calibrate_extra_turn=rows, dagger_rounds=0)
+    imitation.train_bc(config, tmp_path / "first", 0, torch.device("cpu"))
+    with pytest.raises(ValueError, match="without extra turn rows"):
+        imitation.train_bc(
+            {**config, "init_artifact": str(tmp_path / "first/actor")},
+            tmp_path / "second",
+            0,
+            torch.device("cpu"),
+        )

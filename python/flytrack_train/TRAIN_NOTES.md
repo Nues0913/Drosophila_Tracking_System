@@ -170,6 +170,23 @@ env:
 
 ## Recurrent PPO
 
+PPO actor 共用 imitation 的參數組：`train.core_bias_learning_rate` 和
+`train.readout_learning_rate` 未設（或 null）時沿用 `learning_rate`（PPO 預設
+`3e-4`）；設成 0 時該組不執行 optimizer 更新，包含 Adam moments 與 weight decay。
+critic 獨立成組，始終使用 base learning rate。群組學習率必須有限且非負。
+兩項皆未設且沒有暖身時，保持原本參數順序及更新結果。
+`train.readout_bias_learning_rate` 可覆寫 readout bias 的學習率，必須為有限非負數（不接受 bool），設為 0 時凍結 `readout.turn_bias` 和 `readout.forward_bias`。
+
+`train.critic_warmup_updates` 預設 0，必須為非負整數。設 N 時，第 1～N 次
+rollout update 的 actor 各組 lr 為 0、參數不變，critic 照常更新；
+第 N+1 次開始恢復設定的群組 lr（永久凍結的組仍為 0）。每次 update 都由設定
+及 checkpoint 恢復的 iteration 重算學習率，不使用 optimizer 儲存的 lr 作恢復值。
+暖身仍收 rollout、算 GAE 和完整 loss／gradient 診斷；`training_metrics.json`
+及 checkpoint progress 記錄 `critic_warmup`、`actor_learning_rates`。
+暖身期間非永久凍結組仍累積 Adam moments，與候選診斷 hook 相同；設定 lr=0 的
+永久凍結組則不累積。舊 checkpoint 仍受既有 source fingerprint
+限制，這項變更後應重新開始 PPO；本版本產生的 checkpoint 可在暖身期間續跑。
+
 ```yaml
 init_artifact: runs/bc/VO/seed_0/actor
 train:

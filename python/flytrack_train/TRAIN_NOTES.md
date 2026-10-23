@@ -51,7 +51,7 @@ output: runs/VO/seed_0
     - RS：重接後右側 DNb05 沒有輸入，L/R 比例固定為 1。
     - GRU：沒有 DN readout。
   - **單獨校準**：`scripts/diagnostics/calibrate_extra_turn.py` 和 BC 共用 `flytrack_train/extra_turn.py`，可在既有資料集上單獨校準。
-- **B3 中心項的修正**：特徵改為 S/(S+ε)·(L−R−c·S)/max(S,ε)·scale，也就是中心項和比例共用分母。舊公式 (L−R)/max(S,ε) − c 在 0 < S < ε 時，會把 c·scale 依閘門比例漏進轉向（4-R7 的開頭暫態）；S ≥ ε 時兩種公式相同。新公式由 `readout_extra_turn_center_ramp: true` 控制（預設值）。舊 card 沒有這個鍵，以舊公式載入，4-R6／4-R7 的 actor 因此保持原本的行為。暖啟動時可以用這個鍵切換，但起點已經有訓練過的列時會報錯。
+- **B3 中心項的修正**：特徵改為 S/(S+ε)·(L−R−c·S)/max(S,ε)·scale，也就是中心項和比例共用分母。舊公式 (L−R)/max(S,ε) − c 在 0 < S < ε 時，會把 c·scale 依閘門比例漏進轉向（4-R7 的開頭暫態）；S ≥ ε 時兩種公式相同。新公式由 `readout_extra_turn_center_ramp: true` 控制（預設值）。舊 card 沒有這個鍵，以舊公式載入，4-R6／4-R7 的 actor 因此保持原本的行為。暖啟動時可以用這個鍵切換，但起點已經有訓練過的列時會報錯。BC 的 `calibrate_extra_turn` 新增列時一律用新公式，起點即使是舊 card 也一樣，並把這個值記在 `extra_turn_calibration.json`。
 
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision

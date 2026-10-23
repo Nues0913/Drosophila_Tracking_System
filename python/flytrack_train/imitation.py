@@ -182,6 +182,9 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             raise ValueError("calibrate_extra_turn needs an actor without extra turn rows")
         types = list(calibration["types"])
         eps = float(calibration.get("eps", DEFAULT_CONFIG["readout_extra_turn_eps"]))
+        # New rows use the fixed center form even on a card from before it (#67 review).
+        policy.readout.extra_center_ramp = True
+        policy.model_config["readout_extra_turn_center_ramp"] = True
         policy.set_readout_extra_turns(types, [0.0] * len(types), [1.0] * len(types), eps)
     optimizer = torch.optim.Adam(parameter_groups(policy, train))
     if teacher_steps <= 0 or dagger_steps <= 0:

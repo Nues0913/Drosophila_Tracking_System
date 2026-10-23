@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 import torch
-from flytrack_core.model import load_policy_artifact
+from flytrack_core.model import build_policy, load_policy_artifact, save_policy_artifact
 from flytrack_train import imitation
-from flytrack_train.config import prepare_policy, read_config
+from flytrack_train.config import contract_from_config, prepare_policy, read_config
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -158,3 +158,30 @@ def test_bc_calibration_needs_a_connectome_actor_without_rows(tmp_path, monkeypa
             0,
             torch.device("cpu"),
         )
+
+
+def test_bc_calibration_uses_the_fixed_center_form_on_an_old_card(tmp_path, monkeypatch):
+    """#67 review: a card from before the fix loads the legacy form; new rows must not."""
+    monkeypatch.chdir(ROOT)
+    config = _bc_config(dagger_rounds=0, calibrate_extra_turn={"types": ["DNb05"], "eps": 0.001})
+    contract = contract_from_config(config)
+    old = build_policy(
+        "O", config["graph_path"], contract, config["frontend_path"], **config["model"]
+    )
+    source = tmp_path / "old"
+    save_policy_artifact(
+        source, old, old.model_config, contract, config["graph_path"], config["frontend_path"]
+    )
+    card_path = source / "model_card.json"
+    card = json.loads(card_path.read_text())
+    del card["model_config"]["readout_extra_turn_center_ramp"]
+    card_path.write_text(json.dumps(card))
+    assert not load_policy_artifact(source)[0].readout.extra_center_ramp
+    imitation.train_bc(
+        {**config, "init_artifact": str(source)}, tmp_path / "bc", 0, torch.device("cpu")
+    )
+    report = json.loads((tmp_path / "bc/extra_turn_calibration.json").read_text())
+    assert report["readout_extra_turn_center_ramp"] is True
+    trained = load_policy_artifact(tmp_path / "bc/actor")[0]
+    assert trained.readout.extra_center_ramp
+    assert trained.model_config["readout_extra_turn_center_ramp"] is True

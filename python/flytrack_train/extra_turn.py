@@ -109,6 +109,8 @@ def calibrate_extra_turns(
             )
     return {
         "odor_shared_adaptation": bool(policy.encoder.shared_adaptation),
+        # The closed-form features below depend on the center form.
+        "readout_extra_turn_center_ramp": bool(readout.extra_center_ramp),
         "held_out_episodes": sorted(held),
         "training_steps": int((~H).sum()),
         "branches": policy.branches,

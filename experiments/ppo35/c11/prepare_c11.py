@@ -8,16 +8,15 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 from c11_common import (
-    FORMAL_SEED,
     HERE,
     ROOT,
     SMOKE_SEED,
-    SNAP_SEED,
     actor_files,
     digest,
     portable,
     read,
     relative,
+    run_profile,
     seeds,
     write,
 )
@@ -32,18 +31,21 @@ def differences(left, right):
     }
 
 
-def config_diff(base, candidate):
+def config_diff(base, candidate, run=None):
+    profile = run_profile(run)
     # Compare equivalent path spellings consistently; emitted files use relative paths.
     changes = differences(portable(base), portable(candidate))
     expected = {
-        "output": {"c10": portable(base["output"]), "c11": candidate["output"]},
+        "output": {"c10": portable(base["output"]), "c11": portable(candidate["output"])},
         "train.readout_bias_learning_rate": {"c10": None, "c11": 0},
     }
+    if profile.name == "s1":
+        expected["seed"] = {"c10": 0, "c11": 1}
     if changes != expected or "readout_bias_learning_rate" in base["train"]:
         raise ValueError("Unexpected C11 config differences")
     if (
         candidate["variant"] != "V"
-        or candidate["seed"] != 0
+        or candidate["seed"] != profile.seed
         or candidate["train"]["total_steps"] != 500_000
         or candidate["train"]["core_bias_learning_rate"] != 0.001
         or candidate["train"]["readout_learning_rate"] != 0.01
@@ -53,11 +55,27 @@ def config_diff(base, candidate):
     return changes
 
 
-def candidate_config(base, out):
+def s0_config_diff(base, candidate):
+    changes = {
+        key: {"s0": row["c10"], "s1": row["c11"]}
+        for key, row in differences(portable(base), portable(candidate)).items()
+    }
+    expected = {
+        "output": {"s0": portable(base["output"]), "s1": portable(candidate["output"])},
+        "seed": {"s0": 0, "s1": 1},
+    }
+    if changes != expected:
+        raise ValueError("Unexpected C11-s1 differences from C11-s0")
+    return changes
+
+
+def candidate_config(base, out, run=None):
+    profile = run_profile(run)
     config = portable(copy.deepcopy(base))
     config["output"] = str(out / "ppo_c11")
     config["train"]["readout_bias_learning_rate"] = 0
-    config_diff(base, config)
+    config["seed"] = profile.seed
+    config_diff(base, config, profile.name)
     return config
 
 
@@ -138,9 +156,10 @@ def other_training():
 
 
 def prepare(out, smoke):
+    profile = run_profile()
     out = Path(relative(out))
-    if (smoke and out != Path("runs/c11_smoke")) or (not smoke and out != Path("runs/c11")):
-        raise ValueError("Use runs/c11_smoke for smoke and runs/c11 for formal runs")
+    if out != profile.out(smoke):
+        raise ValueError("OUT differs from C11 profile/mode")
     out.mkdir(parents=True, exist_ok=True)
     c10 = read(ROOT / "runs/c10/manifest.json")
     inputs = {
@@ -163,9 +182,9 @@ def prepare(out, smoke):
         if digest(p) != c10["sha256"][original]:
             raise ValueError("BC actor differs from C10 manifest")
     other_training()
-    main = main_hash_check(ROOT, ROOT / "runs/c11/main_python.sha256", smoke)
+    main = main_hash_check(ROOT, ROOT / profile.out() / "main_python.sha256", smoke)
     main_ref = os.environ.get("MAIN_REF", "origin/main")
-    commit_file = ROOT / "runs/c11/main_python.commit"
+    commit_file = ROOT / profile.out() / "main_python.commit"
     commit = os.environ.get("MAIN_COMMIT")
     if commit is None:
         commit = main_ref if re.fullmatch(r"[0-9a-f]{40}", main_ref) else None
@@ -174,12 +193,17 @@ def prepare(out, smoke):
     if not smoke and (commit is None or not re.fullmatch(r"[0-9a-f]{40}", commit)):
         raise ValueError("Provide reference commit via MAIN_COMMIT or main_python.commit")
     base = yaml.safe_load((ROOT / "runs/c10/ppo_c10.yaml").read_text())
-    formal = candidate_config(base, out)
+    formal = candidate_config(base, out, profile.name)
+    s0_changes = None
+    if profile.name == "s1":
+        s0_changes = s0_config_diff(
+            yaml.safe_load((ROOT / "runs/c11/ppo_c11.yaml").read_text()), formal
+        )
     if Path(formal["init_artifact"]).resolve() != Path(inputs["BC_ACTOR"]).resolve():
         raise ValueError("BC_ACTOR differs from C10 init_artifact")
     config = copy.deepcopy(formal)
     evaluation = portable(yaml.safe_load((ROOT / "runs/c10/eval.yaml").read_text()))
-    evaluation["seed"] = SMOKE_SEED if smoke else FORMAL_SEED
+    evaluation["seed"] = SMOKE_SEED if smoke else profile.formal_seed
     if smoke:
         config["train"].update(
             num_envs=1,
@@ -194,11 +218,12 @@ def prepare(out, smoke):
         config["env"]["episode_seconds"] = 0.2
         evaluation["env"]["episode_seconds"] = 0.2
     seed = int(os.environ.get("SEED_START", evaluation["seed"]))
-    snap_seed = int(os.environ.get("SNAP_SEED_START", SMOKE_SEED + 1000 if smoke else SNAP_SEED))
+    expected_snap = SMOKE_SEED + 1000 if smoke else profile.snap_seed
+    snap_seed = int(os.environ.get("SNAP_SEED_START", expected_snap))
     episodes, snap_episodes = (1, 1) if smoke else (100, 20)
-    seeds(seed, episodes, smoke)
-    seeds(snap_seed, snap_episodes, smoke)
-    if seed != evaluation["seed"] or snap_seed != (SMOKE_SEED + 1000 if smoke else SNAP_SEED):
+    seeds(seed, episodes, smoke, profile.name)
+    seeds(snap_seed, snap_episodes, smoke, profile.name)
+    if seed != evaluation["seed"] or snap_seed != expected_snap:
         raise ValueError("Seed differs from C11 protocol")
     sources = list(HERE.glob("*.py")) + list(HERE.glob("*.sh"))
     sources += list(HERE.parent.glob("*.py"))
@@ -216,6 +241,18 @@ def prepare(out, smoke):
     if os.environ.get("MONITOR_SH"):
         sources.append(Path(os.environ["MONITOR_SH"]))
     sources += actor_files(inputs["BC_ACTOR"])
+    if profile.name == "s1":
+        sources += [
+            ROOT / "runs/c11" / name
+            for name in (
+                "manifest.json",
+                "ppo_c11.yaml",
+                "snap_eval.json",
+                "acceptance.json",
+                "eval_c11.json",
+            )
+        ]
+        sources += list((ROOT / "runs/c11/snapshots").glob("dn_step_*.json"))
     sources += list((Path(inputs["MEASURE_REPO"]) / "python").rglob("*.py"))
     sources += list(Path(inputs["MEASURE_PY"]).parent.rglob("*.py"))
     sources += list(Path(inputs["MEASURE_PY"]).parent.rglob("*.npz"))
@@ -223,12 +260,12 @@ def prepare(out, smoke):
     sources += [Path(formal[k]) for k in ("graph_path", "frontend_path", "sensor_contract_path")]
     sources += list((ROOT / "configs/scenarios").glob("*.yaml"))
     manifest = {
-        "protocol": "C11-protocol100-v1",
+        "protocol": profile.protocol,
         "smoke": smoke,
         "inputs": inputs,
         "configs": {"ppo_c11.yaml": config, "eval.yaml": evaluation},
         "formal_c11": formal,
-        "c10_config_diff": config_diff(base, formal),
+        "c10_config_diff": config_diff(base, formal, profile.name),
         "smoke_overrides": differences(formal, config) if smoke else {},
         "device": "cpu" if smoke else "cuda",
         "episodes": episodes,
@@ -258,6 +295,8 @@ def prepare(out, smoke):
         ),
         "snap_scheduling": "Concurrent CPU chain; nice 10; at most two affinity CPUs; workers=0",
     }
+    if s0_changes is not None:
+        manifest["s0_config_diff"] = s0_changes
     target = out / "manifest.json"
     if target.exists() and read(target) != manifest:
         raise ValueError("Run inputs/code/mode changed; restore inputs before resuming")
@@ -276,4 +315,4 @@ def prepare(out, smoke):
 
 if __name__ == "__main__":
     smoke_mode = os.environ.get("SMOKE", "0") == "1"
-    prepare(Path(os.environ.get("OUT", "runs/c11_smoke" if smoke_mode else "runs/c11")), smoke_mode)
+    prepare(Path(os.environ.get("OUT", run_profile().out(smoke_mode))), smoke_mode)

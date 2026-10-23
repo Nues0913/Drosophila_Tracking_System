@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from c11_common import ROOT, portable, read, relative, seeds, write
+from c11_common import ROOT, manifest_profile, portable, read, relative, seeds, write
 from protocol100 import actor_hashes, dn_rows, validate_eval
 
 
@@ -47,7 +47,7 @@ def evaluate(out, name):
     import eval100
 
     m = read(out / "manifest.json")
-    seeds(m["seed_start"], m["episodes"], m["smoke"])
+    seeds(m["seed_start"], m["episodes"], m["smoke"], manifest_profile(m).name)
     actor = str(out / "ppo_c11/actor") if name == "c11" else m["inputs"]["BC_ACTOR"]
     path = out / f"eval_{name}.tmp.json"
     os.environ.update(EPISODES=str(m["episodes"]), SEED_START=str(m["seed_start"]))
@@ -112,7 +112,7 @@ def snap_eval(out):
     m = read(out / "manifest.json")
     config = m["configs"]["eval.yaml"]
     episodes, start = m["snap_episodes"], m["snap_seed_start"]
-    seeds(start, episodes, m["smoke"])
+    seeds(start, episodes, m["smoke"], manifest_profile(m).name)
     contract = contract_from_config(config)
 
     class RecordingPool(EnvPool):
@@ -161,6 +161,7 @@ def acceptance_result(out):
     from accept100 import compare
 
     m = read(out / "manifest.json")
+    seeds(m["seed_start"], m["episodes"], m["smoke"], manifest_profile(m).name)
     reports = {name: read(out / f"eval_{name}.json") for name in ("bc", "c11")}
     actors = {"bc": m["inputs"]["BC_ACTOR"], "c11": str(out / "ppo_c11/actor")}
     for name, report in reports.items():

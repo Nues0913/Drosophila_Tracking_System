@@ -1,4 +1,21 @@
-# C11 執行 driver
+# C11／C11-s1 執行 driver
+
+`C11_RUN` 只接受 `s0`（預設）及 `s1`。兩者沿用同一 BC actor，設定差異
+只能是 output 及 PPO seed；s1 另外與 C10 核對 output、
+`train.readout_bias_learning_rate: 0`、`seed: 1` 三項差異，多或少一項均停止。
+
+| 項目 | s0 | s1 |
+| --- | --- | --- |
+| 正式輸出 | `runs/c11` | `runs/c11_s1` |
+| smoke 輸出 | `runs/c11_smoke` | `runs/c11_s1_smoke` |
+| PPO seed | 0 | 1 |
+| protocol100 seed | 1600200000–1600200099 | 1600400000–1600400099 |
+| 快照 seed | 1600300000–1600300019 | 1600500000–1600500019 |
+| manifest protocol | `C11-protocol100-v1` | `C11-s1-protocol100-v1` |
+
+`OUT` 必須符合所選 profile 和 smoke 模式。`runs/c11/` 為已交付、唯讀的 s0
+結果，不可重新執行或寫入。s1 只讀其中的設定與結果，並將比較來源 SHA 納入 manifest。
+s0 manifest 沒有新增或改名欄位；s1 新增 `s0_config_diff`。
 
 正式 C11 沿用 `runs/c10/ppo_c10.yaml`：V、seed 0、BC 起跑、500,000 步、
 core bias LR 0.001、readout weights LR 0.01、critic warmup 10 updates。
@@ -9,6 +26,8 @@ core bias LR 0.001、readout weights LR 0.01、critic warmup 10 updates。
 正式執行前，由操作者將對應 `MAIN_REF`（預設 `origin/main`）的來源檔案雜湊清單
 放入 `runs/c11/main_python.sha256`，每行是 `SHA256  python/相對檔名`，
 並以 `MAIN_COMMIT` 或 `runs/c11/main_python.commit` 提供相應的完整 40 位 commit。
+s1 的兩份參考檔改放 `runs/c11_s1/main_python.sha256` 和
+`runs/c11_s1/main_python.commit`，不借用 s0 的參考檔。
 driver 記錄 ref、commit 及清單本身的 SHA256，全程不呼叫版本控制命令。
 逐檔比對也會核對完整清單，排除 `python/tests/test_ppo35_*.py` 和執行時產生的
 `__pycache__`／bytecode。正式清單缺失、不符、缺 commit 均停止；smoke 缺清單或
@@ -26,6 +45,10 @@ PYTHONPATH=python:experiments/ppo35 .venv/bin/python -m pytest -q experiments/pp
 .venv/bin/ruff check experiments/ppo35/c11 < /dev/null
 .venv/bin/ruff format --check experiments/ppo35/c11 < /dev/null
 SMOKE=1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
+SMOKE=1 C11_RUN=s1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
+SMOKE=1 C11_RUN=s1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
+touch runs/c11_s1_smoke/STOP < /dev/null
+SMOKE=1 C11_RUN=s1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
 SMOKE=1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
 touch runs/c11_smoke/STOP < /dev/null
 SMOKE=1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
@@ -33,7 +56,8 @@ SMOKE=1 bash experiments/ppo35/c11/run_c11.sh < /dev/null
 
 smoke 強制 CPU、1 env、rollout 12、共 36 步（三次迭代）、每情境 1 回合、
 每回合 0.2 秒；快照每迭代一個邊界。protocol smoke seed 1600000000，
-snapshot smoke seed 1600001000。任何和兩個正式區塊重疊的 smoke seed 會在訓練前報錯。
+snapshot smoke seed 1600001000。兩個 profile 的 smoke 都禁止與四個正式區塊重疊，
+並會在訓練前報錯；s1 正式評估僅允許自己的兩個區塊。
 正式 protocol100 是每情境 100 回合、seed 1600200000–1600200099；
 快照和 BC 第 0 點皆固定 20 個 normal 回合、seed 1600300000–1600300019。
 沒有執行正式設定的 smoke 結果永遠 `accepted: false`。
@@ -53,6 +77,8 @@ sidecar 是獨立 CPU 程序，每秒讀 progress；以 `os.link` 留住當時 c
 重建結果和最終訓練 actor 逐 tensor 比較原始位元（包括正負零），
 不比較帶有序列化容器資訊的 `.pt` 檔案 bytes。
 訓練完成也會驗證 turn／forward bias 與 BC 的位元完全相同。
+`check_c11.py` 保留共用完成檢查的項目，並使用設定中的 PPO seed 驗證 recovery，
+以支援 s1；共用 `check.py` 的固定 seed 0 與 `python/` 均未修改。
 
 GPU 共用硬預算 4500 秒，涵蓋三個 GPU 階段的所有失敗、中斷及成功嘗試，
 包含 train 的 sidecar。timeout 依當時剩餘時間設定並保留五秒清理餘裕。
@@ -73,3 +99,12 @@ SIGINT／SIGTERM 清理程序群組與背景工作。
 turn_bias 欄為最大絕對值。C10 數字只讀 `runs/c10`；四門檻取自現存
 `acceptance_c10_only.json`，C10 僅列終點。既有 C10 沒有儲存 omega 中位數，
 該欄以 JSON null／表格「—」呈現。
+
+快照表另列 DNa01 slope 中位數、curriculum 階段；各段範圍由
+`train.curriculum[].until × train.total_steps` 計算，並另列範圍表。
+邊界沿用訓練的 `progress <= until`：75,000 步屬第 1 段，75,001 步屬第 2 段；
+第一段為閉區間，其餘左開右閉，500,000 步屬最後一段。
+s1 快照旁的 s0 值只讀 `runs/c11/snap_eval.json` 及
+`runs/c11/snapshots/dn_step_*.json`，按實際步數精確配對，缺少同步數資料時列 null／「—」。
+s1 四條件、判定與 normal 終點並列 s0、s1、C10；BC 在 s1 新區塊重新評估配對。
+驗收 smoke 完成後移除兩個 smoke 輸出目錄。

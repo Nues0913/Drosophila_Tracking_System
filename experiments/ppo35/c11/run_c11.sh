@@ -4,8 +4,13 @@ exec < /dev/null
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 export SMOKE=${SMOKE:-0}
 [[ "$SMOKE" == 0 || "$SMOKE" == 1 ]] || { echo 'SMOKE must be 0 or 1'; exit 1; }
-EXPECTED=runs/c11
-if [[ "$SMOKE" == 1 ]]; then EXPECTED=runs/c11_smoke; fi
+export C11_RUN=${C11_RUN-s0}
+case "$C11_RUN" in
+  s0) EXPECTED=runs/c11 ;;
+  s1) EXPECTED=runs/c11_s1 ;;
+  *) echo 'C11_RUN must be s0 or s1'; exit 1 ;;
+esac
+if [[ "$SMOKE" == 1 ]]; then EXPECTED=${EXPECTED}_smoke; fi
 export OUT=${OUT:-$EXPECTED}
 [[ "$OUT" == "$EXPECTED" ]] || { echo 'OUT differs from C11 mode'; exit 1; }
 mkdir -p "$OUT"

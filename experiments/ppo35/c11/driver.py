@@ -19,8 +19,10 @@ from c11_common import (
     STAGES,
     actor_files,
     digest,
+    manifest_profile,
     read,
     relative,
+    seeds,
     write,
 )
 
@@ -115,7 +117,7 @@ def validate(out, stage):
 
     m = read(out / "manifest.json")
     if stage == "c11_train":
-        from check import ppo_complete
+        from check_c11 import ppo_complete
 
         ppo_complete(out / "ppo_c11", m["configs"]["ppo_c11.yaml"], m["smoke"])
         import torch
@@ -148,6 +150,7 @@ def validate(out, stage):
         ):
             raise ValueError("Final snapshot missing")
     elif stage in ("c11_eval", "bc_eval"):
+        seeds(m["seed_start"], m["episodes"], m["smoke"], manifest_profile(m).name)
         actor = str(out / "ppo_c11/actor") if stage == "c11_eval" else m["inputs"]["BC_ACTOR"]
         validate_eval(
             read(outputs(out, stage)[0]),
@@ -169,7 +172,6 @@ def validate(out, stage):
             if digest(path) != checksum:
                 raise ValueError("Rebuilt artifact changed")
     elif stage == "snap_eval":
-        from c11_common import seeds
         from jobs import snapshot_actors
 
         rows = read(out / "snap_eval.json")["rows"]
@@ -179,7 +181,9 @@ def validate(out, stage):
             finite(row)
             if row["actor_sha256"] != actor_hashes(row["actor"]) or row["device"] != "cpu":
                 raise ValueError("Snapshot actor/runtime differs")
-            expected = seeds(m["snap_seed_start"], m["snap_episodes"], m["smoke"])
+            expected = seeds(
+                m["snap_seed_start"], m["snap_episodes"], m["smoke"], manifest_profile(m).name
+            )
             if row["seed_start"] != m["snap_seed_start"] or row["episodes"] != len(expected):
                 raise ValueError("Snapshot evaluation protocol differs")
             if [r["environment_seed"] for r in row["normal"]["episodes"]] != expected:

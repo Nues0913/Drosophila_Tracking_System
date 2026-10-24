@@ -87,7 +87,7 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 ### 正式訓練的前提（P0）
 
 1. **策略還不會用氣味（#4）。** G2 之後，氣味的影響在 pretrain 後保住了，但 BC 只用 normal 情境，只靠視覺就能完成。BC 把視覺的影響拉高約 200 倍，氣味／視覺的 |Δω| 比值掉到 0.005 以下，odor lesion 幾乎沒有影響。**所以現有的 VO 結果實際上只用了視覺，VO／V／O 的比較和 lesion 結論都還不成立。** 下一步是方向 3：BC 世界混合長遮蔽，遮蔽時啟用 #33 的氣味 teacher，等 @MiLong9487 貼出設計後由 PM 核准。
-2. **PPO 沒有改善 BC（#35），已移出正式訓練鏈。** C9–C13 的各種限制（凍結 readout bias、去掉課程、L2 錨定）都沒有在兩個 seed 上通過 protocol100。每次失敗的方式不同（繞圈、追太近而撞上、帶著轉向偏差），參數離 BC 很近也一樣會變差。本機探索顯示更新方向大致正確，崩潰主要來自步幅過衝；但 reward 的改善沒有換成 protocol100 要求的方位和碰撞表現。原因還沒拆清楚，留在 #35 研究，不擋正式訓練。
+2. **PPO 沒有改善 BC（#35），已移出正式訓練鏈。** C9–C13 的各種限制（凍結 readout bias、去掉課程、L2 錨定）都沒有在兩個 seed 上通過 protocol100。每次失敗的方式不同（繞圈、追太近而撞上、帶著轉向偏差），參數離 BC 很近也一樣會變差。本機探索（VO、舊圖、只更新讀出層、核心凍結）顯示，在那個設定下更新方向大致正確，崩潰主要來自步幅過衝；但 reward 的改善沒有換成 protocol100 要求的方位和碰撞表現。C13 是全部參數都在更新、離 BC 不到 0.13，兩個 seed 仍然變差，所以這個結論還不能推廣到正式規格。原因還沒拆清楚，留在 #35 研究，不擋正式訓練。
 3. **評估協定還沒完全凍結（#20）。** 2026-10-19 已凍結：成功判定（≤ 2 m、方位 ≤ 45°、≥ 80% 時間）、環境審計（teacher ≥ 90%、盲目策略 ≤ 10%）、BC gate、運動 DN 輸入增益 100、主要終點與非劣容許差，以及 wander 列為次要情境（主要終點維持 curved）。**還沒凍結：noise 強度（等 #9）、occlusion 長度（等 #4 方向 3）**。兩項定案後，會一起更新 `configs/evaluation_protocol.yaml`。
 
 ### 其他未解決
@@ -95,7 +95,9 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 4. **noise 情境對雜訊參數非常敏感**（bc_B 在兩組參數下 77% 對 0%）。雜訊曲線和 BC 雜訊擴增見 [#9](https://github.com/Nues0913/Drosophila_Tracking_System/issues/9)。
 5. **情境強度**：occlusion 只遮 2 秒（佔回合 3%），太弱，測不出氣味的補位作用。conflict 目前等於 normal（第 1 點）。
 6. **模態使用 gate、BC 崩潰檢查**還沒加進 `run_experiments.py`（[#25](https://github.com/Nues0913/Drosophila_Tracking_System/issues/25)）。BC 現在是最終產物，這個 gate 更重要；門檻在 VO 那一輪開跑前登記。
-7. **`lesion_analysis.py` 用了訓練範圍的種子，並繞過情境設定檔**（[#29](https://github.com/Nues0913/Drosophila_Tracking_System/issues/29)）。正式結果前要修。
+7. ~~`lesion_analysis.py` 用了訓練範圍的種子，並繞過情境設定檔~~：已由 PR #69 修正（#29）。lesion 現在用 `evaluate.yaml` 的世界、card 的訓練 seed 和正式評估同一個種子公式，`lesion=none` 的回合和 `evaluate()` 逐回合相同。lesion 分析前還要注意兩件事（PR #69 review 的建議）：
+   - 如果正式評估改成 `deterministic: true`（目前是 false），lesion 腳本也要呼叫 `enable_deterministic()`，GPU 上才會逐位元配對。
+   - 可以把「`lesion=none` 等於 `evaluate()`」寫成回歸測試。
 8. **linear 目標撞牆反彈會撞上跟隨者**（teacher 13% 碰撞），所以只留在 PPO 暖身課程（研究用）。
 9. **ROS／Gazebo**（#22，2026-10-19，沿用舊的 smoke 模型、軟體渲染，只驗鏈路、不代表追蹤品質）：CPU 首輪單回合與 5 回合有效；GPU 追加 5 回合也 invalid 0/5、truth coverage 100%，沒有沿用前一回合的 sample；策略沒有訂閱真值 topic，bag 可以讀回。**CPU／GPU 完整 sensor-to-command p95 為 55.62／56.46 ms，均未達 50 ms**；active 窗口為 54.13／55.09 ms，inference wall p95 為 24.76／24.19 ms。GPU 報告已合併（PR #45），PM 獨立解碼原始 bag 重算相符。兩者各只有一輪，不能推斷 GPU 穩定較慢或唯一瓶頸。依 #20 決策保留門檻與頻率；[#48 的離線診斷](ros_latency_diagnostic_2026-10-19.md) 已核對 4,707 筆同一 sample 的逐段 wall time，慢尾主要落在 forward→received 與 control→published，但尚未定位內部原因。預設關閉的 profiler 探針已由 #50 合併；#49 已從固定 main 1563a93 完成一次有上限的短回放，[#51 報告](ros_policy_replay_profile_2026-10-19.md) 已合併並驗收結案。單次 off/on 分布不代表普遍 probe 開銷，reset 前 trace 缺口的可觀測性已由 #53 的 schema2 狀態與丟棄紀錄補強，#52 結案，歷史缺口保留；simulation-clock sensor age 不與 wall time 相加。#42 測試收集已由 #44 修正；取消 future 的誤報已由 #47 修正，#46 結案。2D／Gazebo 感測分布與碰撞判斷一致性仍未量（[#23](https://github.com/Nues0913/Drosophila_Tracking_System/issues/23)）。ROS 的 `target_motion` 只接受單一字串，正式評估每個 cell 固定一種運動（#20）。
 10. **生物對應查證**（ORN、LC、DN 標籤、號誌信心）還沒做（[#27](https://github.com/Nues0913/Drosophila_Tracking_System/issues/27)）。如果需要改圖，要在正式矩陣前完成。

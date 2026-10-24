@@ -43,7 +43,8 @@ services:
     <<: *ml
     profiles: [ml]
     gpus: all
-    command: [python, -m, flytrack_train, ppo, --config, configs/train/ppo.yaml]
+    # Formal chain ends at BC (#35 option D); needs the pretrain actor in bc.yaml.
+    command: [python, -m, flytrack_train, bc, --config, configs/train/bc.yaml]
   sim:
     <<: *ros
     profiles: [sim]

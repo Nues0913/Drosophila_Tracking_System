@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from flytrack_core.model.policy import DEFAULT_CONFIG, ConnectomePolicy
 
 from .batches import Episode, SequenceModel, pack_episode, tensor_observation
 from .collection import collect_lockstep
@@ -18,9 +19,16 @@ from .config import (
     seed_all,
     write_json,
 )
+from .extra_turn import EXTRA_TURN_KEYS, calibrate_extra_turns
 from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
-from .recovery import EpisodeStore, Recovery, fit_sequence_epochs, restore_rng
+from .recovery import (
+    EpisodeStore,
+    Recovery,
+    fit_sequence_epochs,
+    held_out_episodes,
+    restore_rng,
+)
 
 BC_STREAM = 10
 
@@ -164,6 +172,20 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     dagger_steps = int(train.get("dagger_steps_per_round", 30000))
     if initial_episodes <= 0 or dagger_episodes <= 0 or rounds < 0:
         raise ValueError("BC requires positive episode counts and nonnegative DAgger rounds")
+    # #4 B3 (formal spec): the rows join the actor and the optimizer now at zero weight,
+    # and take their constants from the round-0 teacher episodes before the first fit.
+    calibration = train.get("calibrate_extra_turn")
+    if calibration:
+        if not isinstance(policy, ConnectomePolicy) or policy.readout.mode != "structured":
+            raise ValueError("calibrate_extra_turn needs a connectome policy, structured readout")
+        if policy.readout.extra_turn_types:
+            raise ValueError("calibrate_extra_turn needs an actor without extra turn rows")
+        types = list(calibration["types"])
+        eps = float(calibration.get("eps", DEFAULT_CONFIG["readout_extra_turn_eps"]))
+        # New rows use the fixed center form even on a card from before it (#67 review).
+        policy.readout.extra_center_ramp = True
+        policy.model_config["readout_extra_turn_center_ramp"] = True
+        policy.set_readout_extra_turns(types, [0.0] * len(types), [1.0] * len(types), eps)
     optimizer = torch.optim.Adam(parameter_groups(policy, train))
     if teacher_steps <= 0 or dagger_steps <= 0:
         raise ValueError("Fair BC/DAgger budgets must be positive")
@@ -174,6 +196,10 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     environment_steps = checkpoint["environment_steps"] if checkpoint else 0
     reports = checkpoint["reports"] if checkpoint else []
     first_round = checkpoint["round_index"] if checkpoint else 0
+    # The row constants are buffers outside the state dict; filled once, never rebound.
+    calibrated = dict((checkpoint.get("extra_turn_calibration") if checkpoint else None) or {})
+    if calibrated:
+        policy.set_readout_extra_turns(*(calibrated[key] for key in EXTRA_TURN_KEYS))
     if checkpoint:
         policy.load_state_dict(checkpoint["actor"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -216,6 +242,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
                 round_index=round_index,
                 reports=reports,
                 fit_state=fit_state,
+                extra_turn_calibration=calibrated or None,
             )
 
         def collected(
@@ -276,6 +303,13 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             save("fit")
         # The frozen sensory code of an episode never changes; encode new ones only.
         encoded.extend(model.encode(episodes[len(encoded) :]))
+        if calibration and not calibrated:
+            # Training episodes only: the held-out ones are BC's own validation split.
+            held = set(held_out_episodes(len(episodes), int(train.get("validation_every", 10))))
+            report = calibrate_extra_turns(policy, model, episodes, encoded, held)
+            calibrated.update(report["model"])
+            policy.set_readout_extra_turns(*(calibrated[key] for key in EXTRA_TURN_KEYS))
+            write_json(output / "extra_turn_calibration.json", report)
         fit_reports = fit_behavior(
             model,
             encoded,
@@ -318,6 +352,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             round_index=round_index + 1,
             reports=reports,
             fit_state=None,
+            extra_turn_calibration=calibrated or None,
         )
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "training_metrics.json", reports)

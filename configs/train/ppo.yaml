@@ -1,7 +1,8 @@
 variant: VO
 seed: 0
 sensor_contract_path: configs/sensor_contract.json
-graph_path: data/subgraphs/main/graph.npz
+# Formal graph since 2026-10-24 (#55): the no-KC olfactory candidate.
+graph_path: data/subgraphs/olfactory_v2_nokc/graph.npz
 frontend_path: artifacts/frontend/frontend.npz
 init_artifact: runs/bc/VO/seed_0/actor
 output: runs/VO/seed_0

@@ -307,6 +307,7 @@ class MotorReadout(nn.Module):
         mode: str,
         branches: int = 1,
         turn_bias: bool = False,
+        extra_center_ramp: bool = True,
     ):
         super().__init__()
         turns, forward = graph.population("turn"), graph.population("forward")
@@ -352,6 +353,7 @@ class MotorReadout(nn.Module):
             self.turn_bias = nn.Parameter(torch.zeros(())) if turn_bias else None
         self._graph = graph
         self.extra_turn_types: list[str] = []
+        self.extra_center_ramp = bool(extra_center_ramp)
 
     def set_extra_turns(
         self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
@@ -359,13 +361,16 @@ class MotorReadout(nn.Module):
         """Add, or recalibrate, extra turn rows read as normalized L/R differences (#4 B3).
 
         Each type is read from the mean activity of its left and right nodes as
-        S / (S + eps) * ((L - R) / max(S, eps) - center) * scale, with S = L + R; it
+        S / (S + eps) * (L - R - center * S) / max(S, eps) * scale, with S = L + R; it
         stays in its own population, so it gets no motor gain. The constants come from
         teacher rollouts (scripts/diagnostics/calibrate_extra_turn.py): DNb05's static
         L/R asymmetry (-0.22) is ~65x the odor-driven variation, which a raw difference
         would hand to turn_bias as an ill-conditioned offset. The S / (S + eps) gate
         fades the row to 0, with bounded gradients, while both sides are silent (the
-        first ~3 s of an episode, #63 review). New rows start at zero weight.
+        first ~3 s of an episode, #63 review). The center shares the max(S, eps)
+        denominator, so a side ratio held at the center reads 0 at any S; the legacy
+        form (L - R) / max(S, eps) - center, kept for old cards, leaked the center into
+        the turn while 0 < S < eps (#4 4-R7). New rows start at zero weight.
         """
         types, center, scale = list(types), [float(x) for x in center], [float(x) for x in scale]
         eps = float(eps)
@@ -422,7 +427,10 @@ class MotorReadout(nn.Module):
         """Gated, centered and scaled normalized L/R differences of the extra turn types."""
         ratio, total = self.extra_turn_terms(activity)
         gate = total / (total + self.extra_eps)
-        return gate * (ratio - self.extra_center) * self.extra_scale
+        center = self.extra_center
+        if self.extra_center_ramp:
+            center = center * (total / self.extra_eps).clamp_max(1)
+        return gate * (ratio - center) * self.extra_scale
 
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
@@ -717,7 +725,12 @@ class ConnectomePolicy(nn.Module):
             self.register_buffer("visual_active", torch.as_tensor(visual), persistent=False)
             self.register_buffer("odor_active", torch.as_tensor(odor), persistent=False)
         self.readout = MotorReadout(
-            graph, contract, config["readout"], self.branches, bool(config["readout_turn_bias"])
+            graph,
+            contract,
+            config["readout"],
+            self.branches,
+            bool(config["readout_turn_bias"]),
+            bool(config["readout_extra_turn_center_ramp"]),
         )
         self.model_config["readout"] = self.readout.mode
         self.set_readout_extra_turns(
@@ -1070,12 +1083,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "readout_extra_turn_center": [],
     "readout_extra_turn_scale": [],
     "readout_extra_turn_eps": 0.1,
+    # The center shares the max(S, eps) denominator (#4 4-R7); legacy cards load without.
+    "readout_extra_turn_center_ramp": True,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,
-    # Opt-in (#4 P2): per-side adaptation erased most of the L/R odor contrast the
-    # occlusion teacher steers by (held-out R^2 0.44 vs 0.96 with a shared K).
-    "odor_shared_adaptation": False,
+    # #4 P2, in the formal spec since 2026-10-24: per-side adaptation erased most of the
+    # L/R odor contrast the occlusion teacher steers by (held-out R^2 0.44 vs 0.96 with a
+    # shared K). Cards from before #63 load with per-side adaptation.
+    "odor_shared_adaptation": True,
     "visual_bins": 5,
     "visual_input_mapping": {},
     "visual_seed_types": None,

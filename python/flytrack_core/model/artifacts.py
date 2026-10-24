@@ -203,6 +203,8 @@ def load_policy_artifact(
             "motor_input_gain": 1.0,
             "odor_input_gain": 1.0,
             "readout_turn_bias": False,
+            "readout_extra_turn_center_ramp": False,
+            "odor_shared_adaptation": False,
             **card["model_config"],
         },
     )

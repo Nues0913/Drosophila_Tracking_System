@@ -33,15 +33,16 @@ def run(monkeypatch, *argv):
 
 
 def test_graph_path_follows_the_init_actor_not_bc_yaml(tmp_path, monkeypatch):
-    nokc = Path("data/subgraphs/olfactory_v2_nokc/graph.npz")
-    init = actor(tmp_path, ROOT / nokc)
+    # bc.yaml has used the no-KC graph since 2026-10-24 (#55); an actor on main stays on main.
+    main = Path("data/subgraphs/main/graph.npz")
+    init = actor(tmp_path, ROOT / main)
     out = tmp_path / "out"
     run(monkeypatch, "--init-artifact", str(init), "--seed", "1", "--output", str(out))
     base = yaml.safe_load((ROOT / "configs/train/bc.yaml").read_text())
     for arm in "ABC":
         config = yaml.safe_load((out / f"{arm}.yaml").read_text())
-        assert config["graph_path"] == str(nokc) != base["graph_path"]
-    assert json.loads((out / "plan.json").read_text())["graph_path"] == str(nokc)
+        assert config["graph_path"] == str(main) != base["graph_path"]
+    assert json.loads((out / "plan.json").read_text())["graph_path"] == str(main)
 
 
 def test_explicit_graph_must_match_the_init_actor(tmp_path, monkeypatch):

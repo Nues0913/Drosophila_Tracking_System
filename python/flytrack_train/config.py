@@ -101,6 +101,14 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             # Explicit warm-start migration (#4 P2): the ORN encoder is fixed, not learned.
             policy.encoder.shared_adaptation = bool(model["odor_shared_adaptation"])
             policy.model_config["odor_shared_adaptation"] = policy.encoder.shared_adaptation
+        if isinstance(policy, ConnectomePolicy) and "readout_extra_turn_center_ramp" in model:
+            # Explicit warm-start migration (#4 4-R7 fix) for actors without trained rows.
+            ramp = bool(model["readout_extra_turn_center_ramp"])
+            if ramp != policy.readout.extra_center_ramp:
+                if policy.readout.extra_turn_types:
+                    raise ValueError("Initial artifact extra turn rows use the other center form")
+                policy.readout.extra_center_ramp = ramp
+                policy.model_config["readout_extra_turn_center_ramp"] = ramp
         if isinstance(policy, ConnectomePolicy) and model.get("readout_extra_turn_types"):
             # Explicit warm-start migration (#4 B3): new rows, calibrated on this actor, start
             # at zero weight, so the loaded behavior is unchanged until training moves them.

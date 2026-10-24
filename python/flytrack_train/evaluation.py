@@ -183,7 +183,8 @@ def validate_artifact_matrix(config, variants, seeds, device):
     options = config.get("evaluation", {})
     contract = contract_from_config(config)
     manifests, budgets, sources, counts = {}, set(), set(), {}
-    template = options.get("artifact_template", "runs/{variant}/seed_{seed}/actor")
+    # #35 Decision 6382764327: formal actors are the BC/DAgger artifacts.
+    template = options.get("artifact_template", "runs/bc/{variant}/seed_{seed}/actor")
     for variant in variants:
         for seed in seeds:
             mapping = options.get("artifacts", {}).get(variant, {})

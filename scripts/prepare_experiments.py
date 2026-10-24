@@ -29,7 +29,9 @@ def main():
     )
     parser.add_argument("--output", type=Path, default=Path("runs/experiment_configs"))
     parser.add_argument("--seeds", type=int, nargs="+", default=list(range(5)))
-    parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
+    # #35 Decision 6382764327: the formal chain ends at BC/DAgger; PPO/ES stay
+    # available as an optional stage after BC.
+    parser.add_argument("--algorithm", choices=("none", "ppo", "es"), default="none")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--jobs", type=int, default=3, help="Concurrent (variant, seed) chains in run_all.sh"
@@ -104,7 +106,9 @@ def main():
                 if variant == "O"
                 else [("pretrain_vision", "vision", 120000), ("pretrain_odor", "odor", 120000)]
             )
-            chain += [("bc", None, None), (args.algorithm, None, None)]
+            chain.append(("bc", None, None))
+            if args.algorithm != "none":
+                chain.append((args.algorithm, None, None))
             previous = None
             for template_name, modality, steps in chain:
                 config = yaml.safe_load(Path(f"configs/train/{template_name}.yaml").read_text())

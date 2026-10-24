@@ -105,7 +105,12 @@ def main():
     parser.add_argument("--configs", type=Path, default=Path("runs/experiment_configs"))
     parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS))
     parser.add_argument("--seeds", nargs="+", type=int, default=list(range(5)))
-    parser.add_argument("--algorithm", choices=("ppo", "es"), default="ppo")
+    parser.add_argument(
+        "--algorithm",
+        choices=("none", "ppo", "es"),
+        default="none",
+        help="Stage after BC; none ends every chain at BC/DAgger (#35 Decision)",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--jobs", type=int, default=1, help="Concurrent (variant, seed) chains")
@@ -149,7 +154,8 @@ def main():
             else ["pretrain_vision", "pretrain_odor"]
         )
         for seed in args.seeds:
-            for stage in [*stages, "bc", args.algorithm]:
+            final = [] if args.algorithm == "none" else [args.algorithm]
+            for stage in [*stages, "bc", *final]:
                 path = args.configs / variant / f"seed_{seed}" / f"{stage}.yaml"
                 config = read_config(path)
                 if config["variant"] != variant or int(config["seed"]) != seed:

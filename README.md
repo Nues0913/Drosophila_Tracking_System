@@ -49,13 +49,15 @@ python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   #
 ### 4. 正式訓練
 
 ```bash
-python scripts/prepare_experiments.py --algorithm ppo --device cuda
+python scripts/prepare_experiments.py --device cuda
 cat runs/experiment_configs/parameter_budget.json      # 六變體參數數須在 VO 的 ±5% 內
-bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC → PPO
+bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC/DAgger
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
 ```
 
-`run_all.sh` 呼叫 `scripts/run_experiments.py`，開始前先審計 BC 與 PPO 的世界（固定動作策略成功率須 ≤10%），每個階段結束後再跑 DN 健康與轉向檢查，未通過就停止該組。`run_all.sh` 預設同時跑 3 組（變體, 種子；`prepare_experiments.py --jobs`），每組內的階段依序執行，中斷後重跑會自動略過已完成並驗證過的階段、從 checkpoint 續跑。額外參數會傳下去，例如 `bash runs/experiment_configs/run_all.sh --seeds 2` 或 `--variants VO --seeds 0 --jobs 1`。環境模擬在 CPU 子行程平行執行（`--workers`，預設依 CPU 數分配），預訓練資料同一種子只收集一次（`runs/datasets/`）。
+正式訓練鏈到 BC/DAgger 為止，最終 actor 是 `runs/bc/{variant}/seed_{seed}/actor`。PPO 依 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35) 的 Decision 移出正式鏈，保留為研究項目；`--algorithm ppo` 或 `es` 可以在 BC 之後加一個階段，但這種結果不屬於正式矩陣。
+
+`run_all.sh` 呼叫 `scripts/run_experiments.py`，開始前先審計 BC（以及有加 RL 階段時的 PPO／ES）的世界（固定動作策略成功率須 ≤10%），每個階段結束後再跑 DN 健康與轉向檢查，未通過就停止該組。`run_all.sh` 預設同時跑 3 組（變體, 種子；`prepare_experiments.py --jobs`），每組內的階段依序執行，中斷後重跑會自動略過已完成並驗證過的階段、從 checkpoint 續跑。額外參數會傳下去，例如 `bash runs/experiment_configs/run_all.sh --seeds 2` 或 `--variants VO --seeds 0 --jobs 1`。環境模擬在 CPU 子行程平行執行（`--workers`，預設依 CPU 數分配），預訓練資料同一種子只收集一次（`runs/datasets/`）。
 
 WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的 `C:\Users\<帳號>\.wslconfig` 寫入 `[wsl2]`、`memory=12GB`，再於 PowerShell 執行 `wsl --shutdown` 後重開 Ubuntu。筆電訓練時請插電並使用最佳效能電源模式。
 
@@ -164,15 +166,15 @@ python -m flytrack_train ppo --config configs/train/ppo.yaml
 
 各階段透過 `init_artifact` 接續同變體模型。預訓練 decoder 留在研究 checkpoint，不隨 actor 匯出；BC 與三輪 DAgger 的標籤來自教師，學生仍只看感測。PPO 使用獨立真值 critic、動作機率轉換、回合重置、終止／截斷分別處理與序列更新。各 CLI 支援 `--seed`、`--device`、`--output`、`--variant`、`--resume`。
 
-PPO 若經診斷仍不穩，所有正式變體統一改跑 ES（`python -m flytrack_train es --config configs/train/es.yaml`）；這是鏡像擾動、秩正規化的 OpenAI ES 風格實作，不是 CMA-ES。
+研究用的 RL 階段有 PPO 和 ES（`python -m flytrack_train es --config configs/train/es.yaml`）。ES 是鏡像擾動、秩正規化的 OpenAI ES 風格實作，不是 CMA-ES。不論用哪一種，要加回正式鏈都必須另發 Decision，而且六個變體要用同一個算法和預算。
 
-正式比較的預算：預訓練 240,000 步、BC／DAgger 150,000 步、PPO 2,000,000 步，是待校準的初值。評估輸出逐回合 CSV／JSON、種子平均、bootstrap 95% 信賴區間及預先指定的 VO–V／GRU／RS 比較（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml)）。未重新捕獲以截尾資料記錄，不能填成零秒；不會只以差異不顯著就宣稱等效。
+正式比較的預算：預訓練 240,000 步、BC／DAgger 150,000 步（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml) 2026-10-24 的修訂把 PPO 改為 0）。評估輸出逐回合 CSV／JSON、種子平均、bootstrap 95% 信賴區間及預先指定的 VO–V／GRU／RS 比較（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml)）。未重新捕獲以截尾資料記錄，不能填成零秒；不會只以差異不顯著就宣稱等效。
 
 ## 匯出與 ROS／Gazebo
 
 ```bash
-python -m flytrack_train export --config configs/train/ppo.yaml \
-  --artifact runs/VO/seed_0/actor --output artifacts/VO
+python -m flytrack_train export --config configs/train/bc.yaml \
+  --artifact runs/bc/VO/seed_0/actor --output artifacts/VO
 cp .env.example .env
 docker compose --profile ml --profile sim build
 docker compose --profile sim up sim policy eval viz

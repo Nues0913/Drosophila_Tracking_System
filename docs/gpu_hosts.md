@@ -40,7 +40,7 @@ Windows 端的設定對 PPO 速度影響很大（#21，RTX 4060 Laptop 實測）
 
 ## 分工跑正式訓練
 
-`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，它呼叫 `scripts/run_experiments.py`：同一個「變體／種子」依序跑 pretrain → BC → PPO，不同組之間預設同時跑 3 組（`prepare_experiments.py --jobs` 的預設值，寫進 `run_all.sh`）。分工時**以種子分**（目前的分配見 [#21](https://github.com/Nues0913/Drosophila_Tracking_System/issues/21)：4060 跑 seed 0、2、4，4070 跑 seed 1、3），每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤；同一種子的預訓練資料也只需收集一次：
+`prepare_experiments.py` 會產生 `runs/experiment_configs/run_all.sh`，它呼叫 `scripts/run_experiments.py`：同一個「變體／種子」依序跑 pretrain → BC/DAgger（PPO 依 #35 的 Decision 不在正式鏈），不同組之間預設同時跑 3 組（`prepare_experiments.py --jobs` 的預設值，寫進 `run_all.sh`）。分工時**以種子分**（目前的分配見 [#21](https://github.com/Nues0913/Drosophila_Tracking_System/issues/21)：4060 跑 seed 0、2、4，4070 跑 seed 1、3），每人跑全部六變體的同一個種子，讓每台機器的差異在變體間平均分攤；同一種子的預訓練資料也只需收集一次：
 
 ```bash
 python scripts/prepare_experiments.py --algorithm ppo --device cuda --seeds 2 --jobs 2

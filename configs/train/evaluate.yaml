@@ -22,7 +22,8 @@ evaluation:
   # each cell run one actor call per step to measure deployment latency.
   batch_episodes: 32
   latency_episodes: 1
-  artifact_template: 'runs/{variant}/seed_{seed}/actor'
+  # #35 Decision 6382764327: the formal actor is the BC/DAgger artifact.
+  artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
   require_full_matrix: true
   require_equal_budget: true
   # Held-out environment seeds, disjoint from the training namespace [0, 1e9).

@@ -6,7 +6,7 @@ evaluation:
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 20
   recorded_episode_files: ['runs/gazebo_eval/**/episodes.jsonl']
-  artifact_template: 'runs/{variant}/seed_{seed}/actor'
+  artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
   require_full_matrix: false
   verify_recorded_artifacts: true
   require_equal_budget: true

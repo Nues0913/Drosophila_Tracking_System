@@ -1,6 +1,6 @@
 schema_version: 2
 declared_date: '2026-10-15'
-amended_date: '2026-10-17'
+amended_date: '2026-10-24'
 status: fixed_before_formal_training_and_learned_policy_evaluation
 amendments:
   - date: '2026-10-17'
@@ -19,6 +19,16 @@ amendments:
       - evaluation first audits the world; teacher >= 0.9 and every blind policy <= 0.1 success
       - teacher calibration repeated in the randomized world on diagnostic seeds
     evidence: docs/fixes_2026-10-17.md
+  - date: '2026-10-24'
+    formal_results_existing_at_amendment: none
+    reason: >-
+      PPO from BC failed the issue #35 protocol100 gates in C9-C13 (one pass
+      in six two-seed runs, not replicated). The user team chose option D:
+      the formal chain ends at BC/DAgger and PPO stays a research item.
+    changes:
+      - formal actor is the BC/DAgger artifact (runs/bc/{variant}/seed_{seed}/actor)
+      - ppo_environment_steps set to 0; PPO/ES may return only as a separately approved extra stage after BC
+    evidence: issue #35 Decision 6382764327
 sources:
   plan: '果蠅連接體多感官追蹤系統 計劃書.pdf'
   followup: 後續計畫.md
@@ -39,7 +49,7 @@ training_budget_per_variant_and_seed:
   bc_teacher_steps: 60000
   dagger_rounds: 3
   dagger_steps_per_round: 30000
-  ppo_environment_steps: 2000000
+  ppo_environment_steps: 0  # 2026-10-24 amendment; previously 2000000
   algorithm_change_rule: all_six_variants_use_same_algorithm_and_budget
   gaussian_plume_warmup: true
   puff_plume_final: true

@@ -53,7 +53,7 @@ def main():
         default=Path("/dev/null"),
         help="Compose variable file; defaults to /dev/null to avoid reading .env",
     )
-    parser.add_argument("--artifact-template", default="runs/{variant}/seed_{seed}/actor")
+    parser.add_argument("--artifact-template", default="runs/bc/{variant}/seed_{seed}/actor")
     parser.add_argument("--output", type=Path, default=Path("runs/gazebo_eval"))
     parser.add_argument("--project-name", default="flytrack-gz-eval")
     parser.add_argument("--domain-id", type=int, default=77)

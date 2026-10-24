@@ -1150,12 +1150,42 @@ def test_runner_failed_chain_stops_others_unless_keep_going(tmp_path, monkeypatc
     )
     monkeypatch.setattr(runner, "check_dn_health", lambda *args: 0)
     argv = ["run_experiments.py", "--configs", str(tmp_path / "configs"), "--variants", "O", "V"]
-    argv += ["--seeds", "0", "--jobs", "1", "--skip-environment-audit"]
+    argv += ["--seeds", "0", "--jobs", "1", "--skip-environment-audit", "--algorithm", "ppo"]
     monkeypatch.setattr(sys, "argv", argv + (["--keep-going"] if keep_going else []))
     with pytest.raises(SystemExit, match="Stage failed"):
         runner.main()
     v_stages = [output for output in launched if "/V/" in output]
     assert len(v_stages) == (3 if keep_going else 0)
+
+
+def test_runner_formal_chain_ends_at_bc_unless_an_algorithm_is_named(tmp_path, monkeypatch, capsys):
+    # #35 Decision 6382764327: no PPO stage by default; ppo.yaml need not exist.
+    import sys
+
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "scripts/run_experiments.py"
+    spec = importlib.util.spec_from_file_location("experiment_runner", path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    budgets = {
+        "pretrain_vision": {"total_steps": 1},
+        "bc": {"teacher_steps": 1, "dagger_rounds": 0, "dagger_steps_per_round": 1},
+    }
+    configs = tmp_path / "configs"
+    for stage in ("pretrain_vision", "bc"):
+        target = configs / "V" / "seed_0" / f"{stage}.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        config = {"variant": "V", "seed": 0, "output": str(tmp_path / stage)}
+        target.write_text(yaml.safe_dump({**config, "train": budgets[stage]}))
+    argv = ["run_experiments.py", "--configs", str(configs), "--variants", "V", "--seeds", "0"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--dry-run"])
+    runner.main()
+    plan = json.loads(capsys.readouterr().out)
+    assert [row["stage"] for row in plan["stages"]] == ["pretrain_vision", "bc"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--dry-run", "--algorithm", "ppo"])
+    with pytest.raises(FileNotFoundError):
+        runner.main()
 
 
 def _patch_small_pretrain(monkeypatch):

@@ -56,10 +56,11 @@ output: runs/VO/seed_0
 ```bash
 python -m flytrack_train pretrain --config configs/train/pretrain_vision.yaml --variant VO --seed 0 --output runs/pretrain/VO/seed_0/vision
 python -m flytrack_train bc --config configs/train/bc.yaml --variant VO --seed 0 --output runs/bc/VO/seed_0
+# 以下兩個 RL 階段不在正式鏈（#35 Decision），只用在研究
 python -m flytrack_train ppo --config configs/train/ppo.yaml --variant VO --seed 0 --output runs/VO/seed_0
 python -m flytrack_train es --config configs/train/es.yaml --variant VO --seed 0 --output runs/es/VO/seed_0
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --output runs/evaluation
-python -m flytrack_train export --config configs/train/ppo.yaml --artifact runs/VO/seed_0/actor --output artifacts/VO/seed_0
+python -m flytrack_train export --config configs/train/bc.yaml --artifact runs/bc/VO/seed_0/actor --output artifacts/VO/seed_0
 ```
 
 設定檔命名由根目錄配置提供；CLI 支援 `--device auto|cpu|cuda|cuda:0`、`--seed`、`--variant` 與 `--output`。`--variant` 不会重寫 `init_artifact` 路徑，換模型時必須同步暖啟動來源。
@@ -308,7 +309,7 @@ evaluation:
   scenarios: [normal, occlusion, noise, conflict]
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 100
-  artifact_template: runs/{variant}/seed_{seed}/actor
+  artifact_template: runs/bc/{variant}/seed_{seed}/actor
   environment_seed: 731
   bootstrap_seed: 1301
   bootstrap_draws: 10000

@@ -36,6 +36,11 @@ METRICS = (
 )
 
 
+def evaluation_environment_seed(seed: int, episode: int, base_seed: int = 1700000000) -> int:
+    """Return the held-out per-episode seed used by formal evaluation."""
+    return (int(base_seed) + int(seed) * 100000 + int(episode)) % (2**31 - 1)
+
+
 def bootstrap_mean(
     seed_means: list[float] | np.ndarray, rng: np.random.Generator, draws: int = 10000
 ):
@@ -406,8 +411,8 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
 
     def environment_seed(seed, episode):
         # Identical seed/episode environments are paired across all variants.
-        return (int(options.get("environment_seed", 1700000000)) + seed * 100000 + episode) % (
-            2**31 - 1
+        return evaluation_environment_seed(
+            seed, episode, options.get("environment_seed", 1700000000)
         )
 
     def metrics():

@@ -1,7 +1,9 @@
 """Evaluate declared sensory/cell lesions and incoming convergence-current mass.
 
 This is a separate post-training analysis, not a replacement for formal model
-comparisons. It requires a genuine trained artifact and has not been run.
+comparisons. It requires a genuine trained artifact and has not been run. The
+artifact's training seed and the formal evaluator's held-out environment-seed
+rule keep each lesion episode paired with the corresponding formal episode.
 """
 
 from __future__ import annotations
@@ -13,20 +15,22 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_core.model import load_policy_artifact
-from flytrack_sim import FlyTrackEnv
+from flytrack_train.config import contract_from_config, make_env
+from flytrack_train.evaluation import evaluation_environment_seed
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", required=True, type=Path)
+    parser.add_argument("--config", type=Path, default=Path("configs/train/evaluate.yaml"))
     parser.add_argument("--output", type=Path, default=Path("runs/lesion_analysis"))
     parser.add_argument(
         "--scenario", choices=("normal", "occlusion", "noise", "conflict"), default="occlusion"
     )
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=731)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     if args.episodes < 1:
@@ -34,21 +38,38 @@ def main():
     policy, contract, card = load_policy_artifact(args.artifact, device=args.device)
     if not hasattr(policy, "set_lesion"):
         raise ValueError("Policy does not expose the declared lesion analysis interface")
+    with args.config.open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    if not isinstance(config, dict):
+        raise ValueError("Evaluation configuration must be a YAML mapping")
+    config_contract = contract_from_config(config)
+    if config_contract.sha256() != contract.sha256():
+        raise ValueError("Artifact sensor contract differs from evaluation configuration")
+    evaluation_options = config.get("evaluation", {})
+    try:
+        seed = int(card["metadata"]["seed"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Artifact model card must include an integer training seed") from error
+    if seed < 0:
+        raise ValueError("Artifact training seed must be nonnegative")
+    environment_seed_base = int(evaluation_options.get("environment_seed", 1700000000))
     args.output.mkdir(parents=True, exist_ok=True)
     rows = []
     for lesion in ("none", "vision", "odor"):
         policy.set_lesion(lesion)
-        env = FlyTrackEnv(
-            contract=contract,
-            scenario=args.scenario,
-            episode_seconds=60,
-            domain_randomization=False,
-        )
+        env = make_env(config, contract, scenario=args.scenario)
         try:
             for episode in range(args.episodes):
-                observation, _ = env.reset(seed=args.seed + episode)
+                env_seed = evaluation_environment_seed(seed, episode, environment_seed_base)
+                observation, _ = env.reset(seed=env_seed)
                 state = policy.initial_state(1, args.device)
-                metrics = EpisodeMetrics(contract.control_dt)
+                bearing_threshold = evaluation_options.get("success_bearing_deg", 45.0)
+                metrics = EpisodeMetrics(
+                    contract.control_dt,
+                    float(evaluation_options.get("success_distance_m", 2.0)),
+                    float(evaluation_options.get("success_time_fraction", 0.8)),
+                    None if bearing_threshold is None else float(bearing_threshold),
+                )
                 masses = {"visual_exclusive": 0.0, "odor_exclusive": 0.0, "shared": 0.0}
                 analyzed_steps = 0
                 with torch.no_grad():
@@ -81,8 +102,9 @@ def main():
                     "variant": card["variant"],
                     "lesion": lesion,
                     "scenario": args.scenario,
+                    "seed": seed,
                     "episode": episode,
-                    "environment_seed": args.seed + episode,
+                    "environment_seed": env_seed,
                     **metrics.result(),
                     "analyzed_steps": analyzed_steps,
                 }
@@ -107,6 +129,13 @@ def main():
             {
                 "artifact": str(args.artifact),
                 "model_card": card,
+                "evaluation_config": str(args.config),
+                "training_seed": seed,
+                "environment_seed_base": environment_seed_base,
+                "environment_seed_rule": (
+                    "(base + training_seed * 100000 + episode) % (2**31 - 1); "
+                    "shared with formal evaluation"
+                ),
                 "contribution_semantics": (
                     "sum of absolute incoming recurrent edge-current mass, not causal attribution"
                 ),

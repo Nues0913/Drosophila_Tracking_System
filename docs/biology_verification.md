@@ -399,7 +399,7 @@
 | body-neurotransmitters-male-cns-v1.0.feather | `95c9289220663abeb3409f3ad9e5a7f8a53f8093f5139d15502cd08da8879621` |
 | connectome-weights-male-cns-v1.0-minconf-0.5.feather | `e35da783d1c686b2b58b3b87cd6a403ae43bfcfba8bff28e08ef752c1a56afc1` |
 
-正式圖 manifest 記錄的產圖程式 commit：`09d704391eba14f0c5972961d2782bb5aed5108a`。計劃書指定的工作基準為 main `897d088`；這兩者角色不同，不把 main 的 commit 冒充原始產圖 commit。本次查詢腳本尚未 commit，以 SHA-256 `600a5c2319577743f69aaa2d7577c3f8c80729080e622d5be54c5aeeb59f16f6` 固定其內容；被讀取的既有程式 SHA-256 另存 JSON `provenance.query_source_sha256`。依任務要求未變更 Git 狀態。
+正式圖 manifest 記錄的產圖程式 commit：`09d704391eba14f0c5972961d2782bb5aed5108a`。計劃書指定的工作基準為 main `897d088`；這兩者角色不同，不把 main 的 commit 冒充原始產圖 commit。查詢腳本是 `scripts/diagnostics/bio_verification.py`（SHA-256 `600a5c2319577743f69aaa2d7577c3f8c80729080e622d5be54c5aeeb59f16f6`，PR #72）；被讀取的既有程式 SHA-256 另存 JSON `provenance.query_source_sha256`。
 
 重現命令（由 `<repo>` 執行，`<venv>` 為已有環境；只在呼叫端限制記憶體，不寫入本機路徑）：
 
@@ -424,7 +424,7 @@ All checks passed!
 
 全套測試以 CPU 執行並隱藏 CUDA 裝置；唯一 skip 為 CUDA 專用測試。Ruff 檢查與格式檢查皆 exit 0。最終文件、腳本與 JSON 的本機絕對路徑掃描無命中。起初額外把整套 pytest 也套上位址空間上限，導致既有前端配置記憶體失敗與無法建立執行緒；依計劃的測試命令不加此額外限制，並固定 CPU 執行緒後重跑，上列結果通過。
 
-執行偏差：首次尚未讀到計劃限制時，唯讀探索曾包含一次 `git status --short`，且該批命令未加 stdin 重導向；之後不再呼叫 Git，Git 狀態未變更。未觸碰根目錄的 `it`、`log`，未修改既有模型程式、設定或子圖。
+查證過程沒有修改既有模型程式、設定或子圖。PM 在 main `f7c5891` 加上本 PR 的 trial merge 上重跑查詢，JSON 除了查詢日期之外完全相同（PR #72 review）。
 
 ## 參考文獻與讀取範圍
 

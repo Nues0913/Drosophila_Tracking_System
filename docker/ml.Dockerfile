@@ -18,4 +18,6 @@ RUN --mount=type=secret,id=proxy_ca,required=false \
 ENV VIRTUAL_ENV=/opt/flytrack-ml PATH="/opt/flytrack-ml/bin:${PATH}" PYTHONUNBUFFERED=1
 COPY configs/ configs/
 COPY scripts/ scripts/
-CMD ["python", "-m", "flytrack_train", "ppo", "--config", "configs/train/ppo.yaml"]
+# The formal chain ends at BC/DAgger (#35 Decision 6382764327); the full matrix
+# runs through scripts/prepare_experiments.py and run_all.sh.
+CMD ["python", "-m", "flytrack_train", "bc", "--config", "configs/train/bc.yaml"]

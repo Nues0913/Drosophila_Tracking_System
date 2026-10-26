@@ -15,6 +15,11 @@
 
 主要手段：凍結感覺碼只算一次並重用、前端 spmm 改 node-major（3–7×）、中央核心每窗口組一次矩陣並融合 Euler 子步、環境在子行程平行、pretrain／BC 每批 16 條回合的 TBPTT 加提早停止、評估批次化、runner 可同時跑多條鏈（`--jobs`）。
 
+正式 BC 在最後一輪 fit 後另做一次訓練回合的開迴路重播，置中 tanh 前的轉向
+bias（`train.center_turn_bias: true`，#73）；不增加環境互動步數，最後的 recovery
+checkpoint 仍保留未置中參數。model card 與最後一輪 metrics 都記錄
+`turn_bias_centering`；欄位及事後工具見 [TRAIN_NOTES](../python/flytrack_train/TRAIN_NOTES.md#bc-結束時的轉向偏差置中73)。
+
 試過但沒有採用：`torch.compile`（只快約 20%）、sparse 中央核心（慢 3 倍）、TF32（沒有幫助，保留 `--tf32` 開關、預設關閉）。
 
 ## 完整實驗的時間估計

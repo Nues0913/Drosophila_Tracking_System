@@ -65,6 +65,43 @@ python -m flytrack_train export --config configs/train/bc.yaml --artifact runs/b
 
 設定檔命名由根目錄配置提供；CLI 支援 `--device auto|cpu|cuda|cuda:0`、`--seed`、`--variant` 與 `--output`。`--variant` 不会重寫 `init_artifact` 路徑，換模型時必須同步暖啟動來源。
 
+### BC 結束時的轉向偏差置中（#73）
+
+`train.center_turn_bias` 預設為 `false`；正式 `configs/train/bc.yaml` 設為
+`true`，`prepare_experiments.py` 的六個變體均沿用此 train 段。用一個加性純量
+消除錄下狀態上的平均轉向偏差，避免整段軌跡被固定的 ω 偏移影響。
+只在最後一輪 fit 之後、`save_actor` 之前執行一次，不影響 DAgger 收集；最後一次
+recovery checkpoint 保留未置中的參數。續跑即使跳過全部 round，也會重新編碼
+訓練回合並得到相同結果。關閉時 actor 和 rounds metrics 保持原本數值及結構。
+
+資料排除與 BC 相同 `validation_every` 的 `held_out_episodes`，不讀 held-out 的
+觀測或 label。全程 `no_grad`、eval，以 `SequenceModel.encode` 及 validation
+相同的連續 hidden state 重播錄下觀測；結束後恢復各模組原本的 train/eval 狀態。
+以每步等權的 float64 二分法求 Δ，使 `mean(ω_max*tanh(z+Δ))` 等於
+teacher ω 均值，容許誤差 `1e-6 rad/s`、最多 100 次。teacher 均值不嚴格位於
+`(-ω_max, ω_max)`、不收斂或參數精度不足都報錯。
+
+structured connectome 修改 `readout.turn_bias`（未啟用此參數會報錯）；linear
+connectome 修改 `readout.linear.bias[1]`；GRU 修改 `readout.bias[1]`。
+三者均直接平移 tanh 前的 ω latent，不修改其他權重或 forward 輸出介面。
+`metadata.turn_bias_centering` 與 `training_metrics.json` 最後一輪的
+`turn_bias_centering` 記錄相同內容：`parameter`、`delta`、`before`、`after`、
+`train_mean_error_before`、`train_mean_error_after`、`teacher_mean_omega`、`steps`、
+`episodes`、`held_out_excluded`、`tolerance`、`iterations`。metrics 保留 rounds
+list，不新增假 round；after 誤差以同一批 latent 和實際寫入的參數差計算。
+
+事後工具共用相同函式，不更新來源目錄；設定預設取 card，可用 `--config` 覆寫：
+
+```bash
+PYTHONPATH=python python scripts/center_turn_bias.py runs/bc/VO/seed_0 \
+  --output runs/centered/VO/seed_0/actor --device cpu < /dev/null
+```
+
+輸出是可由 `load_policy_artifact` 載入的新 actor；目錄存在即報錯，除非加
+`--overwrite`。card 額外記錄 `applied_post_hoc: true`，以及 `source_artifact`
+中的來源 actor 路徑、所有檔案 SHA-256 和來源 `training_metrics.json` SHA-256。
+不新增訓練環境步數，保留原 BC 的預算帳本。
+
 ## 單模態預訓練
 
 `train.modality` 為 `vision` 或 `odor`，V/O 可由 variant 推定。所有變體可各自預訓練，另一感覺的數值及 valid mask 都被關閉；視覺前端依然固定。視覺標籤為方位 sin/cos、可見性和相對角速度；嗅覺標籤為方位 sin/cos 和是否在羽流中。方位損失只在訊號存在時算，存在性用 BCE。解碼器接該模態群與匯流群；GRU 的 activity 為診斷 hidden-channel 映射，不能解讀成生物神經元。

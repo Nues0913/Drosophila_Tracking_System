@@ -45,6 +45,7 @@ def test_formal_configs_use_the_spec_and_budget_the_extra_turn_rows(tmp_path, mo
             config = yaml.safe_load(stage.read_text())
             assert config["graph_path"] == "data/subgraphs/olfactory_v2_nokc/graph.npz"
         bc = yaml.safe_load((out / variant / "seed_0/bc.yaml").read_text())
+        assert bc["train"]["center_turn_bias"] is True
         rows = bc["train"].get("calibrate_extra_turn")
         if variant in ("V", "RS", "GRU"):
             assert rows is None

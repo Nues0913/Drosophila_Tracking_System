@@ -432,6 +432,21 @@ class MotorReadout(nn.Module):
             center = center * (total / self.extra_eps).clamp_max(1)
         return gate * (ratio - center) * self.extra_scale
 
+    def omega_latent(self, activities: list[Tensor]) -> Tensor:
+        """Pre-tanh turn for diagnostics; keep forward's numerical path unchanged."""
+        if len(activities) != self.branches:
+            raise ValueError("Incorrect number of readout branches")
+        if self.mode == "linear":
+            return self.linear(
+                torch.cat([activity[:, self.motor_indices] for activity in activities], dim=1)
+            )[:, 1]
+        turns = torch.cat([activity @ self.difference.T for activity in activities], dim=1)
+        turn = turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
+        if self.extra_turn_types:
+            extra = torch.cat([self.extra_turn_features(activity) for activity in activities], 1)
+            turn = turn + extra @ self.extra_turn_weight
+        return turn
+
     def forward(self, activities: list[Tensor]) -> Tensor:
         if len(activities) != self.branches:
             raise ValueError("Incorrect number of readout branches")

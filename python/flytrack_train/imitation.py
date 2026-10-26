@@ -29,6 +29,7 @@ from .recovery import (
     held_out_episodes,
     restore_rng,
 )
+from .turn_bias import center_turn_bias
 
 BC_STREAM = 10
 
@@ -355,6 +356,12 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             extra_turn_calibration=calibrated or None,
         )
     output.mkdir(parents=True, exist_ok=True)
+    centering_metadata = {}
+    if train.get("center_turn_bias", False):
+        centering = center_turn_bias(policy, model, episodes, train)
+        centering_metadata["turn_bias_centering"] = centering
+        # Keep the rounds list and all epoch fields compatible with existing readers.
+        reports[-1] = {**reports[-1], "turn_bias_centering": centering}
     write_json(output / "training_metrics.json", reports)
     save_actor(
         output / "actor",
@@ -367,6 +374,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         algorithm="bc_dagger",
         dataset_episodes=len(episodes),
         dagger_rounds=rounds,
+        **centering_metadata,
     )
     recovery.progress(
         force=True,

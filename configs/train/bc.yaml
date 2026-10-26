@@ -23,6 +23,8 @@ env:
   target_motion: [curved, wander]
   plume_model: puff
 train:
+  # #73: center the additive omega bias once after the final BC/DAgger fit.
+  center_turn_bias: true
   teacher_steps: 60000
   dagger_steps_per_round: 30000
   dagger_rounds: 3

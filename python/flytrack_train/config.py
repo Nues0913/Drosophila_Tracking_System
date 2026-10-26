@@ -150,8 +150,16 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
 
 
 def save_actor(
-    directory: Path, policy, config: dict[str, Any], contract: SensorContract, **metadata: Any
+    directory: Path,
+    policy,
+    config: dict[str, Any],
+    contract: SensorContract,
+    *,
+    graph_path: str | Path | None = None,
+    frontend_path: str | Path | None = None,
+    **metadata: Any,
 ) -> None:
+    """Allow bundled input files without changing the config recorded in the card."""
     entry = {
         key: metadata[key]
         for key in ("stage", "algorithm", "environment_steps", "modality")
@@ -172,8 +180,8 @@ def save_actor(
         policy,
         policy.model_config,
         contract,
-        config["graph_path"],
-        frontend_path=config.get("frontend_path"),
+        graph_path if graph_path is not None else config["graph_path"],
+        frontend_path=frontend_path if frontend_path is not None else config.get("frontend_path"),
         metadata=metadata,
     )
 

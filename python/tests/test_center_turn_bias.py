@@ -233,6 +233,44 @@ def test_post_hoc_and_training_are_bitwise_equivalent(tmp_path, monkeypatch, kin
     assert _hashes(source) == before
 
 
+@pytest.mark.parametrize("validation_every", [2, None])
+def test_post_hoc_config_rejects_changed_held_out_split(tmp_path, monkeypatch, validation_every):
+    monkeypatch.chdir(ROOT)
+    config = _config()
+    source, post = tmp_path / "source", tmp_path / "post/actor"
+    imitation.train_bc(config, source, 73, CPU)
+    before = _hashes(source)
+    override = copy.deepcopy(config)
+    if validation_every is None:
+        override["train"].pop("validation_every")  # Falls back to 10, unlike the recorded 3.
+    else:
+        override["train"]["validation_every"] = validation_every
+    config_path = tmp_path / "override.yaml"
+    config_path.write_text(json.dumps(override))
+    script = _script()
+
+    def reject(*args):
+        raise AssertionError("A changed held-out split must be rejected before centering")
+
+    monkeypatch.setattr(script, "center_turn_bias", reject)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "center_turn_bias.py",
+            str(source),
+            "--config",
+            str(config_path),
+            "--output",
+            str(post),
+        ],
+    )
+    with pytest.raises(ValueError, match="train.validation_every.*held-out split"):
+        script.main()
+    assert not post.exists()
+    assert _hashes(source) == before
+
+
 @pytest.mark.parametrize("different_drive", [False, True])
 def test_post_hoc_card_has_no_absolute_paths(tmp_path, monkeypatch, different_drive):
     monkeypatch.chdir(ROOT)

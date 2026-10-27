@@ -1,7 +1,7 @@
-schema_version: 2
+schema_version: 3
 declared_date: '2026-10-15'
-amended_date: '2026-10-24'
-status: fixed_before_formal_training_and_learned_policy_evaluation
+amended_date: '2026-10-28'
+status: fixed_before_formal_training_and_formal_evaluation
 amendments:
   - date: '2026-10-17'
     formal_results_existing_at_amendment: none
@@ -28,7 +28,26 @@ amendments:
     changes:
       - formal actor is the BC/DAgger artifact (runs/bc/{variant}/seed_{seed}/actor)
       - ppo_environment_steps set to 0; PPO/ES may return only as a separately approved extra stage after BC
-    evidence: issue #35 Decision 6382764327
+    evidence: 'issue #35 Decision 6382764327'
+  - date: '2026-10-28'
+    formal_results_existing_at_amendment: none
+    diagnostic_results_existing_at_amendment: 4-R8 VO A pilots at training seeds 0 and 1
+    reason: >-
+      Before the formal matrix, complete issue #20 using the preregistered
+      two-seed noise selection rule and the team option-F decision. Seed 1
+      passes the odor-swap gate but fails the directional odor-benefit gate;
+      its negative result is retained. No registered comparison is removed.
+    changes:
+      - formal occlusion starts at 8 s and lasts 30 s
+      - all five noise parameters use 0.75 times the pre-amendment noise scenario
+      - record the BC modality gate and terminal-BC DN failure classification delivered by PR 76
+      - retain no-KC plus P2/B3 and normal-only BC without turn-bias centering
+      - record the reporting scope and the effective-parameter budget requirement
+      - schema 3 records the previously approved secondary wander and unchanged latency gate
+    evidence:
+      - 'issue #4 Decisions 6390024036, 6401298099, 6442266901'
+      - 'issue #20 Decision 6258640548'
+      - docs/protocol_freeze_2026-10-28.md
 sources:
   plan: '果蠅連接體多感官追蹤系統 計劃書.pdf'
   followup: 後續計畫.md
@@ -41,8 +60,27 @@ primary_architecture:
   planned: VO
   sparse_convergence_fallback: VO-late
   observed_convergence_neurons_h3: 4
+  anatomical_observation_scope: legacy main graph at the original fallback decision
   decision: use_late_fusion_as_main_architecture_due_to_sparse_anatomical_convergence
   retain_all_original_VO_comparisons: true
+formal_model:
+  graph: data/subgraphs/olfactory_v2_nokc/graph.npz
+  graph_sha256: 7c038015d797f6f899c4a2c2eb5a1dd84dc27e793e994612e614084ae98b58a4
+  odor_shared_adaptation: true
+  extra_turn_types: [DNb05]
+  extra_turn_variants: [O, VO, VO-late]
+  bc_scenario: normal
+  bc_odor_teacher_enabled: false
+  bc_noise_augmentation: false
+  bc_center_turn_bias: false
+parameter_budget:
+  reference: VO
+  relative_tolerance: 0.05
+  basis: actor parameters in nonzero-learning-rate terminal-BC optimizer groups
+  include_calibrated_extra_turn_rows: true
+  disclose_declared_frozen_and_effective_counts: true
+  freeze_core_bias_in_pretrain_and_bc: true
+  implementation_tracking: 'issue #77'
 training_budget_per_variant_and_seed:
   pretraining_environment_steps: 240000
   multimodal_steps_per_modality: 120000
@@ -58,20 +96,72 @@ data_splits:
   train_environment_seed_max_exclusive: 1000000000
   decoder_validation_seed_start: 1500000000
   formal_environment_seed_start: 1700000000
-  # Diagnostics only (privileged teacher and blind policies; no learned actor).
+  # Audit/calibration use privileged or blind policies; BC sensitivity is listed separately.
   environment_audit_seed_start: 1620000000
   teacher_calibration_seed_start: 1650000000
+  bc_modality_diagnostic_seed: 1610000000
   paired_rule: base_plus_training_seed_times_100000_plus_episode
 environment:
   layout: randomized per episode (direction, curved radius 1.5-3.5 m, start offsets +/-0.5 m and +/-30 deg)
   legacy_layout_allowed_for_formal_results: false
   formal_evaluation_target_motion: curved
+  secondary_evaluation_target_motion: wander
+  secondary_motion_reporting: separate cells in both 2D and Gazebo; single motion per ROS cell
+  wander_max_turn_rate: 0.4
+  wander_wall_margin_m: 1.5
+  motor_input_gain: 100.0
+  occlusion:
+    duration_s: 60
+    occlusion_start_s: 8.0
+    occlusion_duration_s: 30.0
+  noise:
+    selected_pilot_scale: 0.75
+    calibration_training_seeds: [0, 1]
+    diagnostic_episodes_per_scale_and_training_seed: 30
+    selection_rule: average the two training-seed curves; interpolate at half the zero-noise mean; round to 0.05
+    image_noise_std: 0.06
+    brightness_std: 0.15000000000000002
+    image_dropout: 0.037500000000000006
+    odor_noise_std: 0.0225
+    odor_dropout: 0.07500000000000001
   environment_audit:
     episodes: 40
     blind_policies: [stop, straight, left_0.05, left_0.10, left_0.20, right_0.05, right_0.10, right_0.20, teacher_mean]
     max_blind_success: 0.1
     min_teacher_success: 0.9
 gates:
+  BC_modality:
+    enforced_variants: [O, VO, VO-late]
+    recording_only_variants: [V, GRU, RS]
+    diagnostic: scripts/diagnostics/modality_sensitivity.py
+    device: cpu
+    threads: 1
+    dtype: float32
+    teacher_driven_steps: 200
+    seed: 1610000000
+    metric: odor_swap_lr.mean
+    absolute_min_rad_s_inclusive: 0.001
+    same_chain_pretrain_odor_factor_min_inclusive: 3.0
+    failure_status: modality_gate_failed
+    failure_action: stop this chain; other chains may continue with --keep-going
+    recording_only_metrics: [odor_to_vision_ratio, no_odor, no_vision, best_epoch]
+    rerun_on_verified_complete: true
+  terminal_BC_dn_health:
+    applies_when: BC is the last stage (--algorithm none)
+    gru: no biological DN gate
+    thresholds_unchanged:
+      omega_correlation_min_inclusive: 0.5
+      omega_r2_min_exclusive: 0.0
+      policy_to_teacher_omega_std_min_inclusive: 0.25
+      eye_swap_abs_omega_delta_median_min_inclusive: 0.05
+    visual_intervention: not applied to O
+    engineering_checks: [finite, not_all_silent, active_motor_count, central_gradient]
+    engineering_errors: [unknown failed check, missing or invalid metrics, diagnostic exception, unexpected exit code]
+    expected_diagnostic_exit_codes: [0, 2]
+    engineering_action: halt the matrix at the next stage boundary even with --keep-going; PM diagnosis and a new Decision before rerunning affected chains
+    quality_checks: [omega_correlation, omega_r2, omega_amplitude, eye_swap_response]
+    quality_action: retain the actor and failures; continue modality gate and evaluation; disclose each affected group; no retries or seed replacement
+    pretrain_and_optional_rl_gates: retain existing strict behavior
   G2:
     teacher_calibration_episodes: 20
     measured_teacher_success_rate: 1.0
@@ -134,3 +224,16 @@ evaluation:
     - sensor_generation_to_command_wall_latency
   required_analysis: [vision_lesion, odor_lesion, convergence_source_currents, failure_cases]
   required_demonstrations: [trajectories, neural_activity, control_actions, rosbag]
+reporting_scope:
+  primary_architecture: VO-late
+  retain_all_registered_comparisons: true
+  VO_fusion_claim: only if the registered VO versus V occlusion superiority comparison supports it
+  O_odor_tracking: replicated in diagnostics; test all five formal training seeds
+  training_claim: imitation learning; no claim of RL improvement
+  required_disclosures:
+    - weak VO odor response and bias compensation in the pilot; report centered G3 alongside any original G3
+    - negative seed-1 A result and large between-training-seed variability
+    - odor-teacher labels in diagnostic occlusion training are themselves an odor rule
+    - fixed BC turning bias, late-episode underturning, and every steering-quality DN failure
+    - P2 is an encoding choice; DNp09 and LC biological interpretation remains limited as documented in issue 27
+    - pilot noise selection used two training seeds and thirty episodes per scale, not the formal matrix

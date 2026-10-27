@@ -2,7 +2,7 @@
 
 以 flyvis 預訓練早期視覺前端（方案 A）加上 MaleCNS v1.0 中央子圖組成感測策略：先在 2D 模擬器訓練，再匯出模型，最後透過 ROS 2 Lyrical／Gazebo Jetty 做閉環評估。研究問題是比較六個變體（V、O、VO、VO-late、GRU、RS）在相同感測前端之後的追蹤表現。
 
-> **目前進度（2026-10-19）：** 資料、前端、子圖、訓練鏈都已實際跑通，兩台 GPU 主機已校準。**正式訓練還沒開始**，要先解決策略不用氣味（#4）、PPO 沒有改善 BC（#35），並凍結評估協定（#20）。詳細進度見 [docs/status.md](docs/status.md)，待辦與分工見 GitHub Issue [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
+> **目前進度（2026-10-28）：** 正式規格是 no-KC＋P2/B3、pretrain → BC/DAgger。團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應與負面結果；PPO／P3 留待後續研究。兩個 VO 試跑已交付，noise 選為原強度 0.75 倍、遮蔽 30 秒。**正式訓練還沒開始**，仍須完成 [#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算修正，再由 PM 凍結共同版本與派工。詳細進度見 [docs/status.md](docs/status.md)，總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
 
 ## 組員快速上手
 
@@ -33,7 +33,8 @@ lock 檔固定 Linux x86_64、Python 3.12、PyTorch 2.9.1+cu126（細節見 [req
 
 | 路徑 | 內容 |
 | --- | --- |
-| `data/subgraphs/main/` | MaleCNS 中央子圖（2569 神經元、14165 邊）、`manifest.json`（來源 SHA-256 與設定）、盤點報表 |
+| `data/subgraphs/olfactory_v2_nokc/` | 正式 no-KC 子圖（4502 神經元、31682 邊）、來源 manifest 與盤點報表 |
+| `data/subgraphs/main/` | 歷史子圖（2569 神經元、14165 邊），保留供舊證據使用 |
 | `artifacts/frontend/` | 轉換後的 flyvis 前端 `frontend.npz` 與 parity 驗證 |
 | `artifacts/data_execution/*.json` | 候選型別掃描、原始 schema、子圖獨立驗證結果 |
 
@@ -48,8 +49,10 @@ python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   #
 
 ### 4. 正式訓練
 
+正式啟動以 #28 的 PM Decision 與共同 main SHA 為準。有效預算須依 #77 修正，不能把零學習率參數當成可更新參數；下列是前提完成後的執行方式。
+
 ```bash
-python scripts/prepare_experiments.py --device cuda
+python scripts/prepare_experiments.py --device cuda --jobs 2
 cat runs/experiment_configs/parameter_budget.json      # 六變體參數數須在 VO 的 ±5% 內
 bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC/DAgger
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
@@ -57,7 +60,9 @@ python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device 
 
 正式訓練鏈到 BC/DAgger 為止，最終 actor 是 `runs/bc/{variant}/seed_{seed}/actor`。PPO 依 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35) 的 Decision 移出正式鏈，保留為研究項目；`--algorithm ppo` 或 `es` 可以在 BC 之後加一個階段，但這種結果不屬於正式矩陣。
 
-`run_all.sh` 呼叫 `scripts/run_experiments.py`，開始前先審計 BC（以及有加 RL 階段時的 PPO／ES）的世界（固定動作策略成功率須 ≤10%），每個階段結束後再跑 DN 健康與轉向檢查，未通過就停止該組。`run_all.sh` 預設同時跑 3 組（變體, 種子；`prepare_experiments.py --jobs`），每組內的階段依序執行，中斷後重跑會自動略過已完成並驗證過的階段、從 checkpoint 續跑。額外參數會傳下去，例如 `bash runs/experiment_configs/run_all.sh --seeds 2` 或 `--variants VO --seeds 0 --jobs 1`。環境模擬在 CPU 子行程平行執行（`--workers`，預設依 CPU 數分配），預訓練資料同一種子只收集一次（`runs/datasets/`）。
+`run_all.sh` 呼叫 `scripts/run_experiments.py`，開始前先審計 BC（以及有加 RL 階段時的 PPO／ES）的世界（固定動作策略成功率須 ≤10%）。正式 BC 後的 G4 與 DN 失敗分類見下段。工具預設同時跑 3 組，正式分工則固定傳入 `--jobs 2`；每組內階段依序執行，中斷後會驗證既有產物與 gate，再決定略過或續跑。額外參數會傳下去，例如 `bash runs/experiment_configs/run_all.sh --seeds 2` 或 `--variants VO --seeds 0 --jobs 1`。環境模擬在 CPU 子行程平行執行（`--workers`，預設依 CPU 數分配），預訓練資料同一種子只收集一次（`runs/datasets/`）。
+
+O／VO／VO-late 在 BC 後要求氣味左右交換的平均 |Δω| ≥1e−3 rad/s 且至少是同 chain odor-pretrain 起點的 3 倍；V／GRU／RS 只記錄模態診斷。終端 BC 的轉向品質失敗保留數值並繼續評估，工程失敗則讓整個矩陣在階段交界停止，`--keep-going` 也不能略過。完整規則與揭露要求見 [協定凍結依據](docs/protocol_freeze_2026-10-28.md)。
 
 WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的 `C:\Users\<帳號>\.wslconfig` 寫入 `[wsl2]`、`memory=12GB`，再於 PowerShell 執行 `wsl --shutdown` 後重開 Ubuntu。筆電訓練時請插電並使用最佳效能電源模式。
 

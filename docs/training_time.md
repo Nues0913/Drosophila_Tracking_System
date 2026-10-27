@@ -1,4 +1,21 @@
-# 訓練時間：加速結果與縮短選項（2026-10-16）
+# 訓練時間（2026-10-28）
+
+正式鏈依 #35 選項 D 只跑 pretrain → BC/DAgger；PPO 為研究項目。#4 的兩台 no-KC VO A 試跑已交付，#10 以此重估資源，不減少 6 變體 × 5 seed 或 240k pretrain／150k BC 步數。
+
+| 主機 | 已觀測的 A 鏈口徑 | 18／12 條鏈訓練＋主要 2D 評估的串行等效外推 |
+| --- | --- | ---: |
+| 4060，seed 0 | runner 3,525.74 s，包含審計、pretrain、BC 與 gate；不重複加入額外獨立 DN probe | 約 23.9 h（18 條） |
+| 4070，seed 1 | 監督器 active 5,890.6 s 扣除診斷 3,304 s，訓練／審計／恢復餘額 2,586.6 s | 約 12.0 h（12 條） |
+
+每條另預留 75 s 給新 G4；主要評估由 600 回合的試跑等比例估到四情境 400 回合。4070 的餘額不是純訓練時間；暫停不計入 active，不能把跨暫停的頭尾時間直接當耗時。完整計算與原始包見 [協定凍結依據](protocol_freeze_2026-10-28.md#10時間重估是外推不是完整矩陣實測)。
+
+**NOT VERIFIED**：全變體、較難 seed、修正後 GRU 與兩個工作同時執行的實際耗時。表格不是上限，沒有把 jobs=2 當兩倍加速，也不含 Gazebo、額外 lesion、展示或重試。保留 **48–72 小時工作目標**；正式配置為 4060 seed 0／2／4、4070 seed 1／3，兩台各 `--jobs 2 --keep-going`，工程失敗強制停止規則依 #25。
+
+[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算修正與 #20 的協定交付完成後，PM 才在 #28 凍結共同版本與派工。時間規劃不是正式矩陣啟動令。
+
+## 2026-10-16 至 19 的歷史紀錄
+
+以下保留舊圖與含 PPO 的舊鏈估計；其中的 265 工作小時、縮短 PPO 等選項不適用目前 BC-only 正式鏈。
 
 > **2026-10-19 更新**：兩台 GPU 主機的同版本基準見 [#21](https://github.com/Nues0913/Drosophila_Tracking_System/issues/21) 與 [status.md](status.md#速度2026-10-1821)。調整 Windows 電源模式和 HAGS 之後，RTX 4060 的 PPO 單程序從 103 升到 239 步／秒，雙程序合計 351；RTX 4070 是 307／337。兩台分攤時，2M 步的 PPO 矩陣每台約 1.5～2 天。下方的 104 步／秒和「265 工作小時」是 2026-10-16 的舊數字，只保留作歷史紀錄。縮短方案（選項 3「PPO 降到 500k」）要等 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35) 證明 PPO 能改善 BC 才能決定，見 [#10](https://github.com/Nues0913/Drosophila_Tracking_System/issues/10)。選項 2 已改成兩台主機分攤；選項 4「種子降到 3 個」不採用。
 

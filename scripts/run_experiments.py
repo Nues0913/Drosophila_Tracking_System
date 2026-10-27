@@ -3,12 +3,20 @@
 
 Stages of one (variant, seed) chain always run in order; ``--jobs`` chains run
 concurrently (they share the GPU and split the CPU environment workers).
+
+#25 / #4 Decision 6390024036 item 8: when BC ends the chain (--algorithm none),
+DN steering-quality failures are recorded; engineering failures halt the matrix
+even with --keep-going. Other DN gates retain their strict behavior. After BC's
+DN gate, every variant runs CPU modality sensitivity: O, VO and VO-late must
+pass G4 (odor swap mean >= 1e-3 rad/s and >= 3 times the pretrain_odor actor).
+V, GRU and RS only record modality results; odor/vision ratios never gate.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -24,6 +32,15 @@ from flytrack_train.config import contract_from_config, read_config, write_json
 from flytrack_train.recovery import Recovery
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
+MODALITY_ENFORCED_VARIANTS = frozenset(("O", "VO", "VO-late"))
+MODALITY_ABSOLUTE_FLOOR = 1e-3
+MODALITY_RELATIVE_FACTOR = 3.0
+DN_HEALTH_ENGINEERING_CHECKS = frozenset(
+    ("finite", "not_all_silent", "active_motor_count", "central_gradient")
+)
+DN_HEALTH_QUALITY_CHECKS = frozenset(
+    ("omega_correlation", "omega_r2", "omega_amplitude", "eye_swap_response")
+)
 
 
 def stage_budget(config, command):
@@ -53,6 +70,8 @@ def completed(config, command, device):
 
 def check_dn_health(python, config_path, destination, stage, environment):
     """Run a fresh read-only gate, including when a completed stage is resumed."""
+    # A crashed rerun must not leave an older healthy report looking current.
+    (destination / "dn_health" / "metrics.json").unlink(missing_ok=True)
     command = [
         python,
         str(Path(__file__).with_name("dn_health.py")),
@@ -75,6 +94,146 @@ def check_dn_health(python, config_path, destination, stage, environment):
             command, stdout=log, stderr=subprocess.STDOUT, env=environment, check=False
         )
     return result.returncode
+
+
+def classify_dn_health(destination, exit_code):
+    """Terminal BC only: unknown failed checks and diagnostic errors are engineering."""
+    engineering, quality = [], []
+    # dn_health.py writes metrics before exiting 2 for an unhealthy actor.
+    if exit_code not in (0, 2):
+        engineering.append("diagnostic_exit_code")
+    try:
+        report = json.loads((destination / "dn_health" / "metrics.json").read_text())
+        checks = report["checks"]
+        if (
+            not isinstance(checks, dict)
+            or not DN_HEALTH_ENGINEERING_CHECKS <= checks.keys()
+            or any(type(value) is not bool for value in checks.values())
+            or report["passed"] is not all(checks.values())
+            or (exit_code == 0 and not report["passed"])
+            or (exit_code == 2 and report["passed"])
+        ):
+            raise ValueError("Inconsistent DN health metrics")
+        for name, passed in checks.items():
+            if not passed:
+                (quality if name in DN_HEALTH_QUALITY_CHECKS else engineering).append(name)
+    except FileNotFoundError:
+        engineering.append("missing_metrics")
+    except (OSError, ValueError, KeyError, TypeError):
+        engineering.append("invalid_metrics")
+    return sorted(engineering), sorted(quality)
+
+
+def modality_gate(variant, bc, start=None, *, best_epoch=None):
+    """Evaluate G4 from sensitivity rows; ratios and best epochs are recording only."""
+
+    def summarize(report):
+        if report is None:
+            return None
+        return {
+            "odor_swap_lr_mean": report["odor_swap_lr"]["mean"],
+            "odor_to_vision_ratio": report["odor_to_vision_ratio"],
+            "no_odor_mean": report["no_odor"]["mean"],
+            "no_vision_mean": report["no_vision"]["mean"],
+        }
+
+    bc, start = summarize(bc), summarize(start)
+    mean = bc["odor_swap_lr_mean"] if bc is not None else None
+    relative_floor = (
+        MODALITY_RELATIVE_FACTOR * start["odor_swap_lr_mean"] if start is not None else None
+    )
+    finite = mean is not None and math.isfinite(mean)
+    absolute = finite and mean >= MODALITY_ABSOLUTE_FLOOR
+    relative = (
+        finite and math.isfinite(relative_floor) and mean >= relative_floor
+        if relative_floor is not None
+        else None
+    )
+    return {
+        "variant": variant,
+        "enforced": variant in MODALITY_ENFORCED_VARIANTS,
+        "bc": bc,
+        "start": start,
+        "absolute_floor": MODALITY_ABSOLUTE_FLOOR,
+        "relative_factor": MODALITY_RELATIVE_FACTOR,
+        "relative_floor": relative_floor,
+        "checks": {"absolute": absolute, "relative": relative},
+        "passed": absolute and relative is not False,
+        "best_epoch": best_epoch,
+    }
+
+
+def bc_best_epochs(destination):
+    """The last epoch report of each DAgger round records its selected best epoch."""
+    path = destination / "training_metrics.json"
+    try:
+        rounds = json.loads(path.read_text())
+        values = [
+            row["epochs"][-1].get("best_epoch") if row.get("epochs") else None for row in rounds
+        ]
+    except (OSError, ValueError, AttributeError, KeyError, TypeError, IndexError):
+        # Optional training metadata must never change the modality verdict.
+        return None
+    return values if any(value is not None for value in values) else None
+
+
+def check_modality(python, config_path, destination, variant, start_actor, environment):
+    """Rerun CPU sensitivity at its default diagnostic seed/steps and persist G4."""
+    output = destination / "modality"
+    output.mkdir(parents=True, exist_ok=True)
+    sensitivity_path = output / "sensitivity.json"
+    sensitivity_path.unlink(missing_ok=True)
+    (output / "metrics.json").unlink(missing_ok=True)
+    actor = destination / "actor"
+    metrics = modality_gate(variant, None)
+    try:
+        metrics["best_epoch"] = bc_best_epochs(destination)
+        command = [
+            python,
+            str(Path(__file__).parent / "diagnostics" / "modality_sensitivity.py"),
+            str(sensitivity_path),
+            str(config_path),
+            str(actor),
+            *([str(start_actor)] if start_actor is not None else []),
+        ]
+        diagnostic_environment = {**environment, "DEVICE": "cpu"}
+        for name in ("STEPS", "SEED", "BUILD"):
+            diagnostic_environment.pop(name, None)
+        with (destination / "modality.log").open("a", buffering=1) as log:
+            result = subprocess.run(
+                command,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=diagnostic_environment,
+                check=False,
+            )
+        if result.returncode:
+            raise RuntimeError(f"Sensitivity exited {result.returncode}; inspect modality.log")
+        policies = json.loads(sensitivity_path.read_text())["policies"]
+        metrics = modality_gate(
+            variant,
+            policies[str(actor)],
+            policies[str(start_actor)] if start_actor is not None else None,
+            best_epoch=metrics["best_epoch"],
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
+        metrics["error"] = str(error)
+    write_json(output / "metrics.json", metrics)
+    return metrics
+
+
+def start_actor_for(plan, row):
+    """Find the actual output of this chain's odor pretraining, independent of layout."""
+    return next(
+        (
+            Path(candidate["output"]) / "actor"
+            for candidate in plan
+            if candidate["variant"] == row["variant"]
+            and candidate["seed"] == row["seed"]
+            and candidate["stage"] == "pretrain_odor"
+        ),
+        None,
+    )
 
 
 def audit_worlds(plan, destination):
@@ -121,7 +280,10 @@ def main():
     parser.add_argument(
         "--keep-going",
         action="store_true",
-        help="A failed chain (stage error or gate) stops only itself; the others run on",
+        help=(
+            "A failed chain stops only itself, except terminal-BC DN engineering failures "
+            "always halt the matrix (#4 Decision 6390024036 item 8)"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -186,6 +348,7 @@ def main():
     if not args.skip_environment_audit:
         audit_worlds(plan, args.configs / "environment_audit.json")
     lock = threading.Lock()
+    halt = threading.Event()
     failures: list[str] = []
 
     def commit(row=None, **values):
@@ -237,14 +400,51 @@ def main():
                 raise RuntimeError(f"Stage exited without a verified actor artifact: {destination}")
             status = "complete"
         if row["variant"] != "GRU":
-            exit_code = check_dn_health(
-                args.python, row["path"], destination, row["command"], environment
-            )
-            if exit_code:
+            terminal_bc = row["stage"] == "bc" and args.algorithm == "none"
+            try:
+                exit_code = check_dn_health(
+                    args.python, row["path"], destination, row["command"], environment
+                )
+            except Exception as error:  # noqa: BLE001 - terminal BC must halt on diagnostic errors
+                if terminal_bc:
+                    halt.set()
+                    commit(
+                        row,
+                        status="dn_health_failed",
+                        dn_health_engineering_failures=["diagnostic_error"],
+                    )
+                raise RuntimeError(f"DN health diagnostic error: {destination}") from error
+            if terminal_bc:
+                engineering, quality = classify_dn_health(destination, exit_code)
+                if engineering:
+                    halt.set()
+                    commit(
+                        row,
+                        status="dn_health_failed",
+                        exit_code=exit_code,
+                        dn_health_engineering_failures=engineering,
+                        dn_health_quality_failures=quality,
+                    )
+                    raise RuntimeError(f"DN health engineering failure; inspect {destination}")
+                if quality:
+                    commit(row, dn_health_quality_failures=quality)
+            elif exit_code:
                 commit(row, status="dn_health_failed", exit_code=exit_code)
                 raise RuntimeError(
                     f"DN health gate failed; inspect {destination / 'dn_health.log'}"
                 )
+        if row["stage"] == "bc":
+            metrics = check_modality(
+                args.python,
+                row["path"],
+                destination,
+                row["variant"],
+                start_actor_for(plan, row),
+                environment,
+            )
+            if metrics["enforced"] and not metrics["passed"]:
+                commit(row, status="modality_gate_failed")
+                raise RuntimeError(f"Modality gate failed; inspect {destination / 'modality'}")
         if row["command"] == "pretrain":
             validation = destination / "validation"
             metrics = validation / "metrics.json"
@@ -282,8 +482,8 @@ def main():
     def run_chain(indices):
         for index in indices:
             # By default one failure (often systemic, e.g. a gate every variant fails)
-            # stops all chains; --keep-going lets long unattended runs finish the rest.
-            if failures and not args.keep_going:
+            # stops all chains; --keep-going cannot override terminal BC engineering errors.
+            if halt.is_set() or (failures and not args.keep_going):
                 return
             try:
                 run_stage(index, plan[index])

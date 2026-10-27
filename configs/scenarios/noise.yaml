@@ -1,6 +1,8 @@
 name: noise
 duration_s: 60
-image_noise_std: 0.08
-odor_noise_std: 0.03
-image_dropout: 0.05
-odor_dropout: 0.1
+# #20: retain the exact floating-point values of the selected pilot scale (0.75).
+image_noise_std: 0.06
+brightness_std: 0.15000000000000002
+odor_noise_std: 0.0225
+image_dropout: 0.037500000000000006
+odor_dropout: 0.07500000000000001

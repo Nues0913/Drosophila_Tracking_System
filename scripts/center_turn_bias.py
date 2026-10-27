@@ -40,6 +40,13 @@ def center_artifact(
         raise ValueError("Source BC directory must contain actor/ and dataset/")
     policy, contract, card = load_policy_artifact(actor, device=device)
     recorded_config = card["metadata"]["config"]
+    if config is not None and int(config.get("train", {}).get("validation_every", 10)) != int(
+        recorded_config.get("train", {}).get("validation_every", 10)
+    ):
+        raise ValueError(
+            "Override train.validation_every must match the artifact's recorded config; "
+            "changing it would change the held-out split"
+        )
     config = copy.deepcopy(config if config is not None else recorded_config)
     for key in ("graph_path", "frontend_path"):
         config[key] = recorded_config[key]

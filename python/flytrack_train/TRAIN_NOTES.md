@@ -67,9 +67,16 @@ python -m flytrack_train export --config configs/train/bc.yaml --artifact runs/b
 
 ### BC 結束時的轉向偏差置中（#73）
 
-`train.center_turn_bias` 預設為 `false`；正式 `configs/train/bc.yaml` 設為
-`true`，`prepare_experiments.py` 的六個變體均沿用此 train 段。用一個加性純量
-消除錄下狀態上的平均轉向偏差，避免整段軌跡被固定的 ω 偏移影響。
+`train.center_turn_bias` 預設為 `false`；正式 `configs/train/bc.yaml` 也是
+`false`，因為 #73 的 GPU 閉迴路對照未通過；`prepare_experiments.py` 的六個變體
+均沿用此 train 段。功能保留給診斷和事後工具使用。
+
+> **封存結果（#73，seed 0，100 回合）**：occlusion_long 的 intact 成功率從
+> 0.26 降到 0.16；G3 的 D 從 13.6° 降到 3.9°（符號檢定 p = 1.0）。
+> occlusion_long 和 G3 均未通過；採用條件要求兩個 seed 都通過，因此不採用置中。
+
+設為 `true` 時，用一個加性純量消除錄下狀態上的平均轉向偏差，避免整段軌跡
+被固定的 ω 偏移影響。
 只在最後一輪 fit 之後、`save_actor` 之前執行一次，不影響 DAgger 收集；最後一次
 recovery checkpoint 保留未置中的參數。續跑即使跳過全部 round，也會重新編碼
 訓練回合並得到相同結果。關閉時 actor 和 rounds metrics 保持原本數值及結構。
@@ -90,7 +97,8 @@ connectome 修改 `readout.linear.bias[1]`；GRU 修改 `readout.bias[1]`。
 `episodes`、`held_out_excluded`、`tolerance`、`iterations`。metrics 保留 rounds
 list，不新增假 round；after 誤差以同一批 latent 和實際寫入的參數差計算。
 
-事後工具共用相同函式，不更新來源目錄；設定預設取 card，可用 `--config` 覆寫：
+事後工具共用相同函式，不更新來源目錄；設定預設取 card，可用 `--config` 覆寫，
+但 `train.validation_every` 必須與 card 記錄的設定相同，否則 held-out 切分會改變而報錯：
 
 ```bash
 PYTHONPATH=python python scripts/center_turn_bias.py runs/bc/VO/seed_0 \

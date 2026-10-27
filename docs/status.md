@@ -15,7 +15,7 @@
 | GRU | 14,904 | 0 | 14,904 | +2.4612% |
 | RS | 16,242 | 1,697 | 14,545 | −0.0069% |
 
-舊 GRU hidden=7、無 bottleneck，15,516 個有效參數相對 VO 為 +6.6685%，超出原 ±5%；這是 #77 修正前 main `79eff41` 的歷史配置。以有效 VO=14,546 走既有解析器後為 hidden=16、`gru_input_size=18`（有作用的輸入 bottleneck），effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內。連接體的 `budget_target=null`，由產生器檢查有效預算；只有 GRU 以此鍵解析架構。`parameter_budget.json` 的舊鍵 `actor_trainable_parameters` 明確保留為 declared，新增 `parameter_counts`、BC lr 與逐組明細。card 的 `metadata.actor_parameter_budget` 記錄各自階段的分組計數；正式評估以 effective 比較，缺少欄位的 #77 前 artifact 直接拒絕。修正內容在 [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79)，合併前仍須 PM review 通過。CPU 證據在 `runs/r77/summary.md`。
+舊 GRU hidden=7、無 bottleneck，15,516 個有效參數相對 VO 為 +6.6685%，超出原 ±5%；這是 #77 修正前 main `79eff41` 的歷史配置。以有效 VO=14,546 走既有解析器後為 hidden=16、`gru_input_size=18`（有作用的輸入 bottleneck），effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內；此配置已獲 PM 接受。連接體的 `budget_target=null`，由產生器檢查有效預算；只有 GRU 以此鍵解析架構。`parameter_budget.json` 的舊鍵 `actor_trainable_parameters` 明確保留為 declared，新增 `parameter_counts`、BC lr 與逐組明細。card 的 `metadata.actor_parameter_budget` 記錄各自階段的分組計數；正式評估用載入的 actor 與保存的 `metadata.config.train` 重算，核對 declared／zero_lr／effective、每組 lr／numel／參數名稱與數量、zero_lr_parameters 及頂層 trainable_parameters，缺少、無效或不一致皆拒絕，±5% 使用重算值。修正內容在 [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79)，合併前仍須 PM review 通過。初輪 CPU 證據在 `runs/r77/summary.md`，本輪 review 修正證據在 `<runs>/r77_fix/`。
 
 ## 2026-10-28：試跑已交付，協定記錄完成，正式矩陣仍待 #79 審查與版本凍結
 
@@ -72,7 +72,8 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 | flyvis 前端（方案 A） | 官方 checkpoint 作者 SHA-256 核對；原生轉換對官方輸出最大誤差 1.91e-6 | `artifacts/frontend/verification.json`、`docs/frontend_execution.md` |
 | 中央子圖萃取 | 2569 神經元、14165 邊；19 項獨立檢查全過；重跑兩次位元相同 | `artifacts/data_execution/graph_verification.json` |
 | 六變體參數預算 | no-KC + P2+B3 的 BC effective 為 14,093–14,904（參考 VO 14,546），全在 ±5% 內；分欄數值見上表。舊 G2 的 6795／6767／6831 為歷史宣告值 | #77（舊值 #36） |
-| 測試與 lint | #77 CPU：434 passed、1 CUDA-only skipped；ruff check／format --check 均通過。歷史 main 83f57d1 為 165 passed | `runs/r77/tests.log`、`ruff_check.log`、`ruff_format.log` |
+| 測試與 lint | #77 初輪 Codex CPU（`CUDA_VISIBLE_DEVICES=''`）：434 passed、1 CUDA-only skipped，ruff check／format --check 通過；Claude 另在本機含 CUDA 重跑：435 passed，該次使用 GPU。歷史 main 83f57d1 為 165 passed | Codex：`runs/r77/tests.log`、`ruff_check.log`、`ruff_format.log`；Claude：另次執行回報 |
+| #77 review 修正驗證 | 本輪 Codex CPU（`CUDA_VISIBLE_DEVICES=''`）：473 passed、1 CUDA-only skipped，新增 39 個參數化案例、改寫 3 項真實 artifact 評估測試；pytest 404.12 s，ruff check／format --check 通過。PM scalar 反例由修正前錯誤通過改為拒絕，正確往返通過 | `<runs>/r77_fix/summary.md`、`tests.log`、`tests_timing.txt`、`ruff_check.log`、`ruff_format.log` |
 | 兩台 GPU 主機校準（#21） | 同版本訓練的指標相對差 < 1e-3；同一個 artifact 跨主機評估相對差 1.5e-8／2.7e-8 | release `host-calibration` |
 | 環境審計 | 隨機化世界中 teacher 100%、所有盲目策略 0%；訓練與評估前自動檢查 | [fixes_2026-10-17.md](fixes_2026-10-17.md) |
 | Docker 映像與 ROS 節點 | `flytrack-ros:0.1` 內 `colcon build`、真值隔離 launch test、latency 單元測試通過；策略節點關閉時會送零速度（#15） | `docs/ros_execution.md` |

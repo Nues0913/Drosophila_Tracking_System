@@ -43,6 +43,7 @@ amendments:
       - record the BC modality gate and terminal-BC DN failure classification delivered by PR 76
       - retain no-KC plus P2/B3 and normal-only BC without turn-bias centering
       - record the reporting scope and the effective-parameter budget requirement
+      - require issue 77 actor budgets in metadata.actor_parameter_budget to match recomputation from the loaded actor and saved stage train settings; reject inconsistent artifacts
       - schema 3 records the previously approved secondary wander and unchanged latency gate
     evidence:
       - 'issue #4 Decisions 6390024036, 6401298099, 6442266901'
@@ -79,6 +80,15 @@ parameter_budget:
   basis: actor parameters in nonzero-learning-rate terminal-BC optimizer groups
   include_calibrated_extra_turn_rows: true
   disclose_declared_frozen_and_effective_counts: true
+  card_field: metadata.actor_parameter_budget
+  evaluation_validation: >-
+    Recompute with flytrack_train.parameters.count_effective_parameters using
+    the loaded actor (including restored B3 rows) and metadata.config.train.
+    Require declared, zero_lr, effective, every group lr/numel/parameter name
+    and numel, and zero_lr_parameters to match the saved card; also require
+    trainable_parameters to equal recomputed declared. Reject missing, invalid
+    or inconsistent fields before evaluation. Apply the tolerance to recomputed
+    effective counts.
   freeze_core_bias_in_pretrain_and_bc: true
   implementation_tracking: 'issue #77'
 training_budget_per_variant_and_seed:

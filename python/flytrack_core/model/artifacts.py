@@ -222,7 +222,7 @@ def load_policy_artifact(
         or count_trainable_parameters(policy) != card["trainable_parameters"]
     ):
         raise ValueError(
-            "Artifact shape or parameter count differs from reconstructed architecture"
+            "Artifact state_size or trainable_parameters differs from reconstructed architecture"
         )
     policy.to(device).eval()
     policy.artifact_card = card

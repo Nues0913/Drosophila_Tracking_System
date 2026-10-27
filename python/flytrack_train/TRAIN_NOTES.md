@@ -29,7 +29,7 @@ actor 只接受 `vision[2,721]`、`odor[2]`、`valid[3]`。`valid` 順序為左�
 
 只有 GRU 寫 `budget_target=14546`，走既有 hidden／輸入 bottleneck 解析器，結果 hidden=16、gru_input_size=18；舊 hidden=7、無 bottleneck 的 15,516 有效參數相對 VO 為 +6.6685%，不合格。連接體 `budget_target=null`，架構不由預算解析，產生器以有效計數統一檢查；這讓 YAML 重建不會把宣告容量誤比有效 target。stage model 仍不預加 B3，BC 建 optimizer 前才加列，計數則包含這些列。
 
-`save_actor` 在 card 的 `metadata.actor_parameter_budget` 保存目前 actor 按該 stage train 分組的 declared／zero_lr／effective 與 lr 明細，所以 pretrain 使用自己的 train 段。評估 `require_parameter_match` 只用 effective，缺欄位明示 artifact 為 #77 前版本並報錯，不退回 declared；`load_policy_artifact` 仍用 card 頂層 `trainable_parameters`（declared）檢查架構一致性。舊 card 的一般載入行為保留，正式預算評估須重產 card。CPU 靜態計數與 YAML 重建證據見 `runs/r77/summary.md`。
+`save_actor` 在 card 的 `metadata.actor_parameter_budget` 保存目前 actor 按該 stage train 分組的 declared／zero_lr／effective 與 lr 明細，所以 pretrain 使用自己的 train 段。評估 `require_parameter_match` 重用已載入且已還原 B3 列的 actor，依保存的 `metadata.config.train` 重算並逐欄核對計數、分組 lr／numel／參數名稱與 numel、zero_lr_parameters 及頂層 `trainable_parameters`。lr 用 `math.isclose(rel_tol=1e-9, abs_tol=0)`，零值須精確一致；缺少、無效或不一致的欄位均附 artifact 路徑報錯，±5% 只比較重算的 effective，不退回 declared。`load_policy_artifact` 保留頂層 declared 的架構檢查及舊 card 的一般載入行為；正式預算評估須重產舊 card。CPU 靜態計數與 YAML 重建證據見 `runs/r77/summary.md`，review 修正與真實 artifact 往返證據見 `<runs>/r77_fix/`。
 
 ```yaml
 variant: VO

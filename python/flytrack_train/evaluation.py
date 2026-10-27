@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import glob
 import json
+import math
 import time
 from functools import partial
 from pathlib import Path
@@ -21,6 +22,7 @@ from .audit import audit_environment
 from .batches import SequenceModel, tensor_observation
 from .config import contract_from_config, make_env, write_json
 from .parallel import EnvPool
+from .parameters import count_effective_parameters
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
@@ -183,6 +185,67 @@ def _write_reports(output, rows, options):
         _csv(output / f"{name}.csv", table)
 
 
+def _validated_actor_parameter_budget(policy, card, path):
+    metadata = card.get("metadata")
+    saved_config = metadata.get("config") if isinstance(metadata, dict) else None
+    train = saved_config.get("train") if isinstance(saved_config, dict) else None
+    if not isinstance(train, dict):
+        raise ValueError(f"Artifact {path} has missing or invalid metadata.config.train")
+    for key in (
+        "learning_rate",
+        "core_bias_learning_rate",
+        "readout_learning_rate",
+        "readout_bias_learning_rate",
+    ):
+        if key not in train or (train[key] is None and key != "learning_rate"):
+            continue
+        rate = train[key]
+        if (
+            isinstance(rate, bool)
+            or not isinstance(rate, (int, float))
+            or not math.isfinite(rate)
+            or rate < 0
+        ):
+            raise ValueError(f"Artifact {path} has invalid metadata.config.train.{key}")
+    actual = count_effective_parameters(policy, train)
+
+    def check(stored, expected, field):
+        if isinstance(expected, dict):
+            if not isinstance(stored, dict):
+                raise ValueError(f"Artifact {path} has invalid {field}: expected an object")
+            for key, value in expected.items():
+                if key not in stored:
+                    raise ValueError(f"Artifact {path} is missing {field}.{key}")
+                check(stored[key], value, f"{field}.{key}")
+            extra = stored.keys() - expected.keys()
+            if extra:
+                raise ValueError(f"Artifact {path} has unexpected {field} fields: {sorted(extra)}")
+        elif isinstance(expected, list):
+            if not isinstance(stored, list) or len(stored) != len(expected):
+                raise ValueError(f"Artifact {path} has inconsistent {field}: list length/type")
+            for index, (item, value) in enumerate(zip(stored, expected, strict=True)):
+                check(item, value, f"{field}[{index}]")
+        else:
+            matches = type(stored) is type(expected) and stored == expected
+            if isinstance(expected, float):
+                matches = (
+                    type(stored) in (int, float)
+                    and math.isfinite(stored)
+                    and math.isclose(stored, expected, rel_tol=1e-9, abs_tol=0.0)
+                )
+            if not matches:
+                raise ValueError(
+                    f"Artifact {path} has inconsistent {field}: "
+                    f"stored {stored!r}, recomputed {expected!r}"
+                )
+
+    check(metadata.get("actor_parameter_budget"), actual, "metadata.actor_parameter_budget")
+    check(card.get("trainable_parameters"), actual["declared"], "trainable_parameters")
+    if actual["effective"] < 1:
+        raise ValueError(f"Artifact {path} needs a positive effective parameter budget")
+    return actual
+
+
 def validate_artifact_matrix(config, variants, seeds, device):
     """Preflight every matrix cell before simulation or recorded-data statistics."""
     options = config.get("evaluation", {})
@@ -196,22 +259,20 @@ def validate_artifact_matrix(config, variants, seeds, device):
             path = mapping.get(
                 seed, mapping.get(str(seed), template.format(variant=variant, seed=seed))
             )
-            policy, loaded_contract, card = load_policy_artifact(path, device=str(device))
+            try:
+                policy, loaded_contract, card = load_policy_artifact(path, device=str(device))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Artifact {path} failed to load: {exc}") from exc
             if policy.variant != variant or loaded_contract.sha256() != contract.sha256():
                 raise ValueError(f"Artifact {path} has incompatible variant/sensor contract")
             metadata = card.get("metadata", {})
+            if not isinstance(metadata, dict):
+                raise ValueError(f"Artifact {path} has invalid metadata")
             if int(metadata.get("seed", seed)) != seed:
                 raise ValueError(f"Artifact {path} has incompatible training seed")
             if options.get("require_parameter_match", True):
-                actor_budget = metadata.get("actor_parameter_budget", {})
-                if "effective" not in actor_budget:
-                    raise ValueError(
-                        f"Artifact {path} is from before #77: missing effective actor parameter "
-                        "budget; regenerate the artifact with optimizer group counts"
-                    )
-                counts[(variant, seed)] = int(actor_budget["effective"])
-                if counts[(variant, seed)] < 1:
-                    raise ValueError(f"Artifact {path} needs a positive effective parameter budget")
+                actor_budget = _validated_actor_parameter_budget(policy, card, path)
+                counts[(variant, seed)] = actor_budget["effective"]
             budget = {}
             for entry in metadata.get("stage_budget_ledger", []):
                 budget[entry["algorithm"]] = budget.get(entry["algorithm"], 0) + int(

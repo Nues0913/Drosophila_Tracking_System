@@ -159,7 +159,15 @@ pretrain、BC 與 PPO 共用 `losses.activity_penalty(policy, activity)`：連�
 
 softplus 的正值靜息項不能當作運動控制證據。除原始 `rate>0` 比例，診斷另用 `rate>1e-3` 計算有效活性，要求至少 4 個 DN 在 ≥10% 步數有效、中央梯度範數 >1e-6、視覺換眼角速度差中位數 ≥0.05 rad/s，所有數值有限。BC 階段另要求策略 ω 與教師 ω 的相關 ≥0.5、R²>0（勝過最佳常數）且 ω 標準差 ≥ 教師的 25%；PPO／ES 要求相關 ≥0.3 與同樣的幅度條件。原本的「MAE 比固定零輸出低 20%」會讓完全固定轉向的模型通過（教師平均 ω 不為零），只看相關則會讓方向正確但幅度只有 1/80 的模型通過（其 R² 約 +0.02）。O 變體依設計完全遮蔽視覺，所以不套視覺換眼門檻；GRU 沒有生物 DN 對應，略過 DN gate。診斷不能取代正式 held-out 評估或 validate-pretrain。
 
-`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷；未通過寫入 `dn_health_failed` 並停止後續鏈；不得為了繼續訓練而默默放寬門檻。預設任何一條鏈失敗（階段錯誤或 gate 未過）都會讓其他鏈在下一個階段交界停下，因為失敗常是全面性的問題；長時間無人看管時可加 `--keep-going`，只停失敗的那條鏈，其他照跑，最後一起回報失敗並以非 0 結束。
+`--output JSON` 可儲存報告，`--require-healthy` 使失敗回傳 exit code 2，並在退出前寫出 metrics（健康時為 0）。`--motor-rate-beta 10` 只供舊權重的記憶體反事實探針，輸出會標記，不能當成訓練結果。`--sparse` 可選相同方程的 CSR 算子。`scripts/run_experiments.py` 在每個連接體階段結束（含已完成階段的恢復檢查）重新呼叫此診斷。除下一節的終端 BC 分類外，未通過寫入 `dn_health_failed` 並停止後續鏈。預設任何一條鏈失敗（階段錯誤或 gate 未過）都會讓其他鏈在下一個階段交界停下；`--keep-going` 讓其他鏈繼續，最後一起回報失敗並以非 0 結束，但終端 BC 的工程失敗仍強制停止整個矩陣。
+
+## BC 模態 gate 與 DN 失敗分類（#25）
+
+依 #4 Decision 6390024036 第 8 點與 Decision 6442266901，每條 chain 的 BC 在 dn_health 後執行 `scripts/diagnostics/modality_sensitivity.py`，包含 V、GRU、RS，也包含已完成階段的續跑。使用 CPU、單執行緒 float32、預設 200 步及診斷種子 1,610,000,000；不繼承 `STEPS`、`SEED`、`BUILD` 覆寫，不使用正式評估種子。比較 BC actor 與 execution plan 中同一 `(variant, seed)` 的 `pretrain_odor` 輸出 actor，使用 BC 的 yaml。原始輸出為 `<bc output>/modality/sensitivity.json`，判定為 `modality/metrics.json`，log 為 `modality.log`。
+
+G4 要求 BC 的 `odor_swap_lr.mean` ≥ **1e-3 rad/s**，且 ≥ **起點的 3 倍**，兩個邊界都包含等號。O、VO、VO-late 強制通過；失敗 row 記為 `modality_gate_failed` 並走一般 chain 失敗路徑（相容 `--keep-going`）。V、GRU、RS 僅記錄，診斷程式出錯也記錄 `error`，不阻擋。沒有 `pretrain_odor` 時 `start`、相對門檻與相對 check 為 null，只比較絕對門檻。metrics 記錄兩個 actor 的 swap mean、`odor_to_vision_ratio`、no_odor／no_vision mean 及所有門檻與 checks；**odor／vision 比值只記錄，沒有比例門檻**。`training_metrics.json` 是每輪一筆的 list；取各輪 `epochs` 最後一筆的 `best_epoch`，形成 metrics 的 `best_epoch` list，缺少時為 null，完全不參與判定。
+
+只有 BC 為 chain 最後階段（`--algorithm none`）才依 dn_health 的 `checks` 分類：`omega_correlation`、`omega_r2`、`omega_amplitude`、`eye_swap_response` 為轉向品質；`finite`、`not_all_silent`、`active_motor_count`、`central_gradient` 與其他未知失敗鍵皆為工程問題。僅品質失敗時 row 保持 `complete`，另記 `dn_health_quality_failures`，繼續模態 gate。有工程失敗時記 `dn_health_failed` 與 `dn_health_engineering_failures`，整個矩陣在下一個階段交界停止，**`--keep-going` 也不能略過**；已在跑的階段可完成。缺少／無效 metrics、診斷例外或非預期 exit code（非 0／2）也算工程問題。pretrain 與 `--algorithm ppo/es` 的 BC、最終階段維持原有嚴格 gate，任何 dn_health 失敗都 raise。GRU 繼續略過 DN gate，但會執行模態診斷。
 
 ## 環境退化檢查
 

@@ -12,6 +12,7 @@
 | [seed 0 窗口診斷及 noise](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue4_r8w_MiLong9487.tar.gz) | `735eba72ede855f6f419fe03dccef456dccdbb921ac182c648eced6ac6ef7d94` | 40 |
 | [seed 0 的 0.75 倍](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue4_r8w_s075_MiLong9487.tar.gz) | `e4405b15e71dfd1985273dafb84e084cf5c5afc4661c2a8e8ffdfa25a5b5c2eb` | 5 |
 | [seed 1 4-R8](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue4_r8_cweiting731.tar.gz) | `8b687cc311c696e2f8947d669cbde15d9e89be8cde556b16df10b9971e4755db` | 34 |
+| [seed 1 窗口補件](https://github.com/Nues0913/Drosophila_Tracking_System/releases/download/explore-4/issue4_r8_dn_health_seed1_windows.tar.gz) | `c8e79e32831b44968452d75c97ad8e0af675229498540db91700eeec2c27af1f` | 34 |
 
 清單數不含 `SHA256SUMS` 本身。PM 另核對 seed 1 三份訓練 card 各 51 個 source hash 對應固定 commit、6 個輸入雜湊、完整逐回合聚合、G3 和 G4。匯出的感測契約 JSON 與 repo 設定是同一內容、不同格式，不能直接把兩者的 bytes hash 當成相同。
 
@@ -34,7 +35,20 @@ seed 1 的 G4 通過：BC swap=0.0259075722 rad/s、同 seed odor-pretrain 起�
 
 seed 0 的原始 A 在先前驗收中通過 G3／G4，但置中後 G3 主要效應消失；seed 1 的 G3 是反方向。**A 不能記為兩個 seed 複製成立**。依使用者團隊選 F（[Decision 6442266901](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4#issuecomment-6442266901)），維持 normal-only BC，保留全部預登記比較，並如實交付有限範圍的負面結果；不追加 P3 或置中訓練。
 
-**NOT RUN**：seed 1 的 burn-in 16／200／400／800 窗口掃描沒有交付。seed 0 已符合「其他情況」（Decision 6401298099），所以不需要這份描述來決定是否改窗口，不追加掃描、不把它填成完成。
+### 後續窗口補件：保留原 burn-in
+
+[18:15 UTC 補交的診斷](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4#issuecomment-6450055014)已由 PM 離線核對，取代初版「未交付／NOT RUN」狀態。作者在固定 f7c5891、同一個 seed 1 A actor 上用 CPU 跑兩次；每個窗口24個 held-out episodes，每回合200個計分步，環境seed為1,500,100,000–023。
+
+| burn-in | Corr | R² | 平均 ω 偏差（rad/s） | Corr≥0.5 且 R²>0 |
+| ---: | ---: | ---: | ---: | --- |
+| 16 | 0.521714 | −0.512415 | +0.015684 | 不通過 |
+| 200 | 0.763020 | 0.299381 | −0.028893 | 通過 |
+| 400 | 0.441661 | 0.014822 | −0.041356 | 不通過 |
+| 800 | 0.814674 | 0.518195 | −0.025194 | 通過 |
+
+PM 核對34個 manifest 項目、actor／設定輸入與原R8包一致；本機診斷副本相對原腳本只增加 omega_mean／mean_omega_bias 兩個統計欄位。兩次執行除新增欄位及耗時外的所有輸出完全一致；burn-in 16 的原有指標也與終端 DN 報告一致。沒有重播權重或追加模型診斷。
+
+seed 1 的400步窗口及seed 0的800步窗口都不符合預先條件，所以仍是「其他情況」，正式 BC burn-in 不改。這項補件只補齊描述，不改門檻、配方或 #77 的開跑前阻礙。初始 PM 核對包保留為補件前的快照，窗口補件另外保存。
 
 ## #9／#20：noise 用原強度的 0.75 倍
 

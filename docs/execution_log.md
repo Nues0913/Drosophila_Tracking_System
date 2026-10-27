@@ -2,6 +2,27 @@
 
 記錄實際執行過的環境與驗證證據；進度摘要見 [status.md](status.md)。不能以冒煙測試或單一模型代替正式實驗。下表 `runs/` 路徑只存在原執行主機（不進 git）。
 
+## 2026-10-28：#77 有效參數預算（CPU）
+
+使用正式 no-KC 圖與真實 frontend，執行 `scripts/prepare_experiments.py --device cpu --seeds 0 --output runs/r77/configs`。基準改為 BC optimizer lr>0 且 requires_grad 的 actor 參數，含 B3 校準新增列；核心 bias 維持 lr=0，tolerance 維持 ±5%。
+
+| 變體 | declared | zero_lr | effective | 相對有效 VO |
+| --- | ---: | ---: | ---: | ---: |
+| V | 16,242 | 1,697 | 14,545 | −0.0069% |
+| O | 16,243 | 1,697 | 14,546 | 0% |
+| VO | 16,243 | 1,697 | 14,546 | 0% |
+| VO-late | 15,790 | 1,697 | 14,093 | −3.1143% |
+| GRU | 14,904 | 0 | 14,904 | +2.4612% |
+| RS | 16,242 | 1,697 | 14,545 | −0.0069% |
+
+連接體計數與 PM 靜態重算相符，zero_lr 僅 `core.bias` 1,697 個。舊 GRU hidden=7、無 bottleneck，有效參數 15,516，對有效 VO 為 +6.6685%，已由有效預算檢查拒絕；沿用既有解析器，以 target=14,546 得 hidden=16、bottleneck=18。連接體 stage 的 `budget_target=null`，由產生器統一檢查有效計數，避免重建時誤用宣告值比較有效 target。
+
+六份產生的 BC YAML 均重新 build actor 並依 BC lifecycle 加入 B3 列，完整計數與 JSON 相同。產生器耗時 CPU user/system 7.60/1.96 秒、wall 10.89 秒；獨立重建 CPU 8.72/0.90 秒、wall 9.62 秒。證據：`runs/r77/configs/parameter_budget.json`、`yaml_rebuild_counts.json`、`prepare_timing.txt`、`verify_timing.txt`、`summary.md`。未啟動正式訓練，未使用 GPU；測試與 lint 結果亦彙整於該 summary。
+
+完整 CPU 測試：**434 passed、1 skipped（CUDA-only）**，pytest 412.19 秒；命令 user/system CPU 388.35/24.58 秒、wall 413.31 秒。`ruff check python scripts` 與 `ruff format --check python scripts` 均通過。首次完整測試執行中有程式微調，出現失敗標記後中止，未用作驗收；上述為程式固定後完整重跑結果。包含編輯與重跑的任務總牆鐘約 14 分鐘，低於 PM 的 30 分鐘上限。
+
+> 下方 2026-10-15 起的舊圖預算表與其他歷史參數數均保留原值，當時使用 requires_grad 宣告計數，不能替代 #77 的 BC effective 驗收。
+
 ## 執行環境
 
 - Ubuntu 26.04.1 LTS，Linux 7.0.0-38-generic，x86_64。

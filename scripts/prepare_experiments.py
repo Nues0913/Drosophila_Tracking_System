@@ -14,7 +14,8 @@ from pathlib import Path
 
 import yaml
 from flytrack_core.contracts import SensorContract
-from flytrack_core.model import assert_parameter_budget, build_policy, count_trainable_parameters
+from flytrack_core.model import assert_parameter_budget, build_policy
+from flytrack_train.parameters import count_effective_parameters
 
 
 def main():
@@ -48,11 +49,20 @@ def main():
     contract = SensorContract.from_json(args.sensor_contract)
     reference = options["reference"]
     common = options.get("common", {})
+    bc_template = yaml.safe_load(Path("configs/train/bc.yaml").read_text(encoding="utf-8"))
     # #4 B3: BC adds these rows (1 weight per branch), so the budget counts them too.
     extra_turn = dict(options.get("extra_turn_rows") or {})
     extra_variants = set(extra_turn.pop("variants", []))
     if not extra_variants <= set(options["variants"]) - {"GRU"}:
         parser.error("extra_turn_rows variants must be connectome variants of the matrix")
+
+    def bc_train(variant):
+        # Use this exact train section both for counting and for the emitted BC stage.
+        train = copy.deepcopy(bc_template["train"])
+        train.pop("calibrate_extra_turn", None)
+        if variant in extra_variants:
+            train["calibrate_extra_turn"] = dict(extra_turn)
+        return train
 
     def with_extra_turn_rows(variant, policy):
         if variant in extra_variants:
@@ -63,24 +73,44 @@ def main():
         return policy
 
     reference_policy = with_extra_turn_rows(
-        reference, build_policy(reference, args.graph, contract, args.frontend, **common)
+        reference,
+        build_policy(
+            reference,
+            args.graph,
+            contract,
+            args.frontend,
+            **{**common, **options.get("overrides", {}).get(reference, {}), "budget_target": None},
+        ),
     )
-    target = count_trainable_parameters(reference_policy)
+    target = count_effective_parameters(reference_policy, bc_train(reference))["effective"]
     configs = {}
     models = {reference: reference_policy}
     for variant in options["variants"]:
         resolved = {
             **common,
             **options.get("overrides", {}).get(variant, {}),
-            "budget_target": target,
+            # Only GRU resolves architecture from this target. Connectome actors
+            # are checked below using BC-effective counts, not declared capacity.
+            "budget_target": target if variant == "GRU" else None,
         }
         model = build_policy(variant, args.graph, contract, args.frontend, **resolved)
         # The stage configs build the actor without the rows; BC calibrates them.
         configs[variant] = dict(model.model_config)
         models[variant] = with_extra_turn_rows(variant, model)
+    parameter_counts = {
+        variant: count_effective_parameters(model, bc_train(variant))
+        for variant, model in models.items()
+    }
     counts = assert_parameter_budget(
-        models, reference=reference, tolerance=float(options["tolerance"])
+        models,
+        reference=reference,
+        tolerance=float(options["tolerance"]),
+        effective_counts={
+            variant: count["effective"] for variant, count in parameter_counts.items()
+        },
     )
+    for count in parameter_counts.values():
+        count["relative_to_effective_vo_percent"] = 100 * (count["effective"] / target - 1)
     # Free all duplicated frozen frontends before invoking any actual learner.
     del models, reference_policy
     args.output.mkdir(parents=True, exist_ok=True)
@@ -88,8 +118,32 @@ def main():
         json.dumps(
             {
                 "reference": reference,
+                "budget_basis": (
+                    "effective BC actor parameters (requires_grad and lr > 0), including B3"
+                ),
+                "reference_effective_parameters": target,
                 "tolerance": options["tolerance"],
-                "actor_trainable_parameters": counts,
+                # Preserve this legacy key as declared capacity for existing readers.
+                "actor_trainable_parameters": {
+                    variant: count["declared"] for variant, count in parameter_counts.items()
+                },
+                "actor_trainable_parameters_basis": "declared (requires_grad), including B3",
+                "parameter_counts": parameter_counts,
+                "bc_learning_rates": {
+                    key: bc_template["train"].get(key, 1e-3 if key == "learning_rate" else None)
+                    for key in (
+                        "learning_rate",
+                        "readout_learning_rate",
+                        "core_bias_learning_rate",
+                        "readout_bias_learning_rate",
+                    )
+                },
+                "gru_resolution": {
+                    "budget_target": target,
+                    "hidden_size": configs["GRU"]["hidden_size"],
+                    "gru_input_size": configs["GRU"]["gru_input_size"],
+                    "effective": counts["GRU"],
+                },
                 "extra_turn_rows": {**extra_turn, "variants": sorted(extra_variants)},
                 "resolved_models": configs,
             },
@@ -111,7 +165,11 @@ def main():
                 chain.append((args.algorithm, None, None))
             previous = None
             for template_name, modality, steps in chain:
-                config = yaml.safe_load(Path(f"configs/train/{template_name}.yaml").read_text())
+                config = (
+                    bc_template
+                    if template_name == "bc"
+                    else yaml.safe_load(Path(f"configs/train/{template_name}.yaml").read_text())
+                )
                 config = copy.deepcopy(config)
                 config.update(
                     variant=variant,
@@ -130,9 +188,7 @@ def main():
                 config.pop("init_artifact", None)
                 config.pop("pretrained_artifacts", None)
                 if template_name == "bc":
-                    config["train"].pop("calibrate_extra_turn", None)
-                    if variant in extra_variants:
-                        config["train"]["calibrate_extra_turn"] = dict(extra_turn)
+                    config["train"] = bc_train(variant)
                 if previous:
                     config["init_artifact"] = str(previous)
                 if modality:
@@ -160,7 +216,10 @@ def main():
         f'--jobs {args.jobs} "$@"',
     ]
     (args.output / "run_all.sh").write_text("\n".join(commands) + "\n", encoding="utf-8")
-    print(f"Resolved actor counts: {counts}; review {args.output / 'run_all.sh'} before running")
+    print(
+        f"Resolved effective BC actor counts: {counts}; "
+        f"review {args.output / 'run_all.sh'} before running"
+    )
 
 
 if __name__ == "__main__":

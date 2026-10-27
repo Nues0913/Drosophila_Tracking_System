@@ -27,11 +27,23 @@ def count_trainable_parameters(model: nn.Module) -> int:
 
 
 def assert_parameter_budget(
-    models: dict[str, nn.Module], reference: str = "VO", tolerance: float = 0.05
+    models: dict[str, nn.Module],
+    reference: str = "VO",
+    tolerance: float = 0.05,
+    *,
+    effective_counts: dict[str, int] | None = None,
 ) -> dict[str, int]:
-    counts = {name: count_trainable_parameters(model) for name, model in models.items()}
+    """Check declared capacity by default, or supplied optimizer-effective counts."""
+    if effective_counts is not None and effective_counts.keys() != models.keys():
+        raise ValueError("Effective parameter counts must cover exactly the supplied models")
+    counts = (
+        dict(effective_counts)
+        if effective_counts is not None
+        else {name: count_trainable_parameters(model) for name, model in models.items()}
+    )
+    basis = "effective parameter" if effective_counts is not None else "Parameter"
     if reference not in counts or counts[reference] < 1:
-        raise ValueError("A nonzero reference parameter budget is required")
+        raise ValueError(f"A nonzero reference {basis.lower()} budget is required")
     if not 0 <= tolerance < 1:
         raise ValueError("Parameter tolerance must be in [0, 1)")
     failed = {
@@ -41,7 +53,7 @@ def assert_parameter_budget(
     }
     if failed:
         raise ValueError(
-            f"Parameter budgets exceed ±{100 * tolerance:g}% "
+            f"{basis} budgets exceed ±{100 * tolerance:g}% "
             f"of {reference}={counts[reference]}: {failed}"
         )
     return counts

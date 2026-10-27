@@ -50,7 +50,7 @@ python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   #
 
 ```bash
 python scripts/prepare_experiments.py --device cuda
-cat runs/experiment_configs/parameter_budget.json      # 六變體參數數須在 VO 的 ±5% 內
+cat runs/experiment_configs/parameter_budget.json      # BC effective（lr>0）須在有效 VO 的 ±5% 內（#77）
 bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC/DAgger
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
 ```

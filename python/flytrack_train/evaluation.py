@@ -202,6 +202,16 @@ def validate_artifact_matrix(config, variants, seeds, device):
             metadata = card.get("metadata", {})
             if int(metadata.get("seed", seed)) != seed:
                 raise ValueError(f"Artifact {path} has incompatible training seed")
+            if options.get("require_parameter_match", True):
+                actor_budget = metadata.get("actor_parameter_budget", {})
+                if "effective" not in actor_budget:
+                    raise ValueError(
+                        f"Artifact {path} is from before #77: missing effective actor parameter "
+                        "budget; regenerate the artifact with optimizer group counts"
+                    )
+                counts[(variant, seed)] = int(actor_budget["effective"])
+                if counts[(variant, seed)] < 1:
+                    raise ValueError(f"Artifact {path} needs a positive effective parameter budget")
             budget = {}
             for entry in metadata.get("stage_budget_ledger", []):
                 budget[entry["algorithm"]] = budget.get(entry["algorithm"], 0) + int(
@@ -211,7 +221,6 @@ def validate_artifact_matrix(config, variants, seeds, device):
                 raise ValueError(f"Artifact {path} lacks stage_budget_ledger")
             budgets.add(tuple(sorted(budget.items())))
             sources.add((card["files"]["graph.npz"], card["files"]["frontend.npz"]))
-            counts[(variant, seed)] = int(card["trainable_parameters"])
             manifests[(variant, seed)] = {
                 "variant": variant,
                 "seed": seed,
@@ -237,7 +246,8 @@ def validate_artifact_matrix(config, variants, seeds, device):
             }
             if failed:
                 raise ValueError(
-                    f"Actor parameter counts exceed tolerance around VO={reference}: {failed}"
+                    f"Actor effective parameter counts exceed tolerance around VO={reference}: "
+                    f"{failed}"
                 )
     return manifests
 

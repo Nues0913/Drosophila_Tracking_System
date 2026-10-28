@@ -11,7 +11,7 @@
 
 **NOT VERIFIED**：全變體、較難 seed、修正後 GRU 與兩個工作同時執行的實際耗時。表格不是上限，沒有把 jobs=2 當兩倍加速，也不含 Gazebo、額外 lesion、展示或重試。保留 **48–72 小時工作目標**；正式配置為 4060 seed 0／2／4、4070 seed 1／3，兩台各 `--jobs 2 --keep-going`，工程失敗強制停止規則依 #25。
 
-[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算修正與 #20 的協定交付完成後，PM 才在 #28 凍結共同版本與派工。時間規劃不是正式矩陣啟動令。
+[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算與評估重算核對已修正，#20 的協定已交付；PR #79 仍須通過 PM review 並合併，PM 才在 #28 凍結共同版本與派工。時間規劃不是正式矩陣啟動令。
 
 ## 2026-10-16 至 19 的歷史紀錄
 

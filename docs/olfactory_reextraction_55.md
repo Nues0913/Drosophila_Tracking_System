@@ -57,6 +57,8 @@
 
 ## 參數公平與2–3天目標
 
+> #77（2026-10-28）補註：本節及下方 no-KC 對照保留 #55 當時的宣告計數。正式 no-KC + P2+B3 現改用 BC optimizer lr>0 且 requires_grad 的 effective，相對有效 VO ±5%；舊 no-KC GRU 15,516 的 effective 為 +6.6685%，超標，已解析為 hidden=16、bottleneck=18、14,904（+2.4612%）。目前六變體 declared／zero_lr／effective 分欄見 [status.md](status.md)，不可將此處歷史宣告表用作有效預算驗收。
+
 六變體實際建構，沿用共同G2設定並重新解GRU預算：
 
 | 變體 | 可訓練actor參數 |

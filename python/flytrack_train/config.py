@@ -22,6 +22,7 @@ from flytrack_core.model import (
 )
 from flytrack_core.model.policy import DEFAULT_CONFIG, ConnectomePolicy
 
+from .parameters import count_effective_parameters
 from .worlds import make_env  # noqa: F401 - re-exported for trainers
 
 TRAIN_ENVIRONMENT_SEED_LIMIT = 1_000_000_000
@@ -171,6 +172,7 @@ def save_actor(
         int(row.get("environment_steps", 0)) for row in ledger
     )
     metadata["config"] = config
+    metadata["actor_parameter_budget"] = count_effective_parameters(policy, config.get("train", {}))
     metadata["environment_seed_policy"] = TRAIN_ENVIRONMENT_SEED_POLICY
     entry["environment_seed_policy"] = TRAIN_ENVIRONMENT_SEED_POLICY
     metadata["source_code"] = project_source_fingerprint()

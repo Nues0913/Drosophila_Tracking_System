@@ -2,7 +2,7 @@
 
 以 flyvis 預訓練早期視覺前端（方案 A）加上 MaleCNS v1.0 中央子圖組成感測策略：先在 2D 模擬器訓練，再匯出模型，最後透過 ROS 2 Lyrical／Gazebo Jetty 做閉環評估。研究問題是比較六個變體（V、O、VO、VO-late、GRU、RS）在相同感測前端之後的追蹤表現。
 
-> **目前進度（2026-10-28）：** 正式規格是 no-KC＋P2/B3、pretrain → BC/DAgger。團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應與負面結果；PPO／P3 留待後續研究。兩個 VO 試跑已交付，noise 選為原強度 0.75 倍、遮蔽 30 秒。**正式訓練還沒開始**，仍須完成 [#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算修正，再由 PM 凍結共同版本與派工。詳細進度見 [docs/status.md](docs/status.md)，總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
+> **目前進度（2026-10-28）：** 正式規格是 no-KC＋P2/B3、pretrain → BC/DAgger。團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應與負面結果；PPO／P3 留待後續研究。兩個 VO 試跑已交付，noise 選為原強度 0.75 倍、遮蔽 30 秒。**正式訓練還沒開始**，[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算已由 [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79) 修正，合併前仍須 PM review 通過，再由 PM 凍結共同版本與派工。詳細進度見 [docs/status.md](docs/status.md)，總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
 
 ## 組員快速上手
 
@@ -49,11 +49,11 @@ python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   #
 
 ### 4. 正式訓練
 
-正式啟動以 #28 的 PM Decision 與共同 main SHA 為準。有效預算須依 #77 修正，不能把零學習率參數當成可更新參數；下列是前提完成後的執行方式。
+正式啟動以 #28 的 PM Decision 與共同 main SHA 為準。#77 已修正有效預算：有效 VO 為 14,546，GRU hidden=16 加 bottleneck=18 的 effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內，不能把零學習率參數當成可更新參數。修正內容在 PR #79，合併前仍須 PM review 通過；下列是前提完成後的執行方式。
 
 ```bash
 python scripts/prepare_experiments.py --device cuda --jobs 2
-cat runs/experiment_configs/parameter_budget.json      # 六變體參數數須在 VO 的 ±5% 內
+cat runs/experiment_configs/parameter_budget.json      # 六變體 BC effective（lr>0）須在有效 VO 的 ±5% 內（#77）
 bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC/DAgger
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
 ```

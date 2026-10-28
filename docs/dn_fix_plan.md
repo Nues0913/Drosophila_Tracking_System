@@ -17,7 +17,7 @@
 ## 2. 限制（必須遵守）
 
 1. 六個連接體變體採**同一方案**；GRU 不受影響但測試須照常通過。
-2. 可訓練參數數不變，或仍在 VO 的 ±5% 內（`assert_parameter_budget`）；若參數數改變，須重跑 `scripts/prepare_experiments.py` 並更新 status.md 的預算表。
+2. 有效參數數不變，或仍在有效 VO 的 ±5% 內（#77：BC optimizer lr>0 且 requires_grad，含 B3；`assert_parameter_budget(..., effective_counts=...)`）；若參數數改變，須重跑 `scripts/prepare_experiments.py` 並更新 status.md 的 declared／zero_lr／effective 預算表。
 3. 不改圖、號誌（Dale）、突觸數、edge mask；`test_training_cannot_change_dale_sign_or_create_edges` 等既有不變量必須通過。
 4. 初始遞迴仍須收縮（`test_initial_recurrence_is_contractive_for_large_synapse_counts`）。若改變非 DN 神經元的 rate function，須重新論證譜半徑初始化。
 5. 保留效能修改的介面：`sense()` / `forward_code()` 分離、`adjacency_cache()`、`MaskedRateCore` 的 `torch.lerp` / `torch.addmm` 子步寫法、批次 TBPTT（`recovery.fit_sequence_epochs`）。不要退回逐步單筆計算。

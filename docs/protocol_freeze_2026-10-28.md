@@ -1,6 +1,6 @@
 # 正式協定凍結依據（2026-10-28）
 
-本文件記錄 #4 兩個 VO A 試跑、#9 的 noise 選點、#25 的 gate，以及 #10 的時間估計。正式矩陣尚未開始；設定與文件合併後，仍須完成 [#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 的有效參數預算修正，再由 PM 在 #28 凍結共同 main SHA、協定版本及派工。
+本文件記錄 #4 兩個 VO A 試跑、#9 的 noise 選點、#25 的 gate，以及 #10 的時間估計。[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 已修正有效參數預算、GRU 配置與評估端重算核對，內容在 PR #79。正式矩陣尚未開始；PR #79 仍須通過 PM review 並合併，再由 PM 在 #28 凍結共同 main SHA、協定版本及派工。
 
 ## 來源與 PM 核對範圍
 
@@ -48,7 +48,7 @@ seed 0 的原始 A 在先前驗收中通過 G3／G4，但置中後 G3 主要效�
 
 PM 核對34個 manifest 項目、actor／設定輸入與原R8包一致；本機診斷副本相對原腳本只增加 omega_mean／mean_omega_bias 兩個統計欄位。兩次執行除新增欄位及耗時外的所有輸出完全一致；burn-in 16 的原有指標也與終端 DN 報告一致。沒有重播權重或追加模型診斷。
 
-seed 1 的400步窗口及seed 0的800步窗口都不符合預先條件，所以仍是「其他情況」，正式 BC burn-in 不改。這項補件只補齊描述，不改門檻、配方或 #77 的開跑前阻礙。初始 PM 核對包保留為補件前的快照，窗口補件另外保存。
+seed 1 的400步窗口及seed 0的800步窗口都不符合預先條件，所以仍是「其他情況」，正式 BC burn-in 不改。這項補件只補齊描述，不改門檻或配方。#77 的有效預算另已修正，仍待 PR #79 通過 PM review 並合併後凍結正式版本。初始 PM 核對包保留為補件前的快照，窗口補件另外保存。
 
 ## #9／#20：noise 用原強度的 0.75 倍
 
@@ -104,8 +104,23 @@ seed 1 的400步窗口及seed 0的800步窗口都不符合預先條件，所以�
 
 ScenarioSpec 的程式變更會改變 training fingerprint。歷史 4-R8 的 checkpoint 留在原固定 worktree；正式矩陣使用日後凍結的新版本，不能跨來源雜湊接續舊 checkpoint。
 
-## 有效參數預算：#77 必須先修正
+## 有效參數預算：#77 已修正，待 PR #79 審查與合併
 
-main `79eff41` 的 declared VO 是 16,243，但 BC 對 `core.bias` 的 1,697 個參數設 lr=0；PPO 移出後，它們在正式鏈全程凍結。非零學習率參數因此是 VO 14,546、GRU 15,516，GRU 高出 **6.6685%**，超過原有 ±5%。這是靜態建模／optimizer 分組的確定結果，不是訓練實驗。
+歷史版本 main `79eff41`（#77 修正前）的 declared VO 是 16,243，但 BC 對 `core.bias` 的 1,697 個參數設 lr=0；PPO 移出後，它們在正式鏈全程凍結。當時非零學習率參數是 VO 14,546、GRU 15,516，GRU 高出 **6.6685%**，超過原有 ±5%。這是該版本靜態建模／optimizer 分組的確定結果，不是訓練實驗。
 
-[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 已交模型 DRI 修正有效計數與 GRU 配置，保留 bias 凍結、不改 ±5%。本 PR 只記錄既有公平性契約及其阻礙，不自行改 GRU、圖或其他模型。正式開跑版本須同時包含 #77 的修正，不能把這次協定文件合併當作啟動令。
+目前 ±5% 以 BC optimizer 中 **lr>0 且 requires_grad=True 的 actor 參數**為準，包含 B3 新增讀出列。`declared` 是 requires_grad 容量，`zero_lr` 是其中 lr=0 的部分，`effective = declared - zero_lr`；共同凍結前端、pretrain decoder 和 PPO critic 不計入。
+
+| 變體 | declared | zero_lr | effective | 相對有效 VO |
+| --- | ---: | ---: | ---: | ---: |
+| V | 16,242 | 1,697 | 14,545 | −0.0069% |
+| O | 16,243 | 1,697 | 14,546 | 0% |
+| VO | 16,243 | 1,697 | 14,546 | 0% |
+| VO-late | 15,790 | 1,697 | 14,093 | −3.1143% |
+| GRU | 14,904 | 0 | 14,904 | +2.4612% |
+| RS | 16,242 | 1,697 | 14,545 | −0.0069% |
+
+GRU 已解析為 hidden=16、input bottleneck=18，effective 14,904（相對有效 VO +2.46%），此配置已獲 PM 接受；本輪保留該配置、bias 凍結及 ±5% 門檻。
+
+評估在 `require_parameter_match` 開啟時，重用已載入且已還原 B3 列的 actor，以該 artifact 保存的 `metadata.config.train` 呼叫共用 `count_effective_parameters`。逐欄核對 `metadata.actor_parameter_budget` 的 declared／zero_lr／effective、各組 lr／numel／參數名稱與 numel，以及 `zero_lr_parameters`；lr 使用 `math.isclose(rel_tol=1e-9, abs_tol=0)`，零學習率仍須完全為零。頂層 `trainable_parameters` 須等於重算的 declared；缺少、無效或不一致皆在評估前拒絕，±5% 使用重算的 effective。schema 3 的 2026-10-28 amendment 一併記錄此核對規則。
+
+正式開跑仍須 PR #79 通過 PM review 並合併，由 PM 凍結共同 main SHA；協定文件本身不是啟動令。

@@ -12,6 +12,25 @@ actor 只接受 `vision[2,721]`、`odor[2]`、`valid[3]`。`valid` 順序為左�
 
 ## 共用 YAML 與指令
 
+### 有效 actor 參數預算（#77，2026-10-28）
+
+正式 ±5% 依 BC optimizer 的非零學習率 actor 參數比較，以有效 VO 為基準，包含 BC 新增的 B3 讀出列。`parameters.count_effective_parameters(policy, train)` 直接呼叫 optimizer 共用的 `parameter_groups`：`declared` 計 requires_grad，`zero_lr` 計其中 lr=0，`effective` 計其中 lr>0；共同凍結前端、pretrain decoder 和 PPO critic 不計入。`imitation.parameter_groups` 保留相容匯入。
+
+| 變體 | declared | zero_lr | effective | 相對有效 VO |
+| --- | ---: | ---: | ---: | ---: |
+| V | 16,242 | 1,697 | 14,545 | −0.0069% |
+| O | 16,243 | 1,697 | 14,546 | 0% |
+| VO | 16,243 | 1,697 | 14,546 | 0% |
+| VO-late | 15,790 | 1,697 | 14,093 | −3.1143% |
+| GRU | 14,904 | 0 | 14,904 | +2.4612% |
+| RS | 16,242 | 1,697 | 14,545 | −0.0069% |
+
+`prepare_experiments.py` 從同一份 `bc.yaml` train 段計數與寫出 BC stage；lr 設定為 learning_rate=0.001、readout_learning_rate=0.01、core_bias_learning_rate=0，readout_bias_learning_rate 未指定（繼承 readout）。`parameter_budget.json` 保留 `actor_trainable_parameters` 為 declared 並標示定義，新增 `parameter_counts`（含分組 lr、各組 numel、zero-lr 名稱／數量）、有效 VO 基準與 `gru_resolution`。
+
+只有 GRU 寫 `budget_target=14546`，走既有 hidden／輸入 bottleneck 解析器，結果 hidden=16、gru_input_size=18；舊 hidden=7、無 bottleneck 的 15,516 有效參數相對 VO 為 +6.6685%，不合格。連接體 `budget_target=null`，架構不由預算解析，產生器以有效計數統一檢查；這讓 YAML 重建不會把宣告容量誤比有效 target。stage model 仍不預加 B3，BC 建 optimizer 前才加列，計數則包含這些列。
+
+`save_actor` 在 card 的 `metadata.actor_parameter_budget` 保存目前 actor 按該 stage train 分組的 declared／zero_lr／effective 與 lr 明細，所以 pretrain 使用自己的 train 段。評估 `require_parameter_match` 重用已載入且已還原 B3 列的 actor，依保存的 `metadata.config.train` 重算並逐欄核對計數、分組 lr／numel／參數名稱與 numel、zero_lr_parameters 及頂層 `trainable_parameters`。lr 用 `math.isclose(rel_tol=1e-9, abs_tol=0)`，零值須精確一致；缺少、無效或不一致的欄位均附 artifact 路徑報錯，±5% 只比較重算的 effective，不退回 declared。`load_policy_artifact` 保留頂層 declared 的架構檢查及舊 card 的一般載入行為；正式預算評估須重產舊 card。CPU 靜態計數與 YAML 重建證據見 `runs/r77/summary.md`，review 修正與真實 artifact 往返證據見 `<runs>/r77_fix/`。
+
 ```yaml
 variant: VO
 seed: 0
@@ -194,7 +213,7 @@ train:
 
 `imitation.parameter_groups` 依名稱分組：`core.bias`（神經元型別偏置）在 BC 固定，`readout.*` 以 1e-2 學習，其餘用 `learning_rate`。離線 BC 顯示偏置的梯度比連結強度大 30～1000 倍，優化器先調偏置去配合平均動作，同時把已傳到 DN 的方位資訊破壞（DN 左右差 R² 0.67→−0.12）；固定偏置則保留。GRU 沒有連接體偏置，只套用讀出學習率。`early_stopping_min_delta` 為相對改善門檻，0 時驗證損失每 epoch 只降 0.1% 也永不停止。
 
-PPO 和 ES 也讀同一組設定鍵：在 PPO／ES 的設定裡寫 `core_bias_learning_rate: 0`，bias 就會在該階段凍結。**正式設定刻意不這樣做**：pretrain 和 BC 凍結 bias，PPO／ES 讓 bias 可訓練，因為 bias 佔可訓練參數約 11.5%，全程凍結會讓連接體變體超出和 GRU 的 ±5% 參數預算（#4 Decision、#36）。PPO 的 critic 另成一組；ES 只有一個步長，所以只接受 0（把該組排除在搜尋向量之外），其他群組學習率會報錯。`readout_bias_learning_rate` 只套用在名稱以 `readout.` 開頭、以 `_bias` 結尾的參數（結構化 readout 的 `readout.turn_bias`、`readout.forward_bias`），優先於 `readout_learning_rate`；沒設定時分組和原本完全相同。#35 的 C11 用它把這兩個 bias 凍結在 BC 的值；它們只有 2 個參數，不影響 ±5% 預算。pretrain 也使用 `parameter_groups`（#4、#7）：可以設 `core_bias_learning_rate`、`readout_learning_rate`，沒設定時和原本一樣只有單一學習率。auxiliary decoder 另成一組，所以 pretrain 的 optimizer 至少有 2 個參數組。**這個版本之前開始、還沒跑完的 pretrain checkpoint 無法 resume**（`optimizer.load_state_dict` 的參數組數對不上），要從頭重跑該階段；已完成的 pretrain actor 不受影響，可以照常當 `init_artifact`。
+PPO 和 ES 也讀同一組設定鍵：在 PPO／ES 的設定裡寫 `core_bias_learning_rate: 0`，bias 就會在該階段凍結。pretrain 和 BC 維持凍結 bias，選配 PPO／ES 保留原有可訓練設定。舊 #4／#36 以解凍 bias 維持宣告預算的說明屬歷史；#77 改以 BC effective 比較並重新解析 GRU，不解凍 bias。PPO 的 critic 另成一組；ES 只有一個步長，所以只接受 0（把該組排除在搜尋向量之外），其他群組學習率會報錯。`readout_bias_learning_rate` 只套用在名稱以 `readout.` 開頭、以 `_bias` 結尾的參數（結構化 readout 的 `readout.turn_bias`、`readout.forward_bias`），優先於 `readout_learning_rate`；沒設定時分組和原本完全相同。#35 的 C11 用它把這兩個 bias 凍結在 BC 的值；它們只有 2 個參數，effective 會據實排除。pretrain 也使用 `parameter_groups`（#4、#7）：可以設 `core_bias_learning_rate`、`readout_learning_rate`，沒設定時和原本一樣只有單一學習率。auxiliary decoder 另成一組，所以 pretrain 的 optimizer 至少有 2 個參數組。**#7 分組實作之前開始、還沒跑完的 pretrain checkpoint 無法 resume**（`optimizer.load_state_dict` 的參數組數對不上），要從頭重跑該階段；已完成的 pretrain actor 不受影響，可以照常當 `init_artifact`。#77 只共用分組函式，沒有改變既有分組順序或數量。
 
 先以教師收集精確 60000 步，再依學生訪問的觀測逐步向教師取得標籤。DAgger 收集時學生在 GPU 上對所有平行世界批次推論，每個世界有自己的遞迴狀態；擬合使用與預訓練相同的批次 TBPTT 與提早停止（驗證回合跨所有輪次）。DAgger 逐輪聚合資料，mix probability 為 `beta^(round)`，最後一輪完全由學生行動，標籤仍來自教師。每輪精確 30000 步；即使收集預算在回合中結束，最後的有效前綴仍納入資料。動作 MSE 先除以物理速度範圍，避免兩種單位尺度主導損失。
 
@@ -373,7 +392,7 @@ evaluation:
   parameter_tolerance: 0.05
 ```
 
-亦可使用 `evaluation.artifacts` 的 variant → seed → directory mapping。每組 seed/episode 使用同環境種子，跨模型可成對比較。正式評估驗证相同 graph / frozen frontend hash、±5% actor 參數，並以完整 `stage_budget_ledger` 依演算法合計的環境步數比較公平性；帳本繼承初始 artifact，包含預訓練、BC/DAgger 和 PPO 或 ES。
+亦可使用 `evaluation.artifacts` 的 variant → seed → directory mapping。每組 seed/episode 使用同環境種子，跨模型可成對比較。正式評估驗证相同 graph / frozen frontend hash、相對有效 VO 的 ±5% actor effective 參數（#77，排除 optimizer lr=0 組），並以完整 `stage_budget_ledger` 依演算法合計的環境步數比較公平性；帳本繼承初始 artifact，包含預訓練、BC/DAgger 和 PPO 或 ES。
 
 輸出 `episodes`、`seed_means`、`summary`、`comparisons` 的 JSON/CSV 及 `evaluation_manifest.json`。統計先在每個訓練種子內平均回合，再對五個種子平均作 95% bootstrap；不把 500 個回合當成 500 個獨立模型。預先比較為 VO−V（遮蔽）、VO−GRU、VO−RS（各情境）。重新捕獲只統計成功完成的事件，同時報告尚未完成事件數；空值輸出 JSON `null` 與空白 CSV，避免 NaN JSON。
 

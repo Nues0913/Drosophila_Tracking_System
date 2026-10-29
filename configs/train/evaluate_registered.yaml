@@ -1,0 +1,21 @@
+# Re-summarize the 2D formal episodes (runs/evaluation/formal/episodes.json) with
+# every comparison registered in configs/evaluation_protocol.yaml, including the
+# late-fusion VO-late rows. No new simulation; every episode's model card is
+# checked against the matrix actors first.
+sensor_contract_path: configs/sensor_contract.json
+output: runs/evaluation/formal_registered
+evaluation:
+  variants: [V, O, VO, VO-late, GRU, RS]
+  scenarios: [normal, occlusion, noise, conflict]
+  seeds: [0, 1, 2, 3, 4]
+  episodes_per_seed: 100
+  recorded_episode_files: [runs/evaluation/formal/episodes.json]
+  recorded_source: 2d_formal_evaluation_episodes
+  artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
+  require_full_matrix: true
+  verify_recorded_artifacts: true
+  require_equal_budget: true
+  require_shared_sources: true
+  require_parameter_match: true
+  parameter_tolerance: 0.05
+  bootstrap_draws: 10000

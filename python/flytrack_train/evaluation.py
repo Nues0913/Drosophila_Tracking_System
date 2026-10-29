@@ -26,6 +26,18 @@ from .parameters import count_effective_parameters
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
+# configs/evaluation_protocol.yaml: original_primary_comparisons, then the
+# late_fusion_fallback_comparisons for the primary architecture VO-late. The
+# original VO rows come first so their bootstrap draws do not change.
+REGISTERED_COMPARISONS = tuple(
+    (model, comparator, scenarios, hypothesis)
+    for model in ("VO", "VO-late")
+    for comparator, scenarios, hypothesis in (
+        ("V", ("occlusion",), "superiority"),
+        ("GRU", SCENARIOS, "noninferiority"),
+        ("RS", SCENARIOS, "noninferiority"),
+    )
+)
 METRICS = (
     "success",
     "mean_distance_m",
@@ -122,13 +134,13 @@ def seed_statistics(rows: list[dict[str, Any]], rng: np.random.Generator, draws:
                 }
             )
     comparisons = []
-    # A difference is VO minus comparator. For distance/error/latency, negative is favorable.
-    for comparator, scenarios in (("V", ("occlusion",)), ("GRU", SCENARIOS), ("RS", SCENARIOS)):
+    # A difference is model minus comparator. For distance/error/latency, negative is favorable.
+    for model, comparator, scenarios, hypothesis in REGISTERED_COMPARISONS:
         for scenario in scenarios:
             a = {
                 row["seed"]: row
                 for row in seed_rows
-                if row["variant"] == "VO" and row["scenario"] == scenario
+                if row["variant"] == model and row["scenario"] == scenario
             }
             b = {
                 row["seed"]: row
@@ -139,7 +151,10 @@ def seed_statistics(rows: list[dict[str, Any]], rng: np.random.Generator, draws:
             for metric in metrics:
                 comparisons.append(
                     {
-                        "comparison": f"VO-{comparator}",
+                        "comparison": f"{model}-{comparator}",
+                        "model": model,
+                        "comparator": comparator,
+                        "hypothesis": hypothesis,
                         "scenario": scenario,
                         "metric": metric,
                         "paired_seeds": paired,
@@ -408,7 +423,7 @@ def summarize_recorded(config, output, variants, scenarios, seeds, expected_epis
         output / "evaluation_manifest.json",
         {
             "config": config,
-            "source": "recorded_ros_metrics",
+            "source": options.get("recorded_source", "recorded_ros_metrics"),
             "artifacts": list(manifests.values()),
             "training_budget_verified": bool(manifests)
             and options.get("require_equal_budget", True),

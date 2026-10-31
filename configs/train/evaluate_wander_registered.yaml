@@ -10,6 +10,8 @@ evaluation:
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 100
   recorded_episode_files: [runs/evaluation/formal_wander/episodes.json]
+  # Carry the 2D latency/success/reacquisition definitions into the new manifest.
+  recorded_source_manifests: [runs/evaluation/formal_wander/evaluation_manifest.json]
   recorded_source: 2d_formal_evaluation_episodes
   artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
   require_full_matrix: true

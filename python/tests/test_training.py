@@ -206,6 +206,50 @@ def test_late_fusion_comparisons_leave_original_vo_rows_unchanged(monkeypatch):
     assert row["paired_seeds"] == [0, 1, 2, 3, 4] and row["mean"] == pytest.approx(expected)
 
 
+def test_recorded_2d_summary_keeps_the_source_definitions(tmp_path):
+    from flytrack_core.contracts import file_sha256
+    from flytrack_train.evaluation import SCENARIOS, VARIANTS, summarize_recorded
+
+    rows = _matrix_rows(np.random.default_rng(9))
+    for index, row in enumerate(rows):
+        row["episode"] = index % 4
+    source = tmp_path / "formal"
+    source.mkdir()
+    (source / "episodes.json").write_text(json.dumps(rows))
+    definitions = {
+        "latency_definition": "2D wall time",
+        "success_definition": "distance and bearing",
+        "reacquisition_definition": "completed events only",
+    }
+    (source / "evaluation_manifest.json").write_text(json.dumps(definitions))
+
+    def run(output, manifests):
+        options = {
+            "recorded_episode_files": [str(source / "episodes.json")],
+            "recorded_source_manifests": manifests,
+            "verify_recorded_artifacts": False,
+            "require_equal_budget": False,
+            "bootstrap_draws": 20,
+        }
+        summarize_recorded({"evaluation": options}, output, VARIANTS, SCENARIOS, range(5), 4)
+        return json.loads((output / "evaluation_manifest.json").read_text())
+
+    manifest = run(tmp_path / "registered", [str(source / "evaluation_manifest.json")])
+    assert {key: manifest[key] for key in definitions} == definitions
+    assert manifest["recorded_files"] == {
+        str(source / "episodes.json"): file_sha256(source / "episodes.json")
+    }
+    assert list(manifest["source_manifests"]) == [str(source / "evaluation_manifest.json")]
+    # Gazebo records name no 2D source and keep the ROS latency definition.
+    gazebo = run(tmp_path / "gazebo", [])
+    assert gazebo["latency_definition"].startswith("simulation-clock sensor age")
+    assert "success_definition" not in gazebo and gazebo["source_manifests"] == {}
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({**definitions, "latency_definition": "different"}))
+    with pytest.raises(ValueError, match="disagree"):
+        run(tmp_path / "mixed", [str(source / "evaluation_manifest.json"), str(other)])
+
+
 def test_reacquisition_reports_unfinished_events_as_censored():
     metrics = EpisodeMetrics()
     metrics.append(1, 0.7, 0, False, True, 0)

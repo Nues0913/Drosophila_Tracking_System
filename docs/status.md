@@ -1,6 +1,36 @@
 # 目前進度與已知問題
 
-最後更新：2026-10-28（#77：正式參數預算改用 BC optimizer 非零學習率的 actor 參數）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-10-29（正式矩陣的 30 條訓練鏈在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；2D 正式評估進行中）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+
+## 2026-10-29 正式矩陣的 30 條訓練鏈完成並驗收；2D 正式評估進行中
+
+- **版本**：main `35432c3b62e20d1d69963d4a66dae1b6d41f89e4`，協定 schema 3（amended 2026-10-28）。凍結與派工見 [#28 的 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6471391440)。
+- **交付位置**：GitHub release [`formal-v1`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1)（prerelease）。`runs/` 和權重不進 Git。
+
+| 檔案 | 內容 | 主機／執行者 | SHA-256 |
+| --- | --- | --- | --- |
+| `formal_v1_4060_F1.tar.gz` | seed 0、2、4 × 六變體，18 條鏈 | 4060／@MiLong9487（[#80](https://github.com/Nues0913/Drosophila_Tracking_System/issues/80)） | `2f0e2acd6adcf9add500e2b54f116661e1cffffa795daa2e47078d315cea44ac` |
+| `formal_v1_4070_F2.tar.gz` | seed 1、3 × 六變體，12 條鏈 | 4070／@cweiting731（[#81](https://github.com/Nues0913/Drosophila_Tracking_System/issues/81)） | `be05b1c780e9531f601136b6b50dc156d8ca2a612e7721c5770f0597f80fcffa` |
+| `formal_v1_eval.tar.gz` | 30 個 actor 的 2D 正式評估（F3） | 4060／@MiLong9487（#80） | 進行中，交付後補上 |
+
+- **PM 驗收**（[#80 的 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/80#issuecomment-6489237904)）：
+  - 80 張 card（30 個 BC、50 個 pretrain）的 `source_code.sha256` 都等於 `35432c3` 的值 `e41c9aad…b68e`。
+  - 在凍結程式上，`validate_artifact_matrix` 對 30 個 actor 通過：有效參數由 actor 重算、預算 ledger 一致、graph 和 frontend 共用。
+  - 沒有終端 BC 的工程類失敗；O、VO、VO-late 的 15 個 G4 全部通過。
+- **轉向品質類 dn_health 失敗**：依 schema 3 只記錄，actor 照常評估，報告逐組揭露。25 組裡有 17 組（GRU 沒有 DN，不適用）：
+
+| 變體 | 有失敗的 seed 與項目 |
+| --- | --- |
+| V | s0：omega_r2；s3：omega_correlation |
+| O | 五個 seed 都有 omega_correlation、omega_r2；s2、s3 另有 omega_amplitude |
+| VO | s1、s4：omega_r2；s3：omega_correlation、omega_r2 |
+| VO-late | s0：omega_r2；s3：omega_correlation、omega_r2 |
+| RS | 五個 seed 都有 omega_correlation、omega_r2、eye_swap_response；s0、s1、s2 另有 omega_amplitude |
+
+- **G4 只當 gate**：它只量一個 teacher 回合（seed 1,610,000,000）。同配方、同 seed 的 VO 重訓一次，在同一回合上的值就差 8 倍，所以不能拿 G4 比較效應大小（[#4 的補充](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4#issuecomment-6489238229)）。
+- **O 的證據範圍**：4-R6～4-R8 的 O 是在長遮蔽加氣味 teacher（k = 8）的世界訓練的，和正式 O（只用 normal、沒有氣味 teacher）配方不同。正式 O 有沒有用氣味追蹤，以 F3 的結果為準（同上）。
+- **執行參數的差異**：worker 數由 `auto` 決定，4060 是 7、4070 是 8。收集器依回合編號提交，資料和 worker 數無關。同一個 seed 的六個變體在同一台主機上跑，跨主機依 #21。
+- **時間**：4060 13.42 小時、4070 7.80 小時（`--jobs 2`），見 [training_time.md](training_time.md)。
 
 ## 2026-10-28 有效參數預算（#77）
 
@@ -15,17 +45,17 @@
 | GRU | 14,904 | 0 | 14,904 | +2.4612% |
 | RS | 16,242 | 1,697 | 14,545 | −0.0069% |
 
-舊 GRU hidden=7、無 bottleneck，15,516 個有效參數相對 VO 為 +6.6685%，超出原 ±5%；這是 #77 修正前 main `79eff41` 的歷史配置。以有效 VO=14,546 走既有解析器後為 hidden=16、`gru_input_size=18`（有作用的輸入 bottleneck），effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內；此配置已獲 PM 接受。連接體的 `budget_target=null`，由產生器檢查有效預算；只有 GRU 以此鍵解析架構。`parameter_budget.json` 的舊鍵 `actor_trainable_parameters` 明確保留為 declared，新增 `parameter_counts`、BC lr 與逐組明細。card 的 `metadata.actor_parameter_budget` 記錄各自階段的分組計數；正式評估用載入的 actor 與保存的 `metadata.config.train` 重算，核對 declared／zero_lr／effective、每組 lr／numel／參數名稱與數量、zero_lr_parameters 及頂層 trainable_parameters，缺少、無效或不一致皆拒絕，±5% 使用重算值。修正內容在 [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79)，合併前仍須 PM review 通過。初輪 CPU 證據在 `runs/r77/summary.md`，本輪 review 修正證據在 `<runs>/r77_fix/`。
+舊 GRU hidden=7、無 bottleneck，15,516 個有效參數相對 VO 為 +6.6685%，超出原 ±5%；這是 #77 修正前 main `79eff41` 的歷史配置。以有效 VO=14,546 走既有解析器後為 hidden=16、`gru_input_size=18`（有作用的輸入 bottleneck），effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內；此配置已獲 PM 接受。連接體的 `budget_target=null`，由產生器檢查有效預算；只有 GRU 以此鍵解析架構。`parameter_budget.json` 的舊鍵 `actor_trainable_parameters` 明確保留為 declared，新增 `parameter_counts`、BC lr 與逐組明細。card 的 `metadata.actor_parameter_budget` 記錄各自階段的分組計數；正式評估用載入的 actor 與保存的 `metadata.config.train` 重算，核對 declared／zero_lr／effective、每組 lr／numel／參數名稱與數量、zero_lr_parameters 及頂層 trainable_parameters，缺少、無效或不一致皆拒絕，±5% 使用重算值。修正內容已由 [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79) 合併（main `35432c3`）。初輪 CPU 證據在 `runs/r77/summary.md`，本輪 review 修正證據在 `<runs>/r77_fix/`。
 
 ## 2026-10-28：試跑已交付，協定記錄完成，正式矩陣仍待 #79 審查與版本凍結
 
 - 兩個 seed 的 VO A 都已交付。seed 1 的 G4 通過，但 G3 原登記 100 對的 D=−26.09°，氣味移除反而降低方位誤差；A 不能記為複製成立。seed 0 的原始 G3 受轉向偏差補償干擾，任何引用都須並列去偏差結果。
 - 依 [#4 選 F 的 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4#issuecomment-6442266901)，BC 維持 normal-only、不用氣味 teacher、不做 noise 擴增、不做偏差置中；P3 留到正式矩陣之後。
 - #9 的雙 seed 選點是 **0.75 倍**；正式遮蔽是第 8 秒起 30 秒。schema 3 記錄情境強度、#25 的 G4／終端 BC 失敗處理、wander 次要比較及報告範圍。所有原 VO／VO-late 對 V／GRU／RS 的已登記比較都保留。
-- **#77 已修正，待 PR #79 的 PM review 通過**：BC-only 鏈全程凍結 1,697 個核心 bias，但舊預算仍將它們計入。固定 `79eff41` 的非零學習率計數為 VO 14,546、GRU 15,516，差距 6.67%，超過既有 ±5%；這是 #77 修正前的歷史版本。目前有效 VO 為 14,546，GRU hidden=16 加 bottleneck=18 的 effective 為 14,904（+2.46%），六個變體都在 ±5% 內。修正內容在 PR #79，合併前仍須 PM review 通過，再凍結正式版本。
+- **#77 已修正（PR #79 已合併）**：BC-only 鏈全程凍結 1,697 個核心 bias，但舊預算仍將它們計入。固定 `79eff41` 的非零學習率計數為 VO 14,546、GRU 15,516，差距 6.67%，超過既有 ±5%；這是 #77 修正前的歷史版本。目前有效 VO 為 14,546，GRU hidden=16 加 bottleneck=18 的 effective 為 14,904（+2.46%），六個變體都在 ±5% 內。修正內容在 PR #79，已合併。
 - #10 外推：按 VO 試跑估計訓練＋主要 2D 評估的串行等效約 4060 23.9 h、4070 12.0 h，**NOT VERIFIED**，不當成上限、不把 jobs=2 當兩倍加速。保留 48–72 小時工作目標，不減 seed 或步數。
 
-原始包、逐回合重算、情境參數、限制與時間口徑見 [協定凍結依據](protocol_freeze_2026-10-28.md)。PR #79 通過 PM review 並合併後，仍須由 PM 在 #28 凍結共同 main SHA 並開執行 Issue。
+原始包、逐回合重算、情境參數、限制與時間口徑見 [協定凍結依據](protocol_freeze_2026-10-28.md)。之後 PR #79 已合併，PM 在 #28 凍結 main `35432c3` 並開了執行 Issue，見上方 2026-10-29 一節。
 
 ## 2026-10-24 正式訓練鏈改為 pretrain → BC/DAgger（#35 選項 D）
 
@@ -55,10 +85,7 @@ no-KC 排除 Kenyon cell、APL 和 DPM 後是 4,502 個節點、31,682 條邊。
 
 ## 一句話
 
-資料 → 前端 → 子圖 → 模型 → 訓練鏈都已實際跑通，兩台 GPU 主機也已校準完成。**正式訓練（6 變體 × 5 種子，pretrain → BC/DAgger）還沒開始**，開跑前必須完成：
-
-1. [PR #79](https://github.com/Nues0913/Drosophila_Tracking_System/pull/79) 的 PM review 與合併（[#77](https://github.com/Nues0913/Drosophila_Tracking_System/issues/77) 有效參數預算已修正）。
-2. [#20](https://github.com/Nues0913/Drosophila_Tracking_System/issues/20) 的 schema 3 協定交付，再由 PM 在 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28) 凍結共同版本、資源與派工。
+資料 → 前端 → 子圖 → 模型 → 訓練鏈都已實際跑通，兩台 GPU 主機也已校準完成。**正式訓練（6 變體 × 5 種子，pretrain → BC/DAgger）已在 main `35432c3` 完成並驗收**，30 個 actor 在 release [`formal-v1`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1)。目前正在跑 2D 正式評估（[#80](https://github.com/Nues0913/Drosophila_Tracking_System/issues/80) 的 F3），之後才進 Gazebo 主要比較。
 
 PPO 已移出正式訓練鏈，改成研究項目（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)），不再擋正式訓練。
 
@@ -111,9 +138,9 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 
 ### 正式訓練前的主要判定與阻礙
 
-1. **#4 按團隊選 F 交付有限範圍的負面結果。** P2+B3 的 O 氣味追蹤已有複製證據；VO 的氣味左右反應很弱，seed 0 原始 G3 受偏差補償干擾，seed 1 G3 反方向。B／C 不成立，A 不一致。正式 BC 保留 normal-only，主架構 VO-late；原登記比較全部報告，不能由 G4 通過直接宣稱融合成功。P3 留到正式矩陣之後。
+1. **#4 按團隊選 F 交付有限範圍的負面結果。** P2+B3 的 O 氣味追蹤已有複製證據，但只限長遮蔽加氣味 teacher 的訓練世界；正式 O 只用 normal BC，要以 F3 的結果為準（#4 的 6489238229）；VO 的氣味左右反應很弱，seed 0 原始 G3 受偏差補償干擾，seed 1 G3 反方向。B／C 不成立，A 不一致。正式 BC 保留 normal-only，主架構 VO-late；原登記比較全部報告，不能由 G4 通過直接宣稱融合成功。P3 留到正式矩陣之後。
 2. **PPO 沒有改善 BC（#35），已移出正式訓練鏈。** C9–C13 的各種限制（凍結 readout bias、去掉課程、L2 錨定）都沒有在兩個 seed 上通過 protocol100。每次失敗的方式不同（繞圈、追太近而撞上、帶著轉向偏差），參數離 BC 很近也一樣會變差。本機探索（VO、舊圖、只更新讀出層、核心凍結）顯示，在那個設定下更新方向大致正確，崩潰主要來自步幅過衝；但 reward 的改善沒有換成 protocol100 要求的方位和碰撞表現。C13 是全部參數都在更新、離 BC 不到 0.13，兩個 seed 仍然變差，所以這個結論還不能推廣到正式規格。原因還沒拆清楚，留在 #35 研究，不擋正式訓練。
-3. **協定交付與正式版本凍結（#20／#28）。** schema 3 記錄原有成功判定、審計、BC gate、DN 增益 100、主要終點與非劣界值，以及新完成的 noise=0.75 倍、30 秒遮蔽、#25 失敗處理與報告範圍。wander 仍是次要情境，主要終點維持 curved。#77 的有效預算已修正，PR #79 通過 PM review 並合併後，才凍結共同 main SHA，不能把協定文件當成開跑授權。
+3. **協定交付與正式版本凍結（#20／#28，已完成）。** schema 3 記錄原有成功判定、審計、BC gate、DN 增益 100、主要終點與非劣界值，以及新完成的 noise=0.75 倍、30 秒遮蔽、#25 失敗處理與報告範圍。wander 仍是次要情境，主要終點維持 curved。#77 的有效預算已由 PR #79 修正，PM 已凍結 main `35432c3`（Decision 6471391440），30 條訓練鏈已完成。
 
 ### 其他未解決
 
@@ -152,10 +179,10 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 
 依 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28) 的順序：
 
-1. #77 的 BC-only 有效參數預算已修正，由模型 DRI 以 PR #79 交付，合併前仍須 PM review 通過。
-2. #20 交付 schema 3、noise=0.75 倍、30 秒遮蔽、#25 規則與報告範圍；必要審查與當前完成狀態以 GitHub 為準。
-3. #10 依已交付試跑的時間外推做資源規劃；不要求為此重跑矩陣。#27 已完成，P3／PPO 另列後續研究。
-4. 全部完成後，PM 凍結共同 `main` commit 與協定，依 #21 開執行 Issue：4060 跑 seed 0、2、4，4070 跑 seed 1、3，兩台均 `--jobs 2 --keep-going`，工程失敗停止規則照 #25。
+1. ~~#77、#20、#10、凍結與派工~~：已完成。main `35432c3` 上的 30 條訓練鏈已交付並驗收（#80、#81）。
+2. **2D 正式評估（#80 的 F3，@MiLong9487，4060）**：進行中。交付後由 PM 核對，並把結果和 `formal_v1_eval.tar.gz` 的 SHA 記在本文件。
+3. P3（VO 的多感官融合）和 PPO（#35）列為正式矩陣之後的研究，等 2D 結果出來後另發 Decision。
+4. 2D 與 Gazebo 的一致性（#23）可以並行；Gazebo 主要比較排在 2D 評估之後。
 5. 並行：#49 的一次短回放已由 #51 報告驗收結案；#52 的 trace 狀態與 reset 清除 pending 可觀測性已由 #53 合併，PM colcon 10 項全過、無 skip；既有發布／reset 行為不變。下一個效能候選是 camera hex-eye 投影的等價優化設計，尚未核准實作或追加回放；#23 2D／Gazebo 一致性仍由 @cweiting731 處理。#42 已由 #44 結案。
 6. 2D 正式評估 → Gazebo 主要比較 → lesion 分析 → 報告與展示。
 

@@ -353,6 +353,16 @@ def summarize_recorded(config, output, variants, scenarios, seeds, expected_epis
         if not matches:
             raise FileNotFoundError(f"No recorded episodes match {pattern}")
         filenames.extend(matches)
+    # #85: a variant listed here is read only from its own files, so a post-hoc
+    # retrained actor replaces the matrix one without mixing old checkpoint records.
+    variant_files = {
+        variant: {str(name) for name in names}
+        for variant, names in options.get("recorded_variant_files", {}).items()
+    }
+    if set(variant_files) - set(variants) or any(
+        not names <= set(filenames) for names in variant_files.values()
+    ):
+        raise ValueError("recorded_variant_files must map evaluated variants to recorded files")
     for filename in filenames:
         path = Path(filename)
         with path.open(encoding="utf-8", newline="") as stream:
@@ -373,6 +383,7 @@ def summarize_recorded(config, output, variants, scenarios, seeds, expected_epis
                 row["variant"] not in variants
                 or row["scenario"] not in scenarios
                 or row["seed"] not in seeds
+                or filename not in variant_files.get(row["variant"], (filename,))
             ):
                 continue
             if manifests and options.get("verify_recorded_model_cards", True):

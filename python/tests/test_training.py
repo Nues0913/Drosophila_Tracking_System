@@ -250,6 +250,46 @@ def test_recorded_2d_summary_keeps_the_source_definitions(tmp_path):
         run(tmp_path / "mixed", [str(source / "evaluation_manifest.json"), str(other)])
 
 
+def test_recorded_variant_files_replace_one_variant(tmp_path):
+    from flytrack_train.evaluation import SCENARIOS, VARIANTS, summarize_recorded
+
+    rows = _matrix_rows(np.random.default_rng(9))
+    for index, row in enumerate(rows):
+        row["episode"] = index % 4
+    formal, posthoc = tmp_path / "formal.json", tmp_path / "posthoc.json"
+    formal.write_text(json.dumps(rows))
+    retrained = [{**row, "success": 1 - row["success"]} for row in rows if row["variant"] == "GRU"]
+    posthoc.write_text(json.dumps(retrained))
+
+    def run(name, files, variant_files=None):
+        options = {
+            "recorded_episode_files": [str(path) for path in files],
+            "verify_recorded_artifacts": False,
+            "require_equal_budget": False,
+            "bootstrap_draws": 20,
+        }
+        if variant_files is not None:
+            options["recorded_variant_files"] = variant_files
+        summarize_recorded(
+            {"evaluation": options}, tmp_path / name, VARIANTS, SCENARIOS, range(5), 4
+        )
+        return json.loads((tmp_path / name / "seed_means.json").read_text())
+
+    # Without the mapping the old and retrained GRU episodes collide.
+    with pytest.raises(ValueError, match="Duplicate"):
+        run("mixed", [formal, posthoc])
+    with pytest.raises(ValueError, match="recorded_variant_files"):
+        run("unlisted", [formal], {"GRU": [str(posthoc)]})
+    original = run("formal", [formal])
+    replaced = run("posthoc", [formal, posthoc], {"GRU": [str(posthoc)]})
+    assert [row for row in replaced if row["variant"] != "GRU"] == [
+        row for row in original if row["variant"] != "GRU"
+    ]
+    assert [row["success"] for row in replaced if row["variant"] == "GRU"] == [
+        1 - row["success"] for row in original if row["variant"] == "GRU"
+    ]
+
+
 def test_reacquisition_reports_unfinished_events_as_censored():
     metrics = EpisodeMetrics()
     metrics.append(1, 0.7, 0, False, True, 0)

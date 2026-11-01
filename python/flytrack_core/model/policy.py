@@ -946,6 +946,17 @@ class GRUPolicy(nn.Module):
         self.variant, self.model_config, self.contract = "GRU", config, contract
         self.lesion = "none"
         self.encoder = SensoryEncoder(graph, contract, frontend_path, config)
+        self.gru_odor_gain_compensation = bool(config["gru_odor_gain_compensation"])
+        self.model_config["gru_odor_gain_compensation"] = self.gru_odor_gain_compensation
+        if self.gru_odor_gain_compensation:
+            if torch.any(self.encoder.visual_inputs & self.encoder.odor_inputs):
+                raise ValueError("GRU odor gain compensation requires disjoint visual/odor seeds")
+            # Undo only the connectome-specific ORN gain, after the shared projection.
+            # A non-persistent constant preserves weights.pt keys and parameter counts.
+            feature_scale = torch.ones(self.encoder.feature_size)
+            odor_columns = torch.where(self.encoder.odor_inputs[self.encoder.seed_indices])[0]
+            feature_scale[odor_columns] = 1 / float(config["odor_input_gain"])
+            self.register_buffer("feature_scale", feature_scale, persistent=False)
         hidden = config["hidden_size"]
         target = config["budget_target"]
         projected = config["gru_input_size"]
@@ -1074,6 +1085,8 @@ class GRUPolicy(nn.Module):
         if initial.shape != (len(code), self.gru.hidden_size):
             raise ValueError("Incorrect GRU state size")
         _, features, _ = self.encoder.project(code)
+        if self.gru_odor_gain_compensation:
+            features = features * self.feature_scale
         hidden = self.gru(self.input_projection(features), initial)
         latent = self.readout(hidden)
         action = torch.stack(
@@ -1128,6 +1141,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "random_swaps_per_edge": 10,
     "hidden_size": 16,
     "gru_input_size": None,
+    "gru_odor_gain_compensation": False,
     "budget_target": None,
     "log_std_init": -0.5,
 }
@@ -1164,6 +1178,10 @@ def build_policy(
     if unknown:
         raise ValueError(f"Unknown model_config entries: {sorted(unknown)}")
     config = {**DEFAULT_CONFIG, **model_config}
+    if not isinstance(config["gru_odor_gain_compensation"], bool):
+        raise ValueError("gru_odor_gain_compensation must be bool")
+    if variant != "GRU" and config["gru_odor_gain_compensation"]:
+        raise ValueError("gru_odor_gain_compensation is only supported for GRU")
     config["odor_K"] = list(config["odor_K"])
     config["visual_input_mapping"] = dict(config["visual_input_mapping"])
     if not config["odor_K"] or any(not math.isfinite(k) or k <= 0 for k in config["odor_K"]):

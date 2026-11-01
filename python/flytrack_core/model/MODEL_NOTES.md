@@ -124,6 +124,37 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 
 新 model card 會記錄這兩個值；舊 card 沒有 `odor_input_gain` 時補 1.0，沒有 `olfactory_rate_beta` 時是 `None`，語意不變。`scripts/diagnostics/modality_sensitivity.py` 量測 teacher 駕駛下去掉氣味、氣味 ×10、左右交換、去掉視覺時的最大 |Δω|，以及氣味／視覺比例。
 
+## GRU 氣味增益補償（#85，2026-11-02）
+
+連接體用的 `odor_input_gain=100` 在 GRU 的稠密 Linear＋Tanh 瓶頸前會壓過視覺。
+`gru_odor_gain_compensation` 程式預設 `False`，正式矩陣只為 GRU 設成 `True`：
+將共用 encoder 投影後的氣味 seed features 乘 `1/odor_input_gain`，視覺 seed 與
+三個 valid flags 不變。視覺／氣味 seed 若重疊就拒絕啟用，避免縮到相加的視覺電流；
+正式圖實測 583 個視覺 seed、143 個氣味 seed、重疊 0。固定 `feature_scale` 是
+non-persistent buffer，不進 weights；hidden 16、瓶頸 18、有效參數 14,904 均不變。
+
+×100 原為補連接體傳遞衰減，GRU 只有稠密輸入層，沒有同樣理由。乘其倒數回到
+增益 1.0、#4 之前的原始 ORN 投影尺度；常數不看資料、不學習，也不用另選超參數。
+逐樣本、逐族群 RMS 正規化會拿掉絕對濃度、引入非線性，零氣味還要另選 eps，
+強制拉平族群尺度也比固定補償更偏離共用感覺入口，因此不採用。
+
+False 分支完全略過乘法；舊 card 缺欄位由預設補 False，不改 artifact 載入映射。
+定向測試已確認舊公式、舊 card 動作逐位元相同，True／False 的權重 key 和參數數相同。
+暖啟動明確指定的補償值須和 artifact 一致，不靜默遷移。
+五個正式 GRU actor（seed 0–4）各重播下述 BC puff teacher 序列 2×600 步，
+凍結程式（35432c3）與新程式的 float32 action 陣列均逐位元相同，SHA-256 各自一致；
+新程式載入後補償欄位均為 False。
+
+`scripts/diagnostics/gru_input_saturation.py` 用正式 GRU 的 BC stage 設定（puff 羽流，
+與評估相同的環境）、torch seed 0–4、normal
+teacher 環境 seed 1610000011／1610000012，各實跑 600 步。瓶頸前 |x|>3 比例門檻
+≤0.05，逐回合逐單元時間 std（ddof=0）的視覺／氣味均值比門檻 ≥0.02。
+True 五個 seed 均為 0／0.056262–0.116145，通過兩項門檻；False 為
+0.596481–0.822176／0.000563–0.001161，與 PM 約 0.60–0.80／0.0005–0.0011 一致。
+`pretrain_vision` 設定使用 gaussian 羽流，未補償飽和比例只有 0.285509–0.360509，
+會低估 BC／評估環境的飽和，因此正式診斷必須用 BC 設定。
+本追加屬於**事後、未登記**的診斷與修正，既有登記結果不改。
+
 ## 執行時 lesion 與匯流電流分析
 
 `policy.set_lesion("none" | "vision" | "odor")` 不增加、移除或重訓參數。VO/RS 等中央圖策略除了停止該模態的感測和缺失電流，也將該模態獨有中央群的電位與所有輸入／輸出邊靜默；兩路共享群、匯流群及 DN 保留。VO-late 則將對應的整個獨立支路靜默，另一支路照常。GRU 只停止相應輸入，沒有生物神經細胞 lesion。移除 lesion 後使用現有持續狀態，恢復過程本身會有暫態；獨立比較回合應重建 initial_state，不能混用兩種評估口徑。

@@ -146,6 +146,11 @@ def save_policy_artifact(
         ),
         "metadata": metadata or {},
     }
+    if policy.variant == "GRU" and policy.model_config["gru_odor_gain_compensation"]:
+        card["shared_sensory_entry"] += (
+            "; GRU odor seed currents are multiplied by 1/odor_input_gain before its "
+            "input projection; visual seeds and valid flags are unchanged"
+        )
     if isinstance(policy, ConnectomePolicy):
         card["readout"] = policy.readout.mode
         card["rs_accepted_swaps"] = policy.core.random_swaps

@@ -419,6 +419,31 @@ record node 以 `subprocess` 啟動 `ros2 bag record --use-sim-time`，錄 `/clo
 
 evaluator 提供 `artifact` 時只讀 `model_card.json`，不載入 torch 模型；卡中的 variant 和訓練 seed 優先於手動 `variant` / `training_seed` 參數，並於啟動記錄這項決定。JSONL/CSV 每回合記錄 model card SHA-256。未提供 artifact 時才使用手動標籤，但該類記錄無法通過預設 checkpoint 一致性驗證。
 
+## GRU 訓練入口尺度與暖啟動（#85，2026-11-02）
+
+連接體的氣味 ×100 增益會讓 GRU 的輸入瓶頸飽和。正式矩陣的 GRU override
+啟用 `gru_odor_gain_compensation: true`，將氣味 seed features 乘 `1/odor_input_gain`；
+其他五變體維持 False。這個常數只抵消連接體所需增益，回到原始 ORN 投影尺度，
+不看資料、不新增可訓練參數或另選常數；逐族群 RMS 會移除絕對濃度、引入非線性、
+零輸入需 eps 並強制拉平尺度，故不採用（詳見 MODEL_NOTES 的 #85 小節）。
+
+程式預設 False，舊 card 缺欄位仍走原公式，定向測試確認逐位元相容。GRU 的
+pretrain_vision → pretrain_odor → BC 必須全鏈一致；`prepare_policy` 若發現 stage
+明確指定的補償值與 init_artifact 不同會拒絕，非 bool 也拒絕，不能用暖啟動切換語意。
+prepare 實測有效參數仍為 GRU 14,904、hidden 16、瓶頸 18，其他變體有效參數不變。
+五個正式 GRU actor（seed 0–4）各在下述 BC puff teacher 序列重播 2×600 步，
+凍結程式（35432c3）與新程式的 float32 action 陣列逐位元相同、各自 SHA-256 相同，
+新程式載入後的補償欄位均為 False。
+
+訓練前用正式 GRU BC stage 設定（puff 羽流，與評估相同）、torch seed 0–4、normal
+teacher 環境 seed 1610000011／1610000012 各 600 步，
+要求每個 seed 的瓶頸前 |x|>3 比例 ≤0.05，視覺／氣味時間 std 比 ≥0.02。
+本次 True 五個 seed 都為 0／0.056262–0.116145，通過門檻；False 為
+0.596481–0.822176／0.000563–0.001161，與 PM 約 0.60–0.80／0.0005–0.0011 一致。
+`pretrain_vision` 使用 gaussian 羽流，未補償飽和比例較低（0.285509–0.360509），
+所以正式診斷用 BC 的環境；兩份設定的 model 段相同。本次沒有啟動訓練。
+這是**事後、未登記**的追加，既有登記結果不改。
+
 ## 驗證狀態
 
 `python/tests/test_training.py`（動作 Jacobian、terminal/truncation GAE、非零初始記憶重置、actor input 隔離、seed bootstrap、重新捕獲 censoring、ES tied rank、中斷續訓）已通過；小預算預訓練/BC/PPO 已跑通，ES 尚未實跑。ROS package、launch、錄製與真值隔離測試需要已安裝並建置的 ROS 2 環境及真实 artifact。

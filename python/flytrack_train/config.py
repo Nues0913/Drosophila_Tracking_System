@@ -86,6 +86,16 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             raise ValueError("Initial artifact sensor contract differs from training configuration")
         if policy.variant != config.get("variant", "VO"):
             raise ValueError("Initial artifact variant differs from training configuration")
+        model = config.get("model", {})
+        if "gru_odor_gain_compensation" in model:
+            compensation = model["gru_odor_gain_compensation"]
+            if not isinstance(compensation, bool):
+                raise ValueError("gru_odor_gain_compensation must be bool")
+            if compensation != policy.model_config["gru_odor_gain_compensation"]:
+                raise ValueError(
+                    "Initial artifact gru_odor_gain_compensation differs from "
+                    "training configuration"
+                )
         if (
             file_sha256(config["graph_path"]) != policy.graph_sha256
             or file_sha256(config["frontend_path"]) != policy.frontend_sha256
@@ -97,7 +107,6 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
             # Explicit warm-start migration; ordinary loading preserves old card semantics.
             policy.core.motor_rate_beta = config["model"]["motor_rate_beta"]
             policy.model_config["motor_rate_beta"] = policy.core.motor_rate_beta
-        model = config.get("model", {})
         if "odor_shared_adaptation" in model:
             # Explicit warm-start migration (#4 P2): the ORN encoder is fixed, not learned.
             policy.encoder.shared_adaptation = bool(model["odor_shared_adaptation"])

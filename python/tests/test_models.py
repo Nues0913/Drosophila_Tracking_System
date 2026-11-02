@@ -56,6 +56,155 @@ def graph_path(tmp_path, graph):
     return path
 
 
+def _gru(graph_path, official_frontend, **config):
+    return build_policy(
+        "GRU", graph_path, SensorContract(), official_frontend, odor_input_gain=100.0, **config
+    )
+
+
+@pytest.mark.parametrize("projected", [None, 3])
+def test_gru_default_false_and_legacy_formula_are_bitwise_equal(
+    graph_path, official_frontend, projected
+):
+    torch.manual_seed(85)
+    default = _gru(graph_path, official_frontend, gru_input_size=projected)
+    torch.manual_seed(85)
+    explicit = _gru(
+        graph_path, official_frontend, gru_input_size=projected, gru_odor_gain_compensation=False
+    )
+    assert default.model_config["gru_odor_gain_compensation"] is False
+    assert not hasattr(default, "feature_scale")
+    assert default.state_dict().keys() == explicit.state_dict().keys()
+    for key, value in default.state_dict().items():
+        assert torch.equal(value, explicit.state_dict()[key])
+    initial = torch.randn(4, default.gru.hidden_size)
+    for _ in range(3):
+        code = torch.rand(4, default.encoder.code_size)
+        actual = default.forward_code(code, initial)
+        for left, right in zip(actual, explicit.forward_code(code, initial), strict=True):
+            assert torch.equal(left, right)
+        features = default.encoder.project(code)[1]
+        hidden = default.gru(default.input_projection(features), initial)
+        latent = default.readout(hidden)
+        action = torch.stack(
+            (
+                default.contract.v_max * torch.sigmoid(latent[:, 0]),
+                default.contract.omega_max * torch.tanh(latent[:, 1]),
+            ),
+            dim=-1,
+        )
+        assert torch.equal(actual[0], action)
+        assert torch.equal(actual[1], hidden)
+        initial = actual[1]
+
+
+def test_gru_compensation_scales_only_odor_without_parameters(graph_path, official_frontend):
+    torch.manual_seed(85)
+    base = _gru(graph_path, official_frontend, gru_input_size=3)
+    torch.manual_seed(85)
+    compensated = _gru(
+        graph_path, official_frontend, gru_input_size=3, gru_odor_gain_compensation=True
+    )
+    assert count_trainable_parameters(base) == count_trainable_parameters(compensated)
+    assert base.state_dict().keys() == compensated.state_dict().keys()
+    for key, value in base.state_dict().items():
+        assert torch.equal(value, compensated.state_dict()[key])
+    assert "feature_scale" in dict(compensated.named_buffers())
+    captured = []
+    hook = compensated.input_projection.register_forward_pre_hook(
+        lambda module, inputs: captured.append(inputs[0].clone())
+    )
+    code = torch.rand(4, base.encoder.code_size)
+    raw = base.encoder.project(code)[1]
+    compensated.forward_code(code, compensated.central_initial_state(4, "cpu"))
+    hook.remove()
+    odor = torch.zeros(base.encoder.feature_size, dtype=torch.bool)
+    odor[: len(base.encoder.seed_indices)] = base.encoder.odor_inputs[base.encoder.seed_indices]
+    assert torch.allclose(captured[0][:, odor], raw[:, odor] / 100.0)
+    assert torch.equal(captured[0][:, ~odor], raw[:, ~odor])
+
+
+@pytest.mark.parametrize("compensation", [False, True])
+def test_gru_artifact_compensation_and_legacy_card(
+    graph_path, official_frontend, tmp_path, compensation
+):
+    policy = _gru(
+        graph_path, official_frontend, gru_input_size=3, gru_odor_gain_compensation=compensation
+    )
+    destination = tmp_path / "actor"
+    card = save_policy_artifact(
+        destination, policy, policy.model_config, policy.contract, graph_path, official_frontend
+    )
+    assert ("1/odor_input_gain" in card["shared_sensory_entry"]) is compensation
+    if not compensation:
+        del card["model_config"]["gru_odor_gain_compensation"]
+        # The card hashes its four payload files, not itself.
+        (destination / "model_card.json").write_text(json.dumps(card))
+    restored, _, _ = load_policy_artifact(destination)
+    assert restored.model_config["gru_odor_gain_compensation"] is compensation
+    obs = {
+        "vision": torch.rand(1, 2, policy.contract.n_ommatidia),
+        "odor": torch.tensor([[0.1, 0.7]]),
+        "valid": torch.ones(1, 3),
+    }
+    state, recovered_state = policy.initial_state(1, "cpu"), restored.initial_state(1, "cpu")
+    with torch.no_grad():
+        for _ in range(3):
+            action, state, _ = policy(obs, state)
+            recovered_action, recovered_state, _ = restored(obs, recovered_state)
+            assert torch.equal(action, recovered_action)
+
+
+@pytest.mark.parametrize("variant", ["V", "O", "VO", "VO-late", "RS"])
+def test_gru_compensation_refuses_other_variants(graph_path, variant):
+    with pytest.raises(ValueError, match="only supported for GRU"):
+        build_policy(variant, graph_path, SensorContract(), gru_odor_gain_compensation=True)
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_gru_compensation_requires_bool(graph_path, value):
+    with pytest.raises(ValueError, match="must be bool"):
+        build_policy("GRU", graph_path, SensorContract(), gru_odor_gain_compensation=value)
+
+
+def test_gru_compensation_refuses_overlapping_seeds(graph, tmp_path, official_frontend):
+    graph.input_mask[0] = 3
+    path = tmp_path / "overlapping.npz"
+    np.savez_compressed(path, **{key: getattr(graph, key) for key in graph.__dataclass_fields__})
+    _gru(path, official_frontend, gru_odor_gain_compensation=False)
+    with pytest.raises(ValueError, match="disjoint visual/odor seeds"):
+        _gru(path, official_frontend, gru_odor_gain_compensation=True)
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_gru_warm_start_requires_matching_compensation(
+    graph_path, official_frontend, tmp_path, saved
+):
+    policy = _gru(graph_path, official_frontend, gru_odor_gain_compensation=saved)
+    destination = tmp_path / "actor"
+    save_policy_artifact(
+        destination, policy, policy.model_config, policy.contract, graph_path, official_frontend
+    )
+    config = {
+        "variant": "GRU",
+        "init_artifact": str(destination),
+        "graph_path": str(graph_path),
+        "frontend_path": str(official_frontend),
+    }
+    for model in ({}, {"gru_odor_gain_compensation": saved}):
+        restored, _ = prepare_policy({**config, "model": model}, torch.device("cpu"))
+        assert restored.model_config["gru_odor_gain_compensation"] is saved
+    for value, error in (
+        (not saved, "differs"),
+        (str(saved), "must be bool"),
+        (int(saved), "bool"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            prepare_policy(
+                {**config, "model": {"gru_odor_gain_compensation": value}}, torch.device("cpu")
+            )
+
+
 def test_training_cannot_change_dale_sign_or_create_edges(graph):
     core = MaskedRateCore(graph, SensorContract(), dict(DEFAULT_CONFIG))
     optimizer = torch.optim.Adam(core.parameters(), lr=0.2)

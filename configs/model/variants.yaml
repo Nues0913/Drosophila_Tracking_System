@@ -12,7 +12,8 @@ common:
   motor_input_gain: 100.0
   # ORN input drive (#4, G2 Decision): x100 keeps odor's effect alive through pretrain
   # with frozen pretrain biases and the population-RMS decoder (seeds 0 and 1). A
-  # constant input scale, not a parameter; GRU shares the encoder, so all six match.
+  # constant input scale, not a parameter. All six share the encoder; GRU alone
+  # compensates this gain before its dense input bottleneck (#85).
   odor_input_gain: 100.0
   # Offset for the DN left/right structural asymmetry (not a behavioural turn bias).
   readout_turn_bias: true
@@ -34,7 +35,7 @@ common:
   log_std_init: -0.5
 overrides:
   RS: {random_seed: 0, random_swaps_per_edge: 10}
-  GRU: {hidden_size: 16}
+  GRU: {hidden_size: 16, gru_odor_gain_compensation: true}
 # #4 B3 (formal spec since 2026-10-24): DNb05 L/R turn rows, calibrated by BC on its
 # round-0 teacher episodes (train.calibrate_extra_turn). Left out: V, where DNb05 stays
 # silent without odor input (L + R < 1e-5 on teacher episodes); RS, whose rewired right

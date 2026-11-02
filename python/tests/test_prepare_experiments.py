@@ -47,12 +47,14 @@ def test_formal_configs_use_the_spec_and_budget_the_extra_turn_rows(tmp_path, mo
     # One row weight per readout branch on top of the #55 budget (VO 16,242).
     assert counts["VO"] == 16243 and counts["O"] - counts["V"] == counts["VO"] - counts["RS"] == 1
     for variant, model in budget["resolved_models"].items():
+        assert model["gru_odor_gain_compensation"] is (variant == "GRU")
         assert model["readout_extra_turn_types"] == []  # BC adds and calibrates them.
         assert model["odor_shared_adaptation"] is True
         assert model["readout_extra_turn_center_ramp"] is True
         stages = sorted((out / variant / "seed_0").glob("*.yaml"))
         for stage in stages:
             config = yaml.safe_load(stage.read_text())
+            assert config["model"]["gru_odor_gain_compensation"] is (variant == "GRU")
             assert config["graph_path"] == "data/subgraphs/olfactory_v2_nokc/graph.npz"
         bc = yaml.safe_load((out / variant / "seed_0/bc.yaml").read_text())
         assert bc["train"]["center_turn_bias"] is False

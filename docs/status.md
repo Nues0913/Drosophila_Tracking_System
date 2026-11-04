@@ -13,10 +13,10 @@
   - 交付在 release [`posthoc-gru-85`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/posthoc-gru-85) 的 `posthoc_gru_85.tar.gz`，SHA-256 `ed944a719e3926c67e8d6823feae439e14664870dda45b65b3ac7a572a952673`。
   - 驗收見 [Decision 6631062573](https://github.com/Nues0913/Drosophila_Tracking_System/issues/87#issuecomment-6631062573)。
   - 新 GRU 和已登記 GRU 的 `model_config` 只差這個欄位，預算帳本相同；評估回合的環境 seed 和 F3／F4 的 VO 逐回合相同。
-- **事後彙總**：用 PR #89 的 `evaluate_gru_posthoc_registered.yaml` 和 `evaluate_wander_gru_posthoc_registered.yaml`。
+- **事後彙總**：用 main `b2b0d99`（PR #89）的 `evaluate_gru_posthoc_registered.yaml` 和 `evaluate_wander_gru_posthoc_registered.yaml`，在 CPU 上重新彙總，不重跑模擬。
   - GRU 換成 #87 的 actor 和回合（`recorded_variant_files`），其他變體沿用 formal-v1 的 actor 和 F3／F4 回合。
-  - 不含 GRU 的比較列以已登記的結果為準。GRU 的資料改變了 bootstrap 抽樣順序，這些列的 CI 會有小差異。
-  - 下表的數字來自 PM 在 #87 驗收時的本機彙總，程式和 PR #89 的 head 相同。PR #89 合併後，會在 main 上重跑，打包上傳到 release `posthoc-gru-85`，並在這裡補上 SHA。
+  - 只採用含 GRU 的列。其他五個變體的 summary 列和比較列，都以已登記的結果為準：所有列共用同一條 bootstrap 串流，GRU 又排在最前面，它的資料一變，後面各列的 CI 都會小幅移動（成功率最多 0.004，方位誤差最多 0.78°），平均值則不變。
+  - 結果在 release `posthoc-gru-85` 的 `posthoc_gru_85_summary.tar.gz`，SHA-256 `568c47ecb645461b3319a151b328582b5dfa41d73feb64143b67555afc312979`。和 #87 驗收時的本機彙總逐位元相同，MiLong 在 PR #89 的 review 也獨立重跑確認過。
 - **定位**：結果一律標為**事後、未登記**，和已登記的結果並列；已登記的結論不改。
 - **重現方式**：main 的 `variants.yaml` 從 `93ec7cd` 起產生的是事後 GRU；要重現已登記的 GRU，必須用 `35432c3`。
 

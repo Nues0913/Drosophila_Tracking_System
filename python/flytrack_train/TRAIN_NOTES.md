@@ -398,7 +398,7 @@ evaluation:
 
 同一 `evaluate` 指令可彙總既有 Gazebo `episodes.jsonl` 或 CSV：設定 `evaluation.recorded_episode_files: [PATH, ...]`（支援 `*` 和 recursive `**` glob）、`episodes_per_seed: 20`，並提供一致的 artifact mapping/template 作預算驗證。只跑主模型比較時可指定較少 variants 並設 `require_full_matrix: false`。記錄以固定 `training_seed` 分組，逐回合的環境 seed 另放 `environment_seed`，不可把每個回合的環境 seed 當作獨立訓練模型。預設仍驗證 artifact；若只有資料檔，必須顯式關閉 `verify_recorded_artifacts` 及 `require_equal_budget`，manifest 會標記未驗證訓練預算。
 
-已驗證 artifact 時，預設 `verify_recorded_model_cards: true` 還會要求每筆記錄的 `model_card_sha256` 符合矩陣中的實際 model card，避免同 variant/seed 的不同 checkpoint 混算。只有舊記錄缺少此欄位而需要診斷整理時才顯式關閉，不能聲稱已驗證 checkpoint 一致性。事後重新訓練的 actor 要取代矩陣中某個 variant 時（#85 的 GRU），把該 variant 的 artifact mapping 指向新 actor，並設 `recorded_variant_files: {GRU: [新的 episodes 檔]}`：這個 variant 只從列出的檔案讀，其他檔案裡同一 variant 的舊回合直接略過，不會和新 checkpoint 混算。列出的檔案也必須在 `recorded_episode_files` 裡；manifest 的 `recorded_files` 會記錄每個檔案的 SHA-256。
+已驗證 artifact 時，預設 `verify_recorded_model_cards: true` 還會要求每筆記錄的 `model_card_sha256` 符合矩陣中的實際 model card，避免同 variant/seed 的不同 checkpoint 混算。只有舊記錄缺少此欄位而需要診斷整理時才顯式關閉，不能聲稱已驗證 checkpoint 一致性。事後重新訓練的 actor 要取代矩陣中某個 variant 時（#85 的 GRU），把該 variant 的 artifact mapping 指向新 actor，並設 `recorded_variant_files: {GRU: [新的 episodes 檔]}`：這個 variant 只從列出的檔案讀，其他檔案裡同一 variant 的舊回合直接略過，不會和新 checkpoint 混算。列出的檔案也必須在 `recorded_episode_files` 裡，而且是字面比對：不支援 glob，路徑寫法（例如 `./runs/...`）要和 `recorded_episode_files` 展開後的字串完全一致，否則直接報錯。manifest 的 `recorded_files` 會記錄每個檔案的 SHA-256。事後彙總只採用被取代 variant 的列；其他 variant 的 summary 和比較 CI 會因共用的 bootstrap 串流而小幅移動，應以原本的彙總為準。
 
 invalid 回合仍以 success=false 納入成功率；距離、方位、重新捕獲、平滑度與碰撞摘要只使用有效完整回合，完整原始部分資料保留在 episodes 報表，另提供 valid_episode / sample_coverage 的種子摘要。模型 walltime 不依賴真值覆蓋率，仍可用於診斷。
 

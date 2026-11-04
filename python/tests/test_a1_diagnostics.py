@@ -6,6 +6,7 @@ import copy
 import gzip
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ def load_script(name):
 
 summary = load_script("a1_summary")
 trace = load_script("episode_trace")
+common = load_script("_a1_common")
 
 
 def world(**overrides):
@@ -321,7 +323,9 @@ def test_replay_aligns_teacher_and_segmentation_to_decision_info(tmp_path):
     assert row["current_segments"]["occluded"]["steps"] == 1
     assert row["current_segments"]["non_occluded"]["steps"] == 1
     assert row["descriptors"]["occlusion"]["straightness"] == 1
-    assert row["descriptors"]["whole_episode"]["mean_policy_minus_teacher_v_m_s"] == -9.5
+    assert records[0]["action"] == [1.0, 0.5]
+    assert records[0]["applied_action"] == [0.5, 0.25]
+    assert row["descriptors"]["whole_episode"]["mean_policy_minus_teacher_v_m_s"] == -10
     for name in trace.MASS_NAMES:
         assert row["current_total"]["mass"][name] == sum(
             segment["mass"][name] for segment in row["current_segments"].values()
@@ -342,6 +346,69 @@ def test_episode_selection_parser():
             trace.parse_episodes(invalid)
 
 
+def test_descriptors_use_applied_action():
+    descriptors = trace.Descriptors()
+    before = {
+        "time_s": 0.0,
+        "agent_pose": [0, 0, 0],
+        "target_pose": [4, 0, 0],
+        "target_distance_m": 4.0,
+        "target_bearing_rad": 0.0,
+        "teacher_action": [0.4, 0.5],
+        "occluded": True,
+        "action": [9.0, 8.0],
+        "applied_action": [7.0, 6.0],  # preceding step must not be used
+    }
+    for time, applied in ((2.0, [0.5, 0.25]), (3.0, [0.3, -0.5])):
+        after = {**before, "time_s": time, "applied_action": applied}
+        descriptors.append(before, after, world())
+        before = after
+    result = descriptors.result(3.0)
+    assert result["whole_episode"]["mean_policy_minus_teacher_v_m_s"] == pytest.approx(0)
+    assert result["whole_episode"]["abs_omega_policy_teacher_ratio"] == 0.75
+    assert result["whole_episode"]["mean_policy_minus_teacher_omega_rad_s"] == -0.625
+    for occlusion in (result["occlusion"], result["occlusion"]["windows"][0]):
+        assert occlusion["mean_v_m_s"] == 0.4
+        assert occlusion["mean_abs_omega_rad_s"] == 0.375
+        assert occlusion["abs_net_turn_rad"] == 0
+        assert occlusion["total_abs_turn_rad"] == 1.0
+
+
+@pytest.mark.parametrize("outcome", ["missing_git", "not_repo", "empty_head", "head"])
+def test_provenance_git_and_relative_source_hashes(monkeypatch, outcome):
+    def run(command, **kwargs):
+        assert command == ["git", "rev-parse", "HEAD"]
+        assert kwargs["cwd"] == DIAGNOSTICS.parent.parent
+        assert kwargs["check"] is False
+        if outcome == "missing_git":
+            raise FileNotFoundError("git")
+        return subprocess.CompletedProcess(
+            command, 128 if outcome == "not_repo" else 0, "abc123\n" if outcome == "head" else ""
+        )
+
+    monkeypatch.setattr(common.subprocess, "run", run)
+    version = common.provenance([])["program_version"]
+    assert version["git_head"] == ("abc123" if outcome == "head" else "NOT AVAILABLE")
+    root = DIAGNOSTICS.parent.parent
+    required = {
+        path.relative_to(root).as_posix()
+        for path in (root / "python/flytrack_core/model").rglob("*.py")
+    } | {
+        "python/flytrack_sim/teacher.py",
+        "python/flytrack_sim/env.py",
+        "python/flytrack_train/worlds.py",
+        "python/flytrack_train/config.py",
+        "python/flytrack_train/evaluation.py",
+        "scripts/lesion_analysis.py",
+        "scripts/diagnostics/_a1_common.py",
+        "scripts/diagnostics/a1_summary.py",
+        "scripts/diagnostics/episode_trace.py",
+    }
+    assert required <= version["files"].keys()
+    assert all(not Path(path).is_absolute() for path in version["files"])
+    assert all(digest == common.sha256(root / path) for path, digest in version["files"].items())
+
+
 def test_summary_cli_outputs_and_sha256(tmp_path, monkeypatch):
     f3 = tmp_path / "f3.json"
     f3.write_text(json.dumps(failure_data()))
@@ -359,5 +426,52 @@ def test_summary_cli_outputs_and_sha256(tmp_path, monkeypatch):
     )
     assert len(result["cases"]) == 20
     assert (out / "cases.csv").read_text().count("\n") == 21
-    assert (out / "summary.md").is_file()
+    assert (out / "select-failures_summary.md").is_file()
     assert result["provenance"]["program_version"]["method"] == "file_sha256"
+
+
+def test_summary_commands_share_output_without_overwriting(tmp_path, monkeypatch):
+    f3 = tmp_path / "f3.json"
+    f3.write_text(json.dumps(failure_data()))
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text("[]")
+    out = tmp_path / "output"
+    # This test checks CLI/report isolation; bootstrap inference imports need torch.
+    monkeypatch.setattr(summary, "bootstrap", lambda values: {"n_seeds": len(values)})
+    commands = [
+        ("select-failures", ["--f3", str(f3)]),
+        (
+            "lesion",
+            [
+                "--input",
+                str(episodes),
+                "--f3",
+                str(f3),
+                "--posthoc",
+                str(episodes),
+                "--allow-partial",
+            ],
+        ),
+        (
+            "traces",
+            [
+                "--input",
+                str(episodes),
+                "--failures",
+                str(out / "failure_cases.json"),
+                "--allow-partial",
+            ],
+        ),
+    ]
+    previous = {}
+    for command, arguments in commands:
+        monkeypatch.setattr(sys, "argv", ["a1_summary", command, *arguments, "-o", str(out)])
+        summary.main()
+        assert all((out / name).read_bytes() == content for name, content in previous.items())
+        manifest = json.loads((out / f"{command}_provenance.json").read_text())
+        assert str(f3 if command == "select-failures" else episodes) in manifest["inputs_sha256"]
+        assert f"{command}_provenance.json" in (out / f"{command}_summary.md").read_text()
+        previous = {path.name: path.read_bytes() for path in out.iterdir()}
+    assert len(json.loads((out / "failure_cases.json").read_text())["cases"]) == 20
+    assert not (out / "provenance.json").exists()
+    assert not (out / "summary.md").exists()

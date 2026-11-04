@@ -11,7 +11,10 @@ EpisodeMetrics deliberately consumes post-step info, exactly as lesion_analysis.
 Actions are [v (m/s), omega (rad/s)], poses are [x (m), y (m), yaw (rad)].
 Current mass is absolute incoming recurrent edge-current mass, not attribution.
 Segmentation uses the decision-time occluded flag, including at window boundaries.
-Descriptive turning/speed statistics use policy actions. Integrals use the actual
+Descriptive turning/speed statistics and teacher comparisons use post-step
+info["applied_action"]. Like teacher_action, it is clipped with the same previous
+action, speed bounds and acceleration limits, making comparisons consistent.
+Raw policy action and applied_action are both retained in the trace. Integrals use the actual
 elapsed step duration (including a shortened terminal collision step).
 """
 
@@ -121,7 +124,8 @@ class Descriptors:
         self.windows = []
         self.window = None
 
-    def append(self, before: dict, after: dict, action, env) -> None:
+    def append(self, before: dict, after: dict, env) -> None:
+        action = after["applied_action"]
         teacher = before["teacher_action"]
         self.steps += 1
         self.v_difference += float(action[0]) - float(teacher[0])
@@ -300,7 +304,7 @@ def replay_episode(policy, contract, card, config, env, args, seed, episode, tra
                 info["occluded"],
                 info["time_s"],
             )
-            descriptors.append(decision_info, info, physical_action, env)
+            descriptors.append(decision_info, info, env)
             record = {
                 "step": step,
                 **{

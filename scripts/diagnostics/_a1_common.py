@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import math
+import subprocess
 from pathlib import Path
 
 
@@ -19,18 +20,37 @@ def sha256(path: Path) -> str:
 
 def provenance(paths: list[Path]) -> dict:
     root = Path(__file__).resolve().parents[2]
-    programs = sorted(Path(__file__).parent.glob("*a1*.py")) + [
+    programs = sorted((root / "python/flytrack_core/model").rglob("*.py")) + [
+        Path(__file__),
+        Path(__file__).with_name("a1_summary.py"),
         Path(__file__).with_name("episode_trace.py"),
         root / "python/flytrack_core/metrics.py",
         root / "python/flytrack_train/evaluation.py",
+        root / "python/flytrack_train/worlds.py",
+        root / "python/flytrack_train/config.py",
+        root / "python/flytrack_sim/teacher.py",
         root / "python/flytrack_sim/env.py",
         root / "scripts/lesion_analysis.py",
     ]
+    head = "NOT AVAILABLE"
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            head = result.stdout.strip()
+    except OSError:
+        pass
     return {
         "inputs_sha256": {str(path): sha256(path) for path in sorted(set(paths))},
         "program_version": {
             "method": "file_sha256",
-            "reason": "Git commands are excluded by the task; hash the source files instead.",
+            "git_head": head,
             "files": {str(path.relative_to(root)): sha256(path) for path in programs},
         },
     }
@@ -107,15 +127,17 @@ def markdown_table(title: str, rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_report(output: Path, name: str, payload: dict, tables: dict[str, list[dict]]) -> None:
+def write_report(
+    output: Path, name: str, payload: dict, tables: dict[str, list[dict]], *, command: str
+) -> None:
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / f"{name}.json", payload)
-    write_json(output / "provenance.json", payload["provenance"])
-    sections = [f"# {name}", "", "Input and source SHA-256: `provenance.json`.", ""]
+    write_json(output / f"{command}_provenance.json", payload["provenance"])
+    sections = [f"# {name}", "", f"Input and source SHA-256: `{command}_provenance.json`.", ""]
     for key, value in payload.items():
         if key not in tables and key != "provenance":
             sections.extend([f"{key}: `{json.dumps(value, ensure_ascii=False)}`", ""])
     for title, rows in tables.items():
         write_csv(output / f"{title}.csv", rows)
         sections.append(markdown_table(title, rows))
-    (output / "summary.md").write_text("\n".join(sections), encoding="utf-8")
+    (output / f"{command}_summary.md").write_text("\n".join(sections), encoding="utf-8")

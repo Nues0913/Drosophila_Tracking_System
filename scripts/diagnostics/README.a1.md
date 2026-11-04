@@ -35,8 +35,12 @@ info thereafter. EpisodeMetrics consumes resulting step info exactly as in
 `lesion_analysis.py`. Current segmentation follows the **decision** occlusion
 flag. A boundary-crossing action is assigned to the flag seen at its start.
 
-Speeds and turn descriptors use policy outputs; actual actions are retained
-separately. Turn integrals use actual elapsed time. Straightness uses sampled
+Speeds, turn descriptors and policy/teacher comparisons use the current step's
+`info["applied_action"]`: it and the decision-time teacher action are clipped
+using the same previous action, speed bounds and acceleration limits. The field
+names containing `policy` therefore describe the applied policy action. Step
+traces retain both raw policy `action` and `applied_action`. Turn integrals use
+actual elapsed time. Straightness uses sampled
 agent positions, including the terminal point. Wall clearance measures the
 distance from the agent disk to the rectangular wall boundary, and can be
 negative at contact. The last ten seconds use decision-time distance samples.
@@ -81,8 +85,13 @@ traces enter either trace table. Identical overlapping replays are deduplicated;
 conflicting records raise an error.
 
 All commands write a primary JSON (`failure_cases.json`, `lesion.json`, or
-`traces.json`), a CSV for each table, `summary.md` (three decimal places), and
-`provenance.json`. JSON and CSV keep full precision for subsequent checks.
+`traces.json`), a CSV for each table, `<command>_summary.md` (three decimal
+places), and `<command>_provenance.json`, where `<command>` is `select-failures`,
+`lesion`, or `traces` (for example, `lesion_summary.md` and
+`lesion_provenance.json`). We recommend a different `--output` directory for
+each subcommand. Shared directories preserve each subcommand's reports;
+`failure_cases.json` retains its name for downstream drivers and `traces` input.
+JSON and CSV keep full precision for subsequent checks.
 Nested fields are flattened with dots in CSV; lists remain JSON strings.
 
 | Command | Tables |
@@ -108,5 +117,10 @@ the actual seed and episode counts. Do not treat them as the completed analysis.
 Lesion-none agreement checks use formal F3 for VO/VO-late/RS and the posthoc
 reference for GRU. Every observed row must match a reference identity; missing or
 duplicate references raise. Legacy `collision`, `bearing_error_deg`, and
-`tracking_fraction` aliases are accepted. Provenance uses source-file SHA-256
-instead of Git commands, and trace summaries also hash the replay manifests.
+`tracking_fraction` aliases are accepted. Provenance records `program_version.git_head`
+using `git rev-parse HEAD` in the script's repository, or `"NOT AVAILABLE"` if Git
+or HEAD is unavailable. `program_version.files` always records SHA-256 for all
+Python files under `python/flytrack_core/model/`, the metrics, teacher,
+environment, worlds, configuration and evaluation modules, `scripts/lesion_analysis.py`,
+and the three A1 Python scripts, using paths relative to the repository root.
+Trace summaries also hash the replay manifests.

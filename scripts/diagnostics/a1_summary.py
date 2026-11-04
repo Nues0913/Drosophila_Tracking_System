@@ -530,7 +530,7 @@ def main():
             "cases": cases,
             "provenance": provenance(paths),
         }
-        write_report(args.output, "failure_cases", payload, {"cases": cases})
+        write_report(args.output, "failure_cases", payload, {"cases": cases}, command=args.command)
         print(f"Selected {len(cases)} cases", flush=True)
         return
     paths = input_files(args.input)
@@ -580,7 +580,7 @@ def main():
             )
         }
     payload["provenance"] = provenance(paths)
-    write_report(args.output, args.command, payload, tables)
+    write_report(args.output, args.command, payload, tables, command=args.command)
     print(f"{args.command}: {len(rows)} input episodes; complete={payload['complete']}", flush=True)
 
 

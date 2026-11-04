@@ -36,7 +36,7 @@ def main():
         "--variants",
         nargs="+",
         choices=("V", "O", "VO", "VO-late", "GRU", "RS"),
-        default=["V", "VO", "GRU", "RS"],
+        default=["V", "VO", "VO-late", "GRU", "RS"],
     )
     parser.add_argument(
         "--scenarios",

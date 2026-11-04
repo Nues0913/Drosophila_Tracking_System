@@ -26,6 +26,18 @@ from .parameters import count_effective_parameters
 
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
+# configs/evaluation_protocol.yaml: original_primary_comparisons, then the
+# late_fusion_fallback_comparisons for the primary architecture VO-late. The
+# original VO rows come first so their bootstrap draws do not change.
+REGISTERED_COMPARISONS = tuple(
+    (model, comparator, scenarios, hypothesis)
+    for model in ("VO", "VO-late")
+    for comparator, scenarios, hypothesis in (
+        ("V", ("occlusion",), "superiority"),
+        ("GRU", SCENARIOS, "noninferiority"),
+        ("RS", SCENARIOS, "noninferiority"),
+    )
+)
 METRICS = (
     "success",
     "mean_distance_m",
@@ -36,6 +48,8 @@ METRICS = (
     "latency_p50_ms",
     "latency_p95_ms",
 )
+# Copied from a 2D evaluation manifest when its episodes are re-summarized.
+SOURCE_DEFINITIONS = ("latency_definition", "success_definition", "reacquisition_definition")
 
 
 def evaluation_environment_seed(seed: int, episode: int, base_seed: int = 1700000000) -> int:
@@ -122,13 +136,13 @@ def seed_statistics(rows: list[dict[str, Any]], rng: np.random.Generator, draws:
                 }
             )
     comparisons = []
-    # A difference is VO minus comparator. For distance/error/latency, negative is favorable.
-    for comparator, scenarios in (("V", ("occlusion",)), ("GRU", SCENARIOS), ("RS", SCENARIOS)):
+    # A difference is model minus comparator. For distance/error/latency, negative is favorable.
+    for model, comparator, scenarios, hypothesis in REGISTERED_COMPARISONS:
         for scenario in scenarios:
             a = {
                 row["seed"]: row
                 for row in seed_rows
-                if row["variant"] == "VO" and row["scenario"] == scenario
+                if row["variant"] == model and row["scenario"] == scenario
             }
             b = {
                 row["seed"]: row
@@ -139,7 +153,10 @@ def seed_statistics(rows: list[dict[str, Any]], rng: np.random.Generator, draws:
             for metric in metrics:
                 comparisons.append(
                     {
-                        "comparison": f"VO-{comparator}",
+                        "comparison": f"{model}-{comparator}",
+                        "model": model,
+                        "comparator": comparator,
+                        "hypothesis": hypothesis,
                         "scenario": scenario,
                         "metric": metric,
                         "paired_seeds": paired,
@@ -403,22 +420,38 @@ def summarize_recorded(config, output, variants, scenarios, seeds, expected_epis
                         f"Recorded {variant}/{scenario}/seed_{seed} has {count} episodes, "
                         f"expected {expected_episodes}"
                     )
+    definitions = {
+        "latency_definition": (
+            "simulation-clock sensor age; separate inference_wall_* is model processing wall time"
+        )
+    }
+    source_manifests = {}
+    # Re-summarized 2D episodes keep the 2D evaluator's own metric definitions.
+    for path in options.get("recorded_source_manifests", []):
+        source = json.loads(Path(path).read_text(encoding="utf-8"))
+        missing = [key for key in SOURCE_DEFINITIONS if key not in source]
+        if missing:
+            raise ValueError(f"Recorded source manifest {path} lacks {missing}")
+        copied = {key: source[key] for key in SOURCE_DEFINITIONS}
+        if source_manifests and copied != {key: definitions[key] for key in SOURCE_DEFINITIONS}:
+            raise ValueError("Recorded source manifests disagree on metric definitions")
+        definitions.update(copied)
+        source_manifests[str(path)] = file_sha256(path)
     _write_reports(output, rows, options)
     write_json(
         output / "evaluation_manifest.json",
         {
             "config": config,
-            "source": "recorded_ros_metrics",
+            "source": options.get("recorded_source", "recorded_ros_metrics"),
+            "recorded_files": {filename: file_sha256(filename) for filename in filenames},
+            "source_manifests": source_manifests,
             "artifacts": list(manifests.values()),
             "training_budget_verified": bool(manifests)
             and options.get("require_equal_budget", True),
             "recorded_model_cards_verified": bool(manifests)
             and options.get("verify_recorded_model_cards", True),
             "statistics": "seed-level bootstrap; no new simulation",
-            "latency_definition": (
-                "simulation-clock sensor age; "
-                "separate inference_wall_* is model processing wall time"
-            ),
+            **definitions,
         },
     )
 

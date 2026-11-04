@@ -56,6 +56,8 @@ python scripts/prepare_experiments.py --device cuda --jobs 2
 cat runs/experiment_configs/parameter_budget.json      # 六變體 BC effective（lr>0）須在有效 VO 的 ±5% 內（#77）
 bash runs/experiment_configs/run_all.sh                # 6 變體 × 5 種子，每個為 pretrain → BC/DAgger
 python -m flytrack_train evaluate --config configs/train/evaluate.yaml --device cuda
+python -m flytrack_train evaluate --config configs/train/evaluate_wander.yaml --device cuda   # 次要 wander，另列
+python -m flytrack_train evaluate --config configs/train/evaluate_registered.yaml --device cpu  # 補上 VO-late 的已登記比較，不重跑模擬
 ```
 
 正式訓練鏈到 BC/DAgger 為止，最終 actor 是 `runs/bc/{variant}/seed_{seed}/actor`。PPO 依 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35) 的 Decision 移出正式鏈，保留為研究項目；`--algorithm ppo` 或 `es` 可以在 BC 之後加一個階段，但這種結果不屬於正式矩陣。
@@ -173,7 +175,7 @@ python -m flytrack_train ppo --config configs/train/ppo.yaml
 
 研究用的 RL 階段有 PPO 和 ES（`python -m flytrack_train es --config configs/train/es.yaml`）。ES 是鏡像擾動、秩正規化的 OpenAI ES 風格實作，不是 CMA-ES。不論用哪一種，要加回正式鏈都必須另發 Decision，而且六個變體要用同一個算法和預算。
 
-正式比較的預算：預訓練 240,000 步、BC／DAgger 150,000 步（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml) 2026-10-24 的修訂把 PPO 改為 0）。評估輸出逐回合 CSV／JSON、種子平均、bootstrap 95% 信賴區間及預先指定的 VO–V／GRU／RS 比較（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml)）。未重新捕獲以截尾資料記錄，不能填成零秒；不會只以差異不顯著就宣稱等效。
+正式比較的預算：預訓練 240,000 步、BC／DAgger 150,000 步（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml) 2026-10-24 的修訂把 PPO 改為 0）。評估輸出逐回合 CSV／JSON、種子平均、bootstrap 95% 信賴區間及預先指定的 VO、VO-late 對 V／GRU／RS 比較（[configs/evaluation_protocol.yaml](configs/evaluation_protocol.yaml)）。未重新捕獲以截尾資料記錄，不能填成零秒；不會只以差異不顯著就宣稱等效。
 
 ## 匯出與 ROS／Gazebo
 

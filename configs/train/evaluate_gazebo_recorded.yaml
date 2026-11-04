@@ -1,7 +1,8 @@
 sensor_contract_path: configs/sensor_contract.json
 output: runs/evaluation/gazebo
 evaluation:
-  variants: [V, VO, GRU, RS]
+  # configs/evaluation_protocol.yaml gazebo_variants (VO-late is the primary architecture).
+  variants: [V, VO, VO-late, GRU, RS]
   scenarios: [normal, occlusion, noise, conflict]
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 20

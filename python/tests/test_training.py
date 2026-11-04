@@ -125,6 +125,131 @@ def test_seed_level_statistics_do_not_weight_large_seed_sample_more():
     assert bootstrap_mean([float("nan")], np.random.default_rng(1))["n_seeds"] == 0
 
 
+def _matrix_rows(rng):
+    from flytrack_train.evaluation import SCENARIOS, VARIANTS
+
+    return [
+        {
+            "variant": variant,
+            "scenario": scenario,
+            "seed": seed,
+            "success": float(rng.random() < 0.5),
+            "mean_distance_m": rng.random(),
+            "mean_bearing_error_deg": 0,
+            "reacquisition_time_s": float("nan"),
+            "smoothness_rad_s": 0,
+            "collision_rate": 0,
+            "latency_p50_ms": 1,
+            "latency_p95_ms": 2,
+        }
+        for variant in VARIANTS
+        for scenario in SCENARIOS
+        for seed in range(5)
+        for _ in range(4)
+    ]
+
+
+def test_registered_comparisons_follow_the_protocol():
+    import yaml
+    from flytrack_train.evaluation import REGISTERED_COMPARISONS
+
+    root = Path(__file__).resolve().parents[2]
+    protocol = yaml.safe_load((root / "configs/evaluation_protocol.yaml").read_text())
+    evaluation = protocol["evaluation"]
+    hypotheses = {
+        row["comparator"]: row["hypothesis"] for row in evaluation["original_primary_comparisons"]
+    }
+    expected = [
+        (row["model"], row["comparator"], tuple(row["scenarios"]), hypotheses[row["comparator"]])
+        for row in (
+            evaluation["original_primary_comparisons"]
+            + evaluation["late_fusion_fallback_comparisons"]
+        )
+    ]
+    assert list(REGISTERED_COMPARISONS) == expected
+    assert protocol["reporting_scope"]["primary_architecture"] == "VO-late"
+
+
+def test_late_fusion_comparisons_leave_original_vo_rows_unchanged(monkeypatch):
+    import flytrack_train.evaluation as evaluation
+
+    rows = _matrix_rows(np.random.default_rng(5))
+    seed_rows, _, full = seed_statistics(rows, np.random.default_rng(7), 200)
+    original = tuple(row for row in evaluation.REGISTERED_COMPARISONS if row[0] == "VO")
+    monkeypatch.setattr(evaluation, "REGISTERED_COMPARISONS", original)
+    _, _, only_vo = seed_statistics(rows, np.random.default_rng(7), 200)
+    # Same rng stream: the VO rows are the first rows and stay bit-identical.
+    assert full[: len(only_vo)] == only_vo
+    late = [row for row in full if row["model"] == "VO-late"]
+    assert {(row["comparator"], row["scenario"]) for row in late} == {
+        ("V", "occlusion"),
+        *(
+            (comparator, scenario)
+            for comparator in ("GRU", "RS")
+            for scenario in evaluation.SCENARIOS
+        ),
+    }
+    means = {(row["variant"], row["scenario"], row["seed"]): row for row in seed_rows}
+    row = next(
+        row
+        for row in late
+        if (row["comparator"], row["scenario"], row["metric"]) == ("V", "occlusion", "success")
+    )
+    expected = np.mean(
+        [
+            means[("VO-late", "occlusion", seed)]["success"]
+            - means[("V", "occlusion", seed)]["success"]
+            for seed in range(5)
+        ]
+    )
+    assert row["comparison"] == "VO-late-V" and row["hypothesis"] == "superiority"
+    assert row["paired_seeds"] == [0, 1, 2, 3, 4] and row["mean"] == pytest.approx(expected)
+
+
+def test_recorded_2d_summary_keeps_the_source_definitions(tmp_path):
+    from flytrack_core.contracts import file_sha256
+    from flytrack_train.evaluation import SCENARIOS, VARIANTS, summarize_recorded
+
+    rows = _matrix_rows(np.random.default_rng(9))
+    for index, row in enumerate(rows):
+        row["episode"] = index % 4
+    source = tmp_path / "formal"
+    source.mkdir()
+    (source / "episodes.json").write_text(json.dumps(rows))
+    definitions = {
+        "latency_definition": "2D wall time",
+        "success_definition": "distance and bearing",
+        "reacquisition_definition": "completed events only",
+    }
+    (source / "evaluation_manifest.json").write_text(json.dumps(definitions))
+
+    def run(output, manifests):
+        options = {
+            "recorded_episode_files": [str(source / "episodes.json")],
+            "recorded_source_manifests": manifests,
+            "verify_recorded_artifacts": False,
+            "require_equal_budget": False,
+            "bootstrap_draws": 20,
+        }
+        summarize_recorded({"evaluation": options}, output, VARIANTS, SCENARIOS, range(5), 4)
+        return json.loads((output / "evaluation_manifest.json").read_text())
+
+    manifest = run(tmp_path / "registered", [str(source / "evaluation_manifest.json")])
+    assert {key: manifest[key] for key in definitions} == definitions
+    assert manifest["recorded_files"] == {
+        str(source / "episodes.json"): file_sha256(source / "episodes.json")
+    }
+    assert list(manifest["source_manifests"]) == [str(source / "evaluation_manifest.json")]
+    # Gazebo records name no 2D source and keep the ROS latency definition.
+    gazebo = run(tmp_path / "gazebo", [])
+    assert gazebo["latency_definition"].startswith("simulation-clock sensor age")
+    assert "success_definition" not in gazebo and gazebo["source_manifests"] == {}
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({**definitions, "latency_definition": "different"}))
+    with pytest.raises(ValueError, match="disagree"):
+        run(tmp_path / "mixed", [str(source / "evaluation_manifest.json"), str(other)])
+
+
 def test_reacquisition_reports_unfinished_events_as_censored():
     metrics = EpisodeMetrics()
     metrics.append(1, 0.7, 0, False, True, 0)

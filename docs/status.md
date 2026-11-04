@@ -13,10 +13,10 @@
   - 交付在 release [`posthoc-gru-85`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/posthoc-gru-85) 的 `posthoc_gru_85.tar.gz`，SHA-256 `ed944a719e3926c67e8d6823feae439e14664870dda45b65b3ac7a572a952673`。
   - 驗收見 [Decision 6631062573](https://github.com/Nues0913/Drosophila_Tracking_System/issues/87#issuecomment-6631062573)。
   - 新 GRU 和已登記 GRU 的 `model_config` 只差這個欄位，預算帳本相同；評估回合的環境 seed 和 F3／F4 的 VO 逐回合相同。
-- **事後彙總**：用 main `<<MAIN2>>` 的 `evaluate_gru_posthoc_registered.yaml` 和 `evaluate_wander_gru_posthoc_registered.yaml`。
+- **事後彙總**：用 PR #89 的 `evaluate_gru_posthoc_registered.yaml` 和 `evaluate_wander_gru_posthoc_registered.yaml`。
   - GRU 換成 #87 的 actor 和回合（`recorded_variant_files`），其他變體沿用 formal-v1 的 actor 和 F3／F4 回合。
   - 不含 GRU 的比較列以已登記的結果為準。GRU 的資料改變了 bootstrap 抽樣順序，這些列的 CI 會有小差異。
-  - 結果在 release `posthoc-gru-85` 的 `posthoc_gru_85_summary.tar.gz`（<<POSTPKG>>）。
+  - 下表的數字來自 PM 在 #87 驗收時的本機彙總，程式和 PR #89 的 head 相同。PR #89 合併後，會在 main 上重跑，打包上傳到 release `posthoc-gru-85`，並在這裡補上 SHA。
 - **定位**：結果一律標為**事後、未登記**，和已登記的結果並列；已登記的結論不改。
 - **重現方式**：main 的 `variants.yaml` 從 `93ec7cd` 起產生的是事後 GRU；要重現已登記的 GRU，必須用 `35432c3`。
 
@@ -46,10 +46,10 @@
 ## 2026-10-31 2D 正式評估完成並驗收（F3 curved、F4 wander）
 
 - **版本**：評估用凍結的 main `35432c3`，30 個 actor 和上一節相同，設定檔不加覆寫。
-- **登記比較的重新彙總**：用 main `<<MAIN>>` 的 `evaluate_registered.yaml`、`evaluate_wander_registered.yaml`，在 CPU 上重新彙總，不重跑模擬（PR #83）。
+- **登記比較的重新彙總**：用 main `8ae904c` 的 `evaluate_registered.yaml`、`evaluate_wander_registered.yaml`，在 CPU 上重新彙總，不重跑模擬（PR #83）。
   - 補上主架構 VO-late 的已登記比較。
   - VO 的列、summary、seed_means 和評估器原始輸出逐位元相同。
-  - 重新彙總結果在 release `formal-v1` 的 `formal_v1_registered.tar.gz`（<<REGPKG>>）。
+  - 重新彙總結果在 release `formal-v1` 的 `formal_v1_registered.tar.gz`，SHA-256 `80629205a22a335e2ffd5812a9a01da921a3bb4bd517bde7fdb6de28bbaac685`。和 PR #83 合併前的 dry run 逐位元相同。
 
 | 檔案 | 內容 | 主機／執行者 | SHA-256 |
 | --- | --- | --- | --- |

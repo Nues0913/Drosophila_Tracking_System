@@ -90,7 +90,12 @@
   - VO-late − V 遮蔽是 +0.010 [+0.004, +0.016]。CI 下界大於 0，但兩邊成功率只有 0.020 和 0.010，貼近下限，也沒有多重比較校正，所以不做主張。
   - 完整數字見 #84 的 Decision。
 - **延遲**：2D 的 actor 呼叫延遲是 wall time，每格量第 1 回合，p95 最高 curved 11.2 ms、wander 12.1 ms（都是 VO-late）。這不能替代協定 50 ms 的 Gazebo sensor-to-command 量測。
-- **NOT RUN**：Gazebo、lesion 和匯流電流分析、展示。
+- **失敗分解**（PM 第一層，用 F3 回合，不重跑模擬）：
+  - normal 的失分主要是距離：VO-late 的成功率 0.48、碰撞 0.06，「沒碰撞但 2 m 內的時間不到 80%」佔 0.44，方位只佔 0.01。
+  - occlusion 的失分主要是碰撞：VO、VO-late、V 的碰撞率都是 0.46–0.48，碰撞時間的中位數約 29–31 s，落在第 8–38 s 的遮蔽期間。
+  - VO 在 conflict 和 normal 的成功率幾乎一樣（0.41 對 0.42）。
+  - 逐步軌跡和 lesion 分析見 [#90](https://github.com/Nues0913/Drosophila_Tracking_System/issues/90)。
+- **NOT RUN**：Gazebo（#88）、lesion 和匯流電流分析（#90）、展示。
 
 ## 2026-10-29 正式矩陣的 30 條訓練鏈完成並驗收
 
@@ -273,9 +278,9 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 1. ~~#77、#20、#10、凍結與派工~~：已完成。main `35432c3` 上的 30 條訓練鏈已交付並驗收（#80、#81）。
 2. ~~2D 正式評估（F3 curved、F4 wander）~~：已完成並驗收（#80、#84），結果見上方 2026-10-31 一節。
    - ~~**#85**~~：GRU 修正（PR #86）和事後重新訓練與評估（#87）都已完成，結果標為「未登記」，見上方 2026-11-04 一節。
-3. P3（VO 的多感官融合）和 PPO（#35）列為正式矩陣之後的研究，等 2D 結果出來後另發 Decision。
+3. **協定必交的分析**（A1，[#90](https://github.com/Nues0913/Drosophila_Tracking_System/issues/90)，@MiLong9487）：lesion、匯流電流、失敗案例。之後 BC 配方實驗和 BC 預算實驗並行（使用者分擔），兩者都是探索性質，評估用不和正式區段重疊的 seed。formal-v2 要不要做，等這兩個實驗的結果出來再決定（[#28 Decision 6631670962](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6631670962)）。P3 和 PPO（#35）由使用者承包，不進正式矩陣。
 4. **Gazebo 主要比較（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)）**：G0 補上 wander 接線，G1 試跑正式 actor 並量測每回合耗時和延遲；完整矩陣（curved、wander 各 2,000 回合，加上事後 GRU 各 400 回合）等 G1 驗收後另發 Decision。2D 與 Gazebo 的一致性（#23）可以並行，只量測、不改設定。
 5. 並行：#49 的一次短回放已由 #51 報告驗收結案；#52 的 trace 狀態與 reset 清除 pending 可觀測性已由 #53 合併，PM colcon 10 項全過、無 skip；既有發布／reset 行為不變。下一個效能候選是 camera hex-eye 投影的等價優化設計，尚未核准實作或追加回放；#23 2D／Gazebo 一致性仍由 @cweiting731 處理。#42 已由 #44 結案。
-6. Gazebo 主要比較 → lesion 分析 → 報告與展示。
+6. Gazebo 主要比較（#88）和 A1 分析（#90）並行 → 報告與展示。#22 已結案，延遲量測由 #88 接手。
 
 舊版的逐日診斷紀錄保留在 [dn/](dn/)、[fixes_2026-10-17.md](fixes_2026-10-17.md) 和 [training_time.md](training_time.md)，這些是歷史紀錄，不代表目前狀態。

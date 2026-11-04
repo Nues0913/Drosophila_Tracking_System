@@ -421,8 +421,9 @@ evaluator 提供 `artifact` 時只讀 `model_card.json`，不載入 torch 模型
 
 ## GRU 訓練入口尺度與暖啟動（#85，2026-11-02）
 
-連接體的氣味 ×100 增益會讓 GRU 的輸入瓶頸飽和。正式矩陣的 GRU override
-啟用 `gru_odor_gain_compensation: true`，將氣味 seed features 乘 `1/odor_input_gain`；
+連接體的氣味 ×100 增益會讓 GRU 的輸入瓶頸飽和。`variants.yaml` 的 GRU override 從 `93ec7cd` 起
+啟用 `gru_odor_gain_compensation: true`（事後、未登記的 GRU，#87；已登記的 formal-v1 GRU
+在 `35432c3` 上訓練，沒有補償，要重現它必須用 `35432c3`），將氣味 seed features 乘 `1/odor_input_gain`；
 其他五變體維持 False。這個常數只抵消連接體所需增益，回到原始 ORN 投影尺度，
 不看資料、不新增可訓練參數或另選常數；逐族群 RMS 會移除絕對濃度、引入非線性、
 零輸入需 eps 並強制拉平尺度，故不採用（詳見 MODEL_NOTES 的 #85 小節）。

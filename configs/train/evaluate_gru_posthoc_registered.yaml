@@ -1,0 +1,33 @@
+# #85 post-hoc, unregistered: the registered comparisons with the retrained GRU
+# (#86 compensation; #87 at main 93ec7cd) in place of the formal-v1 GRU. The other
+# variants keep their formal-v1 actors and the runs/evaluation/formal episodes; GRU
+# rows come only from the #87 episodes, paired by (scenario, seed, episode).
+sensor_contract_path: configs/sensor_contract.json
+output: runs/evaluation/gru_posthoc_registered
+evaluation:
+  variants: [V, O, VO, VO-late, GRU, RS]
+  scenarios: [normal, occlusion, noise, conflict]
+  seeds: [0, 1, 2, 3, 4]
+  episodes_per_seed: 100
+  recorded_episode_files: [runs/evaluation/formal/episodes.json, runs/evaluation/gru_posthoc/episodes.json]
+  recorded_variant_files:
+    GRU: [runs/evaluation/gru_posthoc/episodes.json]
+  recorded_source_manifests:
+    - runs/evaluation/formal/evaluation_manifest.json
+    - runs/evaluation/gru_posthoc/evaluation_manifest.json
+  recorded_source: 2d_posthoc_gru_episodes
+  artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
+  artifacts:
+    GRU:
+      0: runs/bc_posthoc/GRU/seed_0/actor
+      1: runs/bc_posthoc/GRU/seed_1/actor
+      2: runs/bc_posthoc/GRU/seed_2/actor
+      3: runs/bc_posthoc/GRU/seed_3/actor
+      4: runs/bc_posthoc/GRU/seed_4/actor
+  require_full_matrix: true
+  verify_recorded_artifacts: true
+  require_equal_budget: true
+  require_shared_sources: true
+  require_parameter_match: true
+  parameter_tolerance: 0.05
+  bootstrap_draws: 10000

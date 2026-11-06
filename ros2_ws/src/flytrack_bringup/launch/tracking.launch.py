@@ -18,6 +18,9 @@ def generate_launch_description():
                 "sensor_contract", default_value="/workspace/configs/sensor_contract.json"
             ),
             DeclareLaunchArgument("scenario", default_value="normal"),
+            DeclareLaunchArgument(
+                "target_motion", default_value="curved", choices=["curved", "wander"]
+            ),
             DeclareLaunchArgument("seed", default_value="731"),
             DeclareLaunchArgument("training_seed", default_value="0"),
             DeclareLaunchArgument("max_episodes", default_value="0"),
@@ -25,6 +28,7 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(str(share / "launch/world.launch.py")),
                 launch_arguments={
                     "scenario": LaunchConfiguration("scenario"),
+                    "target_motion": LaunchConfiguration("target_motion"),
                     "seed": LaunchConfiguration("seed"),
                     "training_seed": LaunchConfiguration("training_seed"),
                     "max_episodes": LaunchConfiguration("max_episodes"),

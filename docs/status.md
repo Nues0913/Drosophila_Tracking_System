@@ -1,6 +1,37 @@
 # 目前進度與已知問題
 
-最後更新：2026-11-08（正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數。Gazebo 的 wander 接線已合併（PR #94），接著試跑，見 #88）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-11-08（正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）判定無效。Gazebo 的 wander 接線已合併（PR #94），接著試跑，見 #88）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+
+## 2026-11-08 探索實驗 S1：速度讀出校準（#95，判定無效）
+
+- **目的**：測試讓速度讀出能調速，是否能改善 normal 的成功率。
+- **做法**：
+  - 對 DNp09 的速度讀出輸入做固定的中心化和 `1/std` 放大，做法比照 B3。常數取自 round 0 的 teacher 回合。
+  - 其他條件和 formal-v1 的 VO-late BC 完全相同。
+  - 範圍：seed 0、1；探索評估區段（`environment_seed` 1800000000）；curved 四個情境，每格 100 回合。
+- **執行**：
+  - PM 在使用者的 RTX 2060 主機上執行。程式是未合併的 PR #96 的 head `1796491`，PR 已關閉，分支保留。
+  - 交付：release `formal-v1` 的 `s1_speed_readout.tar.gz`，SHA-256 `31676e00b240b3c957e686b55691c0256758a4c46b8edbc5077ae08e8ff3cb10`。
+  - 驗收：[Decision 6714308434](https://github.com/Nues0913/Drosophila_Tracking_System/issues/95#issuecomment-6714308434)。
+
+| seed | normal 成功率（基準 → S1） | occlusion 成功率（基準 → S1） | 回合內速度 std 中位數（門檻 0.01 m/s） |
+| --- | --- | --- | --- |
+| 0 | 0.71 → 0.18 | 0.00 → 0.04 | 0.0099 |
+| 1 | 0.48 → 0.66 | 0.14 → 0.01 | 0.0094 |
+
+- **判讀**：規則是事先固定的，兩個 seed 都要同時達到 normal +0.10、occlusion 下降不超過 0.05、速度 std ≥ 0.01。兩個 seed 都有未達標的項目，所以判定為無效。
+- **速度確實開始變動**：
+  - 排除起步加速，回合內速度 std 約 0.007 m/s，基準是 0。
+  - 在 teacher 控制的回合上，S1 actor 的速度和 teacher 速度的相關：seed 1 是 0.54；seed 0 只有 0.03，速度會變，但和 teacher 無關。
+- **seed 0 壞在轉向**：方位誤差從 12° 變成 58°。
+- **原因**：放大倍數約 2.4e5，它同時放大了速度誤差往共用上游網路傳的梯度。
+  - 在 round 0 量測，速度誤差的梯度是轉向誤差的 600–5,000 倍，基準只有 0.003–0.02 倍。
+  - 結果是上游的更新被速度誤差主導。
+- **處理**：
+  - 不再接著試變體。在同樣 2 個 seed 和同一個評估區段上反覆試，判讀會失去意義。
+  - formal-v2 要不要處理速度，由使用者決定。
+  - B1（#92）繼續暫緩。
+  - formal-v1 已登記的結果不變。
 
 ## 2026-11-08 協定必交的分析 A1 驗收（#90，描述性診斷）
 
@@ -307,7 +338,7 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 15. **LC 輸入的功能**（#27）：LC10a 有追蹤和轉向的行為證據；LC9、LC11 偵測小物體；LPLC2 偵測 looming；LC10d 的迴避功能還是候選。報告稱它們為「視覺物體特徵輸入」，不寫成追蹤通道。
 16. **對照組退化**（#85）：正式矩陣的 GRU 因共用的 ×100 ORN 增益讓輸入瓶頸飽和，看不到視覺，屬於工程缺陷；RS 依固定標準不是缺陷，但隨機接線加上同一組增益讓視覺送不到轉向輸出，而且五個 seed 共用一張隨機圖。對兩者的不劣性都不能當成連接體結構的證據；修正後追加的 GRU 一律標成「未登記」。事後 GRU（#86／#87）的結果顯示，已登記的「對 GRU 不劣」在 curved 的 VO noise，以及 wander 的 normal、conflict（VO 和 VO-late），只是因為 GRU 退化才成立。
 17. **G3 未達成**：2D 的 normal 成功率最高 0.484（curved，VO-late），低於登記門檻 0.8；Gazebo 延遲也還未達 50 ms（第 12 點）。
-18. **前進速度是常數**（#90）：VO 和 VO-late 的速度只由 DNp09 讀出，DNp09 在圖上的輸入很少，所以速度固定在 0.168–0.179 m/s，低於目標速度 0.200 m/s。normal 的距離失敗和遮蔽期間直線撞牆都和這一點有關。報告不能把 G3 未達成歸因於訓練預算，也不能把 VO-late 拿掉氣味後的下降說成它用了氣味的方向。
+18. **前進速度是常數**（#90）：VO 和 VO-late 的速度只由 DNp09 讀出，DNp09 在圖上的輸入很少，所以速度固定在 0.168–0.179 m/s，低於目標速度 0.200 m/s。normal 的距離失敗和遮蔽期間直線撞牆都和這一點有關。報告不能把 G3 未達成歸因於訓練預算，也不能把 VO-late 拿掉氣味後的下降說成它用了氣味的方向。探索實驗 S1（#95）把速度讀出的輸入放大，速度開始會變，但轉向或遮蔽的表現變差，判定無效，所以這個限制在 formal-v1 仍然成立。
 
 ## 下一步
 
@@ -316,7 +347,7 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 1. ~~#77、#20、#10、凍結與派工~~：已完成。main `35432c3` 上的 30 條訓練鏈已交付並驗收（#80、#81）。
 2. ~~2D 正式評估（F3 curved、F4 wander）~~：已完成並驗收（#80、#84），結果見上方 2026-10-31 一節。
    - ~~**#85**~~：GRU 修正（PR #86）和事後重新訓練與評估（#87）都已完成，結果標為「未登記」，見上方 2026-11-04 一節。
-3. ~~**協定必交的分析**（A1，#90）~~：已完成並驗收，結果見上方 2026-11-08 一節。之後並行的兩個探索實驗：BC 配方實驗 R1（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)，@MiLong9487，判讀第 3 點已在看到結果前修正為相對基準的配對差）和 BC 預算實驗 B1（[#92](https://github.com/Nues0913/Drosophila_Tracking_System/issues/92)，使用者）。A1 發現速度輸出是常數，B1 是否照原設計執行由 PM 和 DRI 另行決定。formal-v2 要不要做，等探索結果出來再決定（[#28 Decision 6631670962](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6631670962)）。P3 和 PPO（#35）由使用者承包，不進正式矩陣。
+3. ~~**協定必交的分析**（A1，#90）~~：已完成並驗收，結果見上方 2026-11-08 一節。之後並行的兩個探索實驗：BC 配方實驗 R1（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)，@MiLong9487，判讀第 3 點已在看到結果前修正為相對基準的配對差）和 BC 預算實驗 B1（[#92](https://github.com/Nues0913/Drosophila_Tracking_System/issues/92)，使用者）。A1 發現速度輸出是常數，所以 B1 暫緩。改做的速度讀出校準 S1（[#95](https://github.com/Nues0913/Drosophila_Tracking_System/issues/95)）判定無效，見上方 S1 一節。formal-v2 要不要做，等探索結果出來再決定（[#28 Decision 6631670962](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6631670962)）。P3 和 PPO（#35）由使用者承包，不進正式矩陣。
 4. **Gazebo 主要比較（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)）**：G0 的 wander 接線已合併（PR #94，main `c339c0c`，PM 補跑 colcon test 通過）；接著 G1 試跑正式 actor，量測每回合耗時和延遲；完整矩陣（curved、wander 各 2,000 回合，加上事後 GRU 各 400 回合）等 G1 驗收後另發 Decision。2D 與 Gazebo 的一致性（#23）可以並行，只量測、不改設定。
 5. 並行：#49 的一次短回放已由 #51 報告驗收結案；#52 的 trace 狀態與 reset 清除 pending 可觀測性已由 #53 合併，PM colcon 10 項全過、無 skip；既有發布／reset 行為不變。下一個效能候選是 camera hex-eye 投影的等價優化設計，尚未核准實作或追加回放；#23 2D／Gazebo 一致性仍由 @cweiting731 處理。#42 已由 #44 結案。
 6. Gazebo 主要比較（#88）→ 報告與展示。#22 已結案，延遲量測由 #88 接手。

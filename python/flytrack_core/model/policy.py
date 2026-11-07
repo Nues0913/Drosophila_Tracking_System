@@ -358,6 +358,7 @@ class MotorReadout(nn.Module):
                 forward_pool[row, nodes] = 1 / int(nodes.sum())
             self.register_buffer("difference", torch.as_tensor(difference), persistent=False)
             self.register_buffer("forward_pool", torch.as_tensor(forward_pool), persistent=False)
+            self.forward_types = [str(graph.type_names[type_id]) for type_id in forward_types]
             self.turn_weight = nn.Parameter(torch.full((len(pairs) * branches,), 0.1))
             self.forward_weight = nn.Parameter(torch.full((len(forward_types) * branches,), 0.1))
             self.forward_bias = nn.Parameter(torch.zeros(()))
@@ -366,6 +367,51 @@ class MotorReadout(nn.Module):
         self._graph = graph
         self.extra_turn_types: list[str] = []
         self.extra_center_ramp = bool(extra_center_ramp)
+        self.forward_calibrated = False
+
+    def set_forward_calibration(self, center: list[float], scale: list[float]) -> None:
+        """Opt-in fixed centering and scaling of the forward (speed) inputs (#95 S1).
+
+        Each (branch, forward type) pool activity f is read as (f - center) * scale.
+        In formal-v1 VO/VO-late the only forward type, DNp09, varies by ~4e-5 around
+        ~0.069 (#90): it carries target-distance information, but a raw weight would
+        need ~1e4 to turn it into speed, so BC learned a constant speed. The constants
+        come from round-0 teacher episodes (train.calibrate_forward) and are buffers,
+        not parameters, so the parameter budget is unchanged. Unset, the forward path
+        is exactly the uncalibrated one.
+        """
+        center, scale = [float(x) for x in center], [float(x) for x in scale]
+        if not center and not scale:
+            if self.forward_calibrated:
+                raise ValueError("A forward readout calibration cannot be removed")
+            return
+        if self.mode != "structured":
+            raise ValueError("Forward readout calibration needs the structured readout")
+        if not len(center) == len(scale) == len(self.forward_weight):
+            raise ValueError(
+                "Forward readout calibration needs one center and scale per branch and forward type"
+            )
+        if not all(math.isfinite(x) for x in center) or not all(
+            math.isfinite(x) and x > 0 for x in scale
+        ):
+            raise ValueError(
+                "Forward readout centers must be finite and scales positive and finite"
+            )
+        device = self.forward_weight.device
+        for name, value in (("forward_center", center), ("forward_scale", scale)):
+            self.register_buffer(
+                name,
+                torch.as_tensor(np.asarray(value, dtype=np.float32), device=device),
+                persistent=False,
+            )
+        self.forward_calibrated = True
+
+    def forward_inputs(self, activities: list[Tensor]) -> Tensor:
+        """Forward-pool activity per (branch, type), calibrated when configured."""
+        forward = torch.cat([activity @ self.forward_pool.T for activity in activities], dim=1)
+        if self.forward_calibrated:
+            forward = (forward - self.forward_center) * self.forward_scale
+        return forward
 
     def set_extra_turns(
         self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
@@ -474,7 +520,7 @@ class MotorReadout(nn.Module):
                 dim=-1,
             )
         turns = torch.cat([activity @ self.difference.T for activity in activities], dim=1)
-        forward = torch.cat([activity @ self.forward_pool.T for activity in activities], dim=1)
+        forward = self.forward_inputs(activities)
         turn = turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
         if self.extra_turn_types:
             extra = torch.cat([self.extra_turn_features(activity) for activity in activities], 1)
@@ -766,6 +812,9 @@ class ConnectomePolicy(nn.Module):
             config["readout_extra_turn_scale"],
             config["readout_extra_turn_eps"],
         )
+        self.set_readout_forward_calibration(
+            config["readout_forward_center"], config["readout_forward_scale"]
+        )
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
     def set_readout_extra_turns(
@@ -778,6 +827,14 @@ class ConnectomePolicy(nn.Module):
             readout_extra_turn_center=[float(x) for x in center],
             readout_extra_turn_scale=[float(x) for x in scale],
             readout_extra_turn_eps=float(eps),
+        )
+
+    def set_readout_forward_calibration(self, center: list[float], scale: list[float]) -> None:
+        """Opt-in forward (speed) input calibration (#95 S1); see set_forward_calibration."""
+        self.readout.set_forward_calibration(center, scale)
+        self.model_config.update(
+            readout_forward_center=[float(x) for x in center],
+            readout_forward_scale=[float(x) for x in scale],
         )
 
     def set_lesion(self, mode: str = "none") -> None:
@@ -1125,6 +1182,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "readout_extra_turn_eps": 0.1,
     # The center shares the max(S, eps) denominator (#4 4-R7); legacy cards load without.
     "readout_extra_turn_center_ramp": True,
+    # Opt-in (#95 S1): fixed per (branch, forward type) centering and scaling of the
+    # speed inputs, set by train.calibrate_forward; empty is the uncalibrated readout.
+    "readout_forward_center": [],
+    "readout_forward_scale": [],
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,
@@ -1203,10 +1264,16 @@ def build_policy(
         "readout_extra_turn_types",
         "readout_extra_turn_center",
         "readout_extra_turn_scale",
+        "readout_forward_center",
+        "readout_forward_scale",
     ):
         config[key] = list(config[key])
     if variant == "GRU" and config["readout_extra_turn_types"]:
         raise ValueError("Extra turn rows need a connectome policy with the structured readout")
+    if variant == "GRU" and (config["readout_forward_center"] or config["readout_forward_scale"]):
+        raise ValueError(
+            "Forward readout calibration needs a connectome policy with the structured readout"
+        )
     graph = Graph.load(graph_path)
     policy = (
         GRUPolicy(graph, contract, frontend_path, config)

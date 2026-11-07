@@ -70,6 +70,15 @@ output: runs/VO/seed_0
     - RS：重接後右側 DNb05 沒有輸入，L/R 比例固定為 1。
     - GRU：沒有 DN readout。
   - **單獨校準**：`scripts/diagnostics/calibrate_extra_turn.py` 和 BC 共用 `flytrack_train/extra_turn.py`，可在既有資料集上單獨校準。
+- **S1，速度讀出的輸入校準（#95，探索用，預設關閉）**：
+  - **用途**：formal-v1 的 VO／VO-late 速度只由 DNp09 讀出。它的活動只在約 0.069 附近變動約 4e-5，所以 BC 學到的是常數速度（#90）。
+  - **啟用方式**：BC 設定 `train.calibrate_forward: true`。
+  - **算法**：在第 0 輪收完 teacher 資料、第一次 fit 之前，用訓練用的回合，對每個（分支，forward type）欄位算出 center = 平均、scale = 1/std。之後速度讀的是 `(f − center)·scale`。
+  - **哪些欄位會放大**：只有相對標準差 ≥ 1e-5 的欄位，大約是 float32 解析度的 100 倍；其他欄位維持 scale 1。例如 VO-late 嗅覺支路的 DNp09 離 ORN 5 跳，變動只有它數值的 3e-6。
+  - **輸出**：結果寫進 `forward_calibration.json`，內容包括各欄位的 raw std、相對 std、是否放大，以及 closed-form 的 held-out 相關係數。closed-form 是在 `logit(teacher v / v_max)` 上的最小平方法。結果同時存進 checkpoint，resume 時直接沿用。
+  - **參數預算**：常數是 buffer，不是參數，所以預算不變。
+  - **前置條件**：起點必須是結構化 readout 的 connectome actor，而且還沒有校準過；GRU 會報錯。暖啟動時，設定裡的常數必須和起點 card 上的相同，否則報錯。
+  - **舊 card**：沒有這兩個鍵，以未校準的讀出載入，行為逐位元不變。
 - **B3 中心項的修正**：特徵改為 S/(S+ε)·(L−R−c·S)/max(S,ε)·scale，也就是中心項和比例共用分母。舊公式 (L−R)/max(S,ε) − c 在 0 < S < ε 時，會把 c·scale 依閘門比例漏進轉向（4-R7 的開頭暫態）；S ≥ ε 時兩種公式相同。新公式由 `readout_extra_turn_center_ramp: true` 控制（預設值）。舊 card 沒有這個鍵，以舊公式載入，4-R6／4-R7 的 actor 因此保持原本的行為。暖啟動時可以用這個鍵切換，但起點已經有訓練過的列時會報錯。BC 的 `calibrate_extra_turn` 新增列時一律用新公式，起點即使是舊 card 也一樣，並把這個值記在 `extra_turn_calibration.json`。
 
 ```bash

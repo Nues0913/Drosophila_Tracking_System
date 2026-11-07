@@ -102,6 +102,8 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 
 舊 model card 沒有這兩個鍵時，載入補 `motor_input_gain=1`、`readout_turn_bias=False`，保留原本推論語意。
 
+**速度讀出的輸入校準 `readout_forward_center`／`readout_forward_scale`（#95 S1，預設空，探索用）。** 結構讀出的速度是 `v_max·sigmoid(Σ w·f + b)`，f 是各支路、各 forward type（formal-v1 只有 DNp09）的平均活動。formal-v1 的 VO／VO-late 中，DNp09 只在約 0.069 附近變動約 4e-5，所以 BC 學到的是常數速度（#90）。設定這兩個鍵後，f 改讀成 `(f − center)·scale`。常數由 BC 的 `train.calibrate_forward` 在第 0 輪 teacher 回合算出，存成 buffer，不是參數，參數預算不變。沒有設定時，前向路徑和原本完全相同；舊 card 沒有這兩個鍵，以未校準的讀出載入。
+
 **嗅覺通路選項（#4，都是可選設定）。** 已訓練的 VO 策略動作完全不受氣味影響：非運動神經元的 ReLU 把氣味訊號截斷，關掉後梯度也是 0；訓練前氣味對 ω 的影響也只有視覺的約 1/2500。兩個可選設定：
 - `olfactory_rate_beta`（預設 `None` = ReLU）：嗅覺 population 中非運動 DN 的節點改用 `softplus(v, beta)`，讓負電位時仍有梯度。和運動 DN 的 softplus 一樣是工程假設，不是生物測量；分支遮罩照常把關閉分支的 rate 設為 0。
 - `odor_input_gain`（程式預設 1；**正式設定是 100**，見 `configs/model/variants.yaml` 的 `common`，#4 的 G2、#36）：只放大 ORN 外部輸入（`odor_projection`），不改循環權重和譜半徑。GRU 共用同一個 encoder，所以六個變體都套用。

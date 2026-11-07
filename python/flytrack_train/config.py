@@ -137,6 +137,18 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
                 # Silently recalibrating trained rows would change the loaded behavior.
                 raise ValueError("Initial artifact already has different extra turn rows")
             policy.set_readout_extra_turns(*requested.values())
+        forward = {
+            key: [float(x) for x in model[key]]
+            for key in ("readout_forward_center", "readout_forward_scale")
+            if key in model
+        }
+        if any(policy.model_config.get(key, []) != value for key, value in forward.items()):
+            # #95 S1: the constants come from train.calibrate_forward on this run's own
+            # round-0 episodes; changing them on load would silently change the actor.
+            raise ValueError(
+                "Initial artifact forward readout calibration differs from the training "
+                "configuration; use train.calibrate_forward"
+            )
     else:
         policy = build_policy(
             config.get("variant", "VO"),

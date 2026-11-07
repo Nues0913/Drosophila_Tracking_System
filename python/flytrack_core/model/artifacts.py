@@ -162,6 +162,12 @@ def save_policy_artifact(
             if policy.variant == "VO-late"
             else None
         )
+        if policy.readout.forward_calibrated:
+            card["forward_readout"] = (
+                "speed reads (f - readout_forward_center) * readout_forward_scale per "
+                "(branch, forward type); fixed constants from round-0 teacher episodes "
+                "(#95 S1), buffers rather than parameters"
+            )
     else:
         card["activity_semantics"] = (
             "repeated diagnostic GRU hidden channels; no biological node correspondence"

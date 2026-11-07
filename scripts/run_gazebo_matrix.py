@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -28,6 +29,19 @@ def complete_rows(path: Path) -> list[dict]:
     if text and not text.endswith("\n"):
         lines = lines[:-1]
     return [json.loads(line) for line in lines if line.strip()]
+
+
+def validate_cell_rows(rows, variant, seed, card_hash, target_motion):
+    if any(
+        row["variant"] != variant
+        or int(row["seed"]) != seed
+        or row.get("model_card_sha256") != card_hash
+        or row.get("target_motion") != target_motion
+        for row in rows
+    ):
+        raise RuntimeError(
+            "Recorded checkpoint/model labels or target motion differ from this cell"
+        )
 
 
 def main():
@@ -47,6 +61,7 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=list(range(5)))
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--environment-seed", type=int, default=1700000000)
+    parser.add_argument("--target-motion", choices=("curved", "wander"), default="curved")
     parser.add_argument(
         "--env-file",
         type=Path,
@@ -118,6 +133,7 @@ def main():
         "domain_id": args.domain_id,
         "episodes_per_cell": args.episodes,
         "environment_seed_base": args.environment_seed,
+        "target_motion": args.target_motion,
         "cells": [],
     }
     try:
@@ -129,11 +145,14 @@ def main():
                 TRAINING_SEED=str(seed),
                 ENVIRONMENT_SEED=str(args.environment_seed + seed * 100000),
                 SCENARIO=scenario,
+                TARGET_MOTION=args.target_motion,
                 MAX_EPISODES=str(args.episodes),
                 ROS_DOMAIN_ID=str(args.domain_id),
                 EVAL_OUTPUT="/workspace/" + str(cell.relative_to(root)),
             )
             print(f"Gazebo {variant}, model seed {seed}, {scenario}", flush=True)
+            cell_started = datetime.now(timezone.utc).isoformat()
+            cell_started_monotonic = time.monotonic()
             subprocess.run(
                 compose + ["up", "-d", "--wait", "sim", "policy", "eval"],
                 cwd=root,
@@ -149,13 +168,7 @@ def main():
                         raise RuntimeError(
                             "More episodes were recorded than the declared cell budget"
                         )
-                    if any(
-                        row["variant"] != variant
-                        or int(row["seed"]) != seed
-                        or row.get("model_card_sha256") != card_hash
-                        for row in rows
-                    ):
-                        raise RuntimeError("Recorded checkpoint/model labels differ from this cell")
+                    validate_cell_rows(rows, variant, seed, card_hash, args.target_motion)
                     break
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"Only {len(rows)} complete episodes in {cell}")
@@ -178,6 +191,13 @@ def main():
                         "An evaluation container stopped; inspect this Compose project's logs"
                     )
                 time.sleep(1)
+            subprocess.run(
+                compose + ["down", "--remove-orphans"],
+                cwd=root,
+                env=environment,
+                check=True,
+                timeout=120,
+            )
             manifest["cells"].append(
                 {
                     "variant": variant,
@@ -187,17 +207,13 @@ def main():
                     "model_card_sha256": card_hash,
                     "episodes": len(rows),
                     "output": str(cell.relative_to(root)),
+                    "started_wall_utc": cell_started,
+                    "finished_wall_utc": datetime.now(timezone.utc).isoformat(),
+                    "elapsed_wall_s": time.monotonic() - cell_started_monotonic,
                 }
             )
             (output / "gazebo_matrix_manifest.json").write_text(
                 json.dumps(manifest, indent=2) + "\n"
-            )
-            subprocess.run(
-                compose + ["down", "--remove-orphans"],
-                cwd=root,
-                env=environment,
-                check=True,
-                timeout=120,
             )
     finally:
         # Scoped to this script's project; no volumes or unrelated Compose projects are removed.

@@ -358,6 +358,7 @@ class EvaluatorNode(Node):
             "scenario": message.scenario,
             "seed": message.seed,
             "environment_seed": self.event.seed,
+            "target_motion": self.parameters.get("target_motion"),
             "model_card_sha256": self.model_card_sha256,
             "reason": reason,
             **values,

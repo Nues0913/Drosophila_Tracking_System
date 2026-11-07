@@ -33,6 +33,9 @@ def generate_launch_description():
                 "sensor_contract", default_value="/workspace/configs/sensor_contract.json"
             ),
             DeclareLaunchArgument("scenario", default_value="normal"),
+            DeclareLaunchArgument(
+                "target_motion", default_value="curved", choices=["curved", "wander"]
+            ),
             DeclareLaunchArgument("seed", default_value="0"),
             DeclareLaunchArgument("training_seed", default_value="0"),
             DeclareLaunchArgument("max_episodes", default_value="0"),
@@ -71,13 +74,19 @@ def generate_launch_description():
             Node(
                 package="flytrack_world",
                 executable="scenario_manager",
-                parameters=[common],
+                parameters=[common, {"target_motion": LaunchConfiguration("target_motion")}],
                 output="screen",
             ),
             Node(
                 package="flytrack_world",
                 executable="target_mover",
-                parameters=[common, {"world_name": "tracking"}],
+                parameters=[
+                    common,
+                    {
+                        "world_name": "tracking",
+                        "target_motion": LaunchConfiguration("target_motion"),
+                    },
+                ],
                 output="screen",
             ),
             Node(

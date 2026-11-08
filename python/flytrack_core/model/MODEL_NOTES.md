@@ -127,7 +127,7 @@ motor mask 是不存入 state_dict 的固定 buffer，β 是設定值，不新�
 ## GRU 氣味增益補償（#85，2026-11-02）
 
 連接體用的 `odor_input_gain=100` 在 GRU 的稠密 Linear＋Tanh 瓶頸前會壓過視覺。
-`gru_odor_gain_compensation` 程式預設 `False`，正式矩陣只為 GRU 設成 `True`：
+`gru_odor_gain_compensation` 程式預設 `False`；`variants.yaml` 從 `93ec7cd` 起只為 GRU 設成 `True`，產生的是事後、未登記的 GRU（#87）。已登記的 formal-v1 GRU 在 `35432c3` 上訓練，沒有補償，要重現它必須用 `35432c3`。補償的做法：
 將共用 encoder 投影後的氣味 seed features 乘 `1/odor_input_gain`，視覺 seed 與
 三個 valid flags 不變。視覺／氣味 seed 若重疊就拒絕啟用，避免縮到相加的視覺電流；
 正式圖實測 583 個視覺 seed、143 個氣味 seed、重疊 0。固定 `feature_scale` 是

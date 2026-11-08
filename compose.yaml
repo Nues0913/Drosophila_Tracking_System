@@ -59,9 +59,19 @@ services:
   policy:
     <<: *ros
     profiles: [sim]
+    # Replaces the anchor's environment (YAML merge is shallow): keep the four keys in step.
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      GZ_PARTITION: ${COMPOSE_PROJECT_NAME:-flytrack}
+      GZ_IP: ${GZ_IP:-127.0.0.1}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
+      # Torch intra-op threads. The default (all cores) competes with Gazebo's software
+      # renderer and dropped the formal actors to 3-11 Hz on an 8-thread host (#88 G1).
+      OMP_NUM_THREADS: ${POLICY_TORCH_THREADS:-1}
+      MKL_NUM_THREADS: ${POLICY_TORCH_THREADS:-1}
     depends_on:
       sim: {condition: service_healthy}
-    command: [ros2, run, flytrack_policy, connectome_policy_node, --ros-args, -p, "use_sim_time:=true", -p, "artifact:=${ARTIFACT:-/workspace/artifacts/VO}", -p, "sensor_contract_json:=/workspace/configs/sensor_contract.json"]
+    command: [ros2, run, flytrack_policy, connectome_policy_node, --ros-args, -p, "use_sim_time:=true", -p, "artifact:=${ARTIFACT:-/workspace/artifacts/VO}", -p, "sensor_contract_json:=/workspace/configs/sensor_contract.json", -p, "device:=${POLICY_DEVICE:-cpu}"]
   eval:
     <<: *ros
     profiles: [sim]

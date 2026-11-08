@@ -156,6 +156,7 @@ def test_evaluator_records_motion_from_active_scenario_event(monkeypatch, tmp_pa
         ControlTrace=object,
         OdorReading=object,
         ScenarioEvent=object,
+        SensorTiming=object,
         TrackingMetrics=TrackingMetrics,
     )
     module("geometry_msgs")
@@ -175,6 +176,7 @@ def test_evaluator_records_motion_from_active_scenario_event(monkeypatch, tmp_pa
     node.event = node.accumulator = None
     node.sensor_stamps = {}
     node.variant, node.training_seed, node.model_card_sha256 = "V", 0, "card"
+    node.timing_cache = evaluator.SensorTimingCache()
     node.output = tmp_path
     node.publisher = SimpleNamespace(publish=lambda message: None)
     node.get_logger = lambda: SimpleNamespace(
@@ -207,3 +209,4 @@ def test_evaluator_records_motion_from_active_scenario_event(monkeypatch, tmp_pa
     row = json.loads((tmp_path / "episodes.jsonl").read_text())
     assert row["target_motion"] == "wander"
     assert row["environment_seed"] == 42
+    assert row["causal_wall_evaluator_filled_samples"] == 0

@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
-from flytrack_eval.latency import CausalLatency
+from flytrack_eval.latency import CausalLatency, SensorTimingCache
 
 
 def trace(source=1000000, domain="same-host", received=3000000):
@@ -79,3 +79,70 @@ def test_fixed_uint64_array_trace_is_json_serializable_without_losing_nanosecond
     assert serialized["samples"][0]["policy_received_monotonic_ns"] == base + 3000000
     assert serialized["causal_clock_valid"]
     assert accumulator.result()["sensor_to_command_wall_p95_ms"] == 5.0
+
+
+def timing(sensor="left", sec=1, nanosec=0, source=1000000, forward=2500000, domain="same-host"):
+    return SimpleNamespace(
+        sensor=sensor,
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec)),
+        clock_domain=domain,
+        source_monotonic_ns=source,
+        ingress_monotonic_ns=2000000,
+        forward_monotonic_ns=forward,
+    )
+
+
+def unjoined_trace():
+    """A trace whose policy-side join missed the timing: identity known, times zero."""
+    message = trace(source=0, domain="")
+    message.samples = [timing(source=0, forward=0, domain="") for _ in range(3)]
+    for sample in message.samples:
+        sample.ingress_monotonic_ns = 0
+    return message
+
+
+def test_evaluator_cache_fills_samples_the_policy_missed():
+    cache = SensorTimingCache()
+    cache.add(timing())
+    accumulator = CausalLatency()
+    row = accumulator.append(cache.fill(unjoined_trace()))
+    assert row["causal_clock_valid"] and cache.filled == 1
+    assert accumulator.result()["sensor_to_command_wall_p95_ms"] == 5.0
+
+
+def test_evaluator_cache_keeps_republished_source_and_never_overrides_policy_join():
+    cache = SensorTimingCache()
+    cache.add(timing(source=0))  # forwarded before the camera source time arrived
+    cache.add(timing(source=1500000))  # relay republish with the source time
+    cache.add(timing(source=0))  # a late duplicate without source must not erase it
+    message = unjoined_trace()
+    cache.fill(message)
+    assert message.samples[0].source_monotonic_ns == 1500000
+    joined = trace()
+    cache.fill(joined)
+    assert joined.samples[0].source_monotonic_ns == 1000000 and cache.filled == 1
+
+
+def test_evaluator_cache_rejects_stale_future_and_unknown_timings():
+    cache = SensorTimingCache()
+    cache.add(timing(forward=3000000 - 2_000_000_001))  # older than the 2 s receipt window
+    message = unjoined_trace()
+    cache.fill(message)
+    assert message.samples[0].source_monotonic_ns == 0
+    cache.reset()
+    cache.add(timing(forward=3000001))  # forwarded after the policy received it
+    cache.fill(message)
+    assert message.samples[0].source_monotonic_ns == 0
+    cache.reset()
+    cache.add(timing(sensor="right"))  # different sensor, same stamp
+    cache.fill(message)
+    assert message.samples[0].source_monotonic_ns == 0 and cache.filled == 0
+
+
+def test_evaluator_cache_reset_and_bounded_size():
+    cache = SensorTimingCache(limit=2)
+    for nanosec in (0, 1, 2):
+        cache.add(timing(nanosec=nanosec))
+    assert len(cache.timings) == 2 and ("left", 1, 0) not in cache.timings
+    cache.reset()
+    assert not cache.timings and cache.filled == 0

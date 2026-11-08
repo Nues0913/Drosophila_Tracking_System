@@ -1,7 +1,7 @@
 """Run paired Gazebo cells in an isolated Compose project after all validation.
 
 No containers are launched merely by importing this file. Existing evaluation
-files are never overwritten. This orchestrator has not been executed.
+files are never overwritten. First executed for the #88 G1 trial (2026-11-08).
 """
 
 from __future__ import annotations
@@ -74,14 +74,21 @@ def main():
     parser.add_argument("--domain-id", type=int, default=77)
     parser.add_argument("--cell-timeout", type=float, default=7200)
     parser.add_argument("--cpu", action="store_true")
+    # Policy runtime (#88 G0b): torch threads for the policy container and its device.
+    parser.add_argument("--policy-threads", type=int, default=1)
+    parser.add_argument("--policy-device", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args()
     if (
         args.episodes < 1
         or args.cell_timeout <= 0
+        or args.policy_threads < 1
         or min(args.seeds) < 0
         or not 0 <= args.domain_id <= 101
     ):
-        parser.error("episodes/timeout must be positive, seeds nonnegative, domain-id in [0,101]")
+        parser.error(
+            "episodes/timeout/policy-threads must be positive, seeds nonnegative, "
+            "domain-id in [0,101]"
+        )
     if any(
         len(set(values)) != len(values) for values in (args.variants, args.scenarios, args.seeds)
     ):
@@ -127,6 +134,8 @@ def main():
     ]
     if args.cpu:
         compose += ["-f", str(root / "compose.cpu.yaml")]
+    if args.policy_device == "cuda":
+        compose += ["-f", str(root / "compose.policy-gpu.yaml")]
     compose += ["--profile", "sim"]
     manifest = {
         "project": args.project_name,
@@ -134,6 +143,9 @@ def main():
         "episodes_per_cell": args.episodes,
         "environment_seed_base": args.environment_seed,
         "target_motion": args.target_motion,
+        "policy_torch_threads": args.policy_threads,
+        "policy_device": args.policy_device,
+        "cpu_rendering": bool(args.cpu),
         "cells": [],
     }
     try:
@@ -149,6 +161,8 @@ def main():
                 MAX_EPISODES=str(args.episodes),
                 ROS_DOMAIN_ID=str(args.domain_id),
                 EVAL_OUTPUT="/workspace/" + str(cell.relative_to(root)),
+                POLICY_TORCH_THREADS=str(args.policy_threads),
+                POLICY_DEVICE=args.policy_device,
             )
             print(f"Gazebo {variant}, model seed {seed}, {scenario}", flush=True)
             cell_started = datetime.now(timezone.utc).isoformat()

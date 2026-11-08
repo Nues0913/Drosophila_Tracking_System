@@ -2,7 +2,71 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import numpy as np
+
+# A source timing older than this at policy receipt belongs to another sample (for example a
+# previous episode whose simulation clock restarted), never to this command.
+MAX_FORWARD_TO_RECEIPT_NS = 2_000_000_000
+
+
+class SensorTimingCache:
+    """Evaluator-side join of SensorTiming onto ControlTrace samples (#88 G0b).
+
+    The policy joins timings inside its single-threaded executor. Under load it reads only a
+    small fraction of the ~110 timing messages per second before KEEP_LAST overwrites them,
+    so most traces arrive without source timing. The evaluator keeps its own cache keyed by
+    (sensor, header stamp) and fills only samples the policy left without a source time;
+    samples the policy already joined are never changed.
+    """
+
+    def __init__(self, limit: int = 8192):
+        self.limit = limit
+        self.timings = OrderedDict()
+        self.filled = 0
+
+    def reset(self):
+        self.timings.clear()
+        self.filled = 0
+
+    @staticmethod
+    def _key(sensor, stamp):
+        return str(sensor), int(stamp.sec), int(stamp.nanosec)
+
+    def add(self, message):
+        key = self._key(message.sensor, message.header.stamp)
+        previous = self.timings.get(key)
+        # The relay republishes a camera sample once its source time arrives; keep that one.
+        if previous is None or message.source_monotonic_ns:
+            self.timings[key] = (
+                str(message.clock_domain),
+                int(message.source_monotonic_ns),
+                int(message.ingress_monotonic_ns),
+                int(message.forward_monotonic_ns),
+            )
+            self.timings.move_to_end(key)
+        while len(self.timings) > self.limit:
+            self.timings.popitem(last=False)
+
+    def fill(self, trace):
+        for index, sample in enumerate(trace.samples):
+            if not trace.valid[index] or sample.source_monotonic_ns:
+                continue
+            timing = self.timings.get(self._key(sample.sensor, sample.header.stamp))
+            if timing is None or not timing[1]:
+                continue
+            received = int(trace.policy_received_monotonic_ns[index])
+            if not 0 <= received - timing[3] <= MAX_FORWARD_TO_RECEIPT_NS:
+                continue
+            (
+                sample.clock_domain,
+                sample.source_monotonic_ns,
+                sample.ingress_monotonic_ns,
+                sample.forward_monotonic_ns,
+            ) = timing
+            self.filled += 1
+        return trace
 
 
 class CausalLatency:

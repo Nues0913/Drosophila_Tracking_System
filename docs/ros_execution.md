@@ -262,7 +262,7 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
 - **2060 的延遲跟主機有關**：VO-late 在 2060 上比 VO 多約 70 ms，在 4070 上只多約 3 ms。
 - **GPU 渲染在兩台主機上都沒有改善延遲**，所以 G2 一律用 `--cpu`。
 - **4070 在 WSL 裡沒有 Docker 整合**：
-  - 改用 `scripts/docker-shim.sh` 把指令轉給 Windows 的 docker.exe；
+  - 改用 `scripts/docker-shim.sh` 把指令轉給 Windows 的 docker.exe；這個腳本在 4070 的證據包 `gazebo_g1_4070_g0b.tar.gz` 的 `scripts/` 裡，不在 repo；
   - Compose 的 `--env-file` 要指向 C: 上的空檔；
   - orchestrator 和 compose 檔都沒有改。
 - 每格只有 2 回合，這些延遲數字是工程紀錄，不是 G3 的判定。
@@ -284,4 +284,4 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
   - 其他主機、其他情境和 wander 只報告，不用來判定。
 - **彙總**：PR #101 的四份設定，加上 `scripts/summarize_gazebo_runtime.py`。
 
-**G2 暫停**（[#88 Decision 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)）：派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關 −0.97。修正 G0c 在 PR #102（平光材質，見該 PR 的 `docs/gazebo_consistency.md`）。合併後，兩台主機重跑 G1 範圍，再重新發 G2。
+**G2 暫停**（[#88 Decision 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)）：派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關 −0.97。修正 G0c 已合併（PR #102，main `a58b7b2`；平光材質，見 [gazebo_consistency.md](gazebo_consistency.md)）。2060 重跑的 G1 範圍，行為和 2D 一致，見該文件；4070、4060 的 G1 範圍通過後重新開跑 G2。

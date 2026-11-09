@@ -1,6 +1,6 @@
 # 2D 與 Gazebo 的輸入一致性（#88 G0c，原 #23）
 
-最後更新：2026-11-09。相關的 Decision 是 [#88 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)。
+最後更新：2026-11-10。相關的 Decision 是 [#88 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)。
 
 ## 為什麼要量
 formal-v1 的 actor 都在 2D 世界訓練，Gazebo 主要比較（G2）直接拿來用，不做微調。所以兩邊的感測輸入在相同的狀態下應該一致，否則 Gazebo 量到的就不是同一個模型的行為。
@@ -69,7 +69,15 @@ formal-v1 的 actor 都在 2D 世界訓練，Gazebo 主要比較（G2）直接�
 - 兩邊在逐回合的層級上就幾乎一樣，代表 2D 的 actor 可以直接移轉到修正後的 Gazebo。
 - 證據：release `formal-v1` 的 `gazebo_g0c_consistency_2060.tar.gz`（SHA-256 `606a1ecd432a6807510d1c1e284a4f14a210faac36832ef964c09d99fb1a9a5a`），內含修正前、探索的兩輪和修正後的匯出資料與比較結果。原始 rosbag 約 130 MB，只附 metadata。
 
+## 2060 用 G0c 世界重跑的 G1 範圍（2026-11-10）
+- **證據**：release `formal-v1` 的 `gazebo_g1c_2060.tar.gz`（SHA-256 `3e330bd0c17ddcda44354e89810e709704404215e4de53c902eb9955e1ab5b3d`）。條件是 head `e552957`（tree 和 main `a58b7b2` 相同）。
+- **範圍**：seed 0；normal 和 occlusion；curved 和 wander；每格 2 回合；`--cpu`；另外加跑事後 GRU。
+- **結果**：48 回合全部 valid，每格 ≥ 18 Hz，計時 100%。
+- **和 2D 對照**（`g1_vs_2d.py`，同一個 actor、同一個環境 seed）：48 對裡有 47 對結果相同；成功回合 Gazebo 7、2D 6；方位誤差中位數 62.0° 對 59.6°。G2 的開跑條件（事先固定）判定 GO。
+- **延遲不具代表性**：這段時間主機同時有其他使用者程式在跑。同一天、條件相同的探針裡，舊世界和 G0c 的延遲差不多（p50 150 對 154–157 ms），所以不是 G0c 造成的。
+
 ## 限制
 - 量測只用了一個 actor、一種情境（curved normal）和一台主機（2060）。渲染結果不依賴 actor，但沒有在其他主機上重複量測。
 - 2D 是 2.5D ray cast，用高斯 subray 近似小眼的接受角；Gazebo 是真正的相機渲染，再用 HexEye 取樣。兩者有小的取樣差異，所以 MAD 不會是 0。
+- **探針只適用沒有 corruption 的情境**：2D 端是原始的 ray cast，沒有套用 `corruption_at`。所以 occlusion 的全黑期間，Gazebo 是全黑、2D 不是；全黑的幀相關會是 NaN，整眼會被判成未通過。這次只量 curved normal，不影響結論；要量其他情境，得先把 corruption 套到 2D 端。（cweiting 在 PR #102 的建議）
 - 碰撞判斷的一致率（原 #23 第 2 項）需要 Gazebo 的 contact sensor，這次沒有做。

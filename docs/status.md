@@ -1,6 +1,24 @@
 # 目前進度與已知問題
 
-最後更新：2026-11-08（正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）和 R1（BC 配方，#4）都判定無效；formal 配方原樣重訓（R0）顯示基準在重訓下穩定。D2 的探索到此結束，formal-v2 不觸發。Gazebo 的 wander 接線已合併（PR #94），G1 試跑已在 2060 上完成：鏈路正常，但 policy 跟不上 20 Hz，因果計時也大多沒有對上，修正方案見 #88）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-11-09（正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）和 R1（BC 配方，#4）都判定無效；formal 配方原樣重訓（R0）顯示基準在重訓下穩定。D2 的探索到此結束，formal-v2 不觸發。Gazebo 的 wander 接線已合併（PR #94），G1 試跑發現 policy 跟不上 20 Hz、因果計時大多沒有對上，已由 G0b（PR #99）修正；2060 和 4070 的 G1 範圍都通過，G2 已派工（#88）。2D 展示素材的工具已合併（PR #100），正式交付由 V1（#97）執行）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+
+## 2026-11-09 G0b 合併、兩台主機的 G1 範圍與 G2 派工（#88）
+
+- **G0b**（PR #99，main `4a537af`）：
+  - policy 預設用 1 個 torch 執行緒；
+  - evaluator 自己訂閱 SensorTiming，補齊計時。
+  - 控制路徑的數學、感測頻率、世界和材質都不變。
+- **G1 範圍**（seed 0，normal 和 occlusion，curved 和 wander，每格 2 回合，`--cpu`）：
+  - **2060**：52/52 valid，19.6–19.9 Hz，計時 100%，sensor→command p95 是 55–130 ms。
+  - **4070**：52/52 valid，19.5–19.9 Hz，計時 100%，p95 是 48–53.5 ms。只有 GRU 和事後 GRU 低於 50 ms。
+  - 兩台主機都可以跑 G2。2060 的延遲高很多，所以不用於 G2：使用者的規則是重度測試交給 teammate。
+  - 每格只有 2 回合，這些都是工程紀錄。逐台的表和頻率定義見 [ros_execution.md](ros_execution.md) 的 2026-11-09 一節。
+- **G2 派工**（[#88 Decision 6743008783](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6743008783)）：
+  - 固定 main `4a537af`。
+  - 一個區塊是「一個訓練 seed × 一種目標運動」：4070 跑 curved seed 0–2、wander seed 0–1；4060 先跑 G1 範圍，再跑其餘區塊。兩台各約 27 小時。
+  - G3 延遲的判定在資料出來之前就固定：參考主機是 4070，取 curved normal 合併後的 p95。
+  - 彙總設定和延遲腳本在 PR #101。
+- **V1**（#97）：2D 展示素材的工具已合併（PR #100，main `2fb98a4`），正式交付等 MiLong 在 4060 上執行。V1 不能和 Gazebo 在同一台主機上同時跑。
 
 ## 2026-11-08 D2 結束、Issue 整理與 Gazebo G1（2060）
 
@@ -413,8 +431,8 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 2. ~~2D 正式評估（F3 curved、F4 wander）~~：已完成並驗收（#80、#84），結果見上方 2026-10-31 一節。
    - ~~**#85**~~：GRU 修正（PR #86）和事後重新訓練與評估（#87）都已完成，結果標為「未登記」，見上方 2026-11-04 一節。
 3. ~~**協定必交的分析**（A1，#90）~~：已完成並驗收，結果見上方 2026-11-08 一節。之後並行的兩個探索實驗：BC 配方實驗 R1（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)，@MiLong9487，判讀第 3 點已在看到結果前修正為相對基準的配對差）和 BC 預算實驗 B1（[#92](https://github.com/Nues0913/Drosophila_Tracking_System/issues/92)，使用者）。A1 發現速度輸出是常數，所以 B1 先暫緩，後來關閉。改做的速度讀出校準 S1（[#95](https://github.com/Nues0913/Drosophila_Tracking_System/issues/95)）判定無效，見上方 S1 一節。R1 也判定無效，BC 配方路線到此為止；重訓變異 R0 顯示基準穩定，見上方 R1／R0 一節。D2 已結束，formal-v2 不觸發（[#28 Decision 6718154301](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6718154301)）。#4 已結案；P3、PPO 和文獻上的候選解法都放在 #35，由使用者決定，不進正式矩陣。
-4. **Gazebo 主要比較（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)）**：G0 的 wander 接線已合併（PR #94，main `c339c0c`，PM 補跑 colcon test 通過）。G1 已在 2060 上完成，見上方 2026-11-08 一節：發現 policy 的執行緒爭用和計時對應兩個問題，修正（G0b）之後在 4070 上重跑 G1。完整矩陣（curved、wander 各 2,000 回合，加上事後 GRU 各 400 回合）等 G1 驗收後另發 Decision。2D 與 Gazebo 的一致性（原 #23）已併入 #88，只量測、不改設定。
+4. **Gazebo 主要比較（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)）**：G0 的 wander 接線已合併（PR #94，main `c339c0c`，PM 補跑 colcon test 通過）。G1 在 2060 上發現的兩個問題已由 G0b 修正（PR #99，main `4a537af`）；2060 和 4070 的 G1 範圍都通過。完整矩陣 G2（curved、wander 各 2,000 回合，加上事後 GRU 各 400 回合）已派工，見上方 2026-11-09 一節；彙總用 PR #101 的設定。2D 與 Gazebo 的一致性（原 #23）已併入 #88，只量測、不改設定。
 5. 並行：#49 的一次短回放已由 #51 報告驗收結案；#52 的 trace 狀態與 reset 清除 pending 可觀測性已由 #53 合併，PM colcon 10 項全過、無 skip；既有發布／reset 行為不變。下一個效能候選是 camera hex-eye 投影的等價優化設計，尚未核准實作或追加回放；2D／Gazebo 一致性（原 #23）已併入 #88，仍由 @cweiting731 處理。#42 已由 #44 結案。
-6. Gazebo 主要比較（#88）→ 報告與展示。#22 已結案，延遲量測由 #88 接手。2D 的展示素材由 V1（#97）製作。
+6. Gazebo 主要比較（#88）→ 報告與展示。#22 已結案，延遲量測由 #88 接手。2D 的展示素材由 V1（#97）製作，工具已合併（PR #100）。Gazebo 的展示和 rosbag 排在 G2 之後。
 
 舊版的逐日診斷紀錄保留在 [dn/](dn/)、[fixes_2026-10-17.md](fixes_2026-10-17.md) 和 [training_time.md](training_time.md)，這些是歷史紀錄，不代表目前狀態。

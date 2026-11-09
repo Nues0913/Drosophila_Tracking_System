@@ -238,3 +238,50 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
 
 - 四格合併，sensor→command 的 p50 是 118 ms、p95 是 139 ms。
 - 在這台主機上，G3 的 50 ms 沒有達到。這個結論現在是實際量到的，不再是推估。
+
+## 2026-11-09：兩台主機的 G1 範圍與 G2 派工（#88）
+
+**頻率的定義**（[G2 Decision 6743008783](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6743008783)）
+- 每格的推論頻率 = `inference_wall_samples` 總和 ÷ `measured_duration_s` 總和，單位是模擬秒。
+- 上一節 G0b 驗證表用的是「`control_traces` 筆數 ÷ 模擬秒」。2060 上有 2–4% 的推論沒有留下 trace，所以數字偏低。
+- 照新定義重算 G0b 驗證那四格：V normal 19.8、V occlusion 19.9、VO-late normal 19.8、VO-late occlusion 19.8 Hz。
+- 「trace 筆數 ÷ 推論次數」另外列為紀錄項目。
+
+**evaluator 補齊計時的限制**：只補 trace 處理當下已經收到的 timing，比 trace 晚到的 timing 不會回填。補齊的筆數記在每回合的 `causal_wall_evaluator_filled_samples`。4070 上每格都是 0，因為 policy 自己就對上了；2060 上 V、VO-late、RS 有補到。
+
+**G1 範圍**：main `4a537af`。seed 0；normal 和 occlusion；curved 和 wander；每格 2 回合；`--cpu`、policy 1 執行緒；另外加跑事後 GRU，以及 VO-late curved 的 GPU 渲染（policy 仍在 CPU）。
+
+| 主機 | ROS 映像 | 回合 | 頻率 | 計時 | sensor→command p95 |
+| --- | --- | --- | --- | --- | --- |
+| 2060（i7-9700，8 緒；PM） | `7e744c4e8989` | 52/52 valid | 19.6–19.9 Hz | 100% | GRU 55–57、VO 68–79、V 82–95、RS 116–125、VO-late 129–130 ms |
+| 4070 Laptop（i7-13700HX，24 緒，WSL2；cweiting） | `f61921e3c157` | 52/52 valid | 19.5–19.9 Hz | 100% | GRU 48、VO 50.4–50.5、V 50.7–50.9、RS 52.0–52.6、VO-late 52.9–53.5 ms |
+
+- **證據**：release `formal-v1` 的兩個包，PM 都重新算過：
+  - `gazebo_g1_2060_g0b.tar.gz`，SHA-256 `0d965346…`；
+  - `gazebo_g1_4070_g0b.tar.gz`，SHA-256 `eb470253…`。
+- **2060 的延遲跟主機有關**：VO-late 在 2060 上比 VO 多約 70 ms，在 4070 上只多約 3 ms。
+- **GPU 渲染在兩台主機上都沒有改善延遲**，所以 G2 一律用 `--cpu`。
+- **4070 在 WSL 裡沒有 Docker 整合**：
+  - 改用 `scripts/docker-shim.sh` 把指令轉給 Windows 的 docker.exe；
+  - Compose 的 `--env-file` 要指向 C: 上的空檔；
+  - orchestrator 和 compose 檔都沒有改。
+- 每格只有 2 回合，這些延遲數字是工程紀錄，不是 G3 的判定。
+
+**G2 派工**（[Decision 6743008783](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6743008783)）
+- **版本**：固定 main `4a537af`。
+- **工具包**：release `formal-v1` 的 `gazebo_g2_kit.tar.gz`，裡面有：
+  - `run_g2.sh`；
+  - 區塊核對 `g2_block_check.py`；
+  - 30 張 card 的 SHA 清單，已和 F3、#85 的評估紀錄比對過。
+- **區塊**：一個區塊是「一個訓練 seed × 一種目標運動」，所以配對比較不跨主機。
+  - 4070 跑 curved seed 0–2、wander seed 0–1；
+  - 4060 先跑 G1 範圍，通過後跑其餘區塊；
+  - 事後 GRU 排在最後。
+- **停止規則**：每個區塊跑完都會自動核對，任何一格低於 18 Hz、計時低於 95%，或有回合 invalid，就停下來，不重跑。
+- **G3 延遲的判定**（在資料出來之前固定）：
+  - 參考主機是 4070；
+  - 每個變體取 curved normal 的所有有計時命令，合併後算 p95，≤ 50 ms 才算通過；
+  - 其他主機、其他情境和 wander 只報告，不用來判定。
+- **彙總**：PR #101 的四份設定，加上 `scripts/summarize_gazebo_runtime.py`。
+
+**G2 暫停**（[#88 Decision 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)）：派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關 −0.97。修正 G0c 在 PR #102（平光材質，見該 PR 的 `docs/gazebo_consistency.md`）。合併後，兩台主機重跑 G1 範圍，再重新發 G2。

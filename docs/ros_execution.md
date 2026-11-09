@@ -208,3 +208,33 @@ inactive 路徑先 cancel、後清 pending 會讓完成回呼讀到 None 並記�
 [#52](https://github.com/Nues0913/Drosophila_Tracking_System/issues/52) 已由 #53 合併為 `388d481` 並結案。[Sidecar schema2](policy_profiler_sidecar.md) 區分 pending、publisher_called 與 not_submitted，另記 reset 丟棄的 sequence／數量／原因；publisher_called 只表示本機 publisher 呼叫，不保證外部 subscriber 收到。歷史 emitted 不重新解讀，也不回填舊 trace 缺口。PM 在短 ROS 容器重新 build，部署 Python 的 colcon 收集 10 項、全部通過且無 skip；獨立新舊 tracer 的序列化發布／pending 對照與實際 node callback 探針確認既有發布、timeout、reset 行為一致。
 
 camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准實作或新增回放。PM 本次只做離線重算、短 CPU 容器重現與覆核，未執行 GPU replay、Gazebo 或正式訓練。
+
+## 2026-11-08：G1 試跑（2060）與 G0b（#88）
+
+**G1**：PM 在使用者的 RTX 2060 主機上執行（i7-9700，8 緒，`--cpu` 時用軟體渲染）。
+- **版本**：main `c339c0c`，ROS 映像 `c877bc6351a3`。
+- **結果**：50 回合全部 valid，每回合的 `target_motion` 和環境 seed 都正確（[#88 6718765936](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6718765936)）。
+- **兩個問題**：
+  - **policy 只有 3–11 Hz**。torch 預設開滿所有核心，和 llvmpipe 搶 CPU。離線量，VO-late 單執行緒的推論 p50 是 25.6 ms。
+  - **超過 99% 的命令沒有感測時間**。policy 用單執行緒 executor，每一輪每個 subscription 只取一則訊息。這台主機每秒大約只跑得了 20 輪，timing 卻每秒進來約 105 則，KEEP_LAST 的佇列大多被覆蓋。把期限放寬到 5 秒也只對上約 1%，所以不是晚到（[診斷 6718924373](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6718924373)）。
+- **證據**：release `formal-v1` 的 `gazebo_g1_2060.tar.gz` 和 `gazebo_g1_2060_diag.tar.gz`。
+
+**G0b**：這次的修正，控制路徑的數學、感測頻率、世界和材質都不變。
+- **policy 的執行緒數**：compose 的 `POLICY_TORCH_THREADS`，預設 1，同時設 `OMP_NUM_THREADS` 和 `MKL_NUM_THREADS`。orchestrator 用 `--policy-threads` 設定。
+- **policy 的 device**：`POLICY_DEVICE`，預設 cpu。`--policy-device cuda` 時會加上 `compose.policy-gpu.yaml`，但 ROS 映像要用 CUDA 版 torch 建置。
+- **計時的對應**：evaluator 自己訂閱 `/fly/sensor_timing`，以（sensor, stamp）為鍵，補齊 policy 沒有對上的樣本。
+  - forward→received 超過 2 秒或是負的，就不採用；每回合開始時清空快取。
+  - 每回合記錄補齊的筆數 `causal_wall_evaluator_filled_samples`。
+- **manifest**：記錄 `policy_torch_threads`、`policy_device`、`cpu_rendering`。
+
+**驗證**（2060，`--cpu`，seed 0，curved 的 V 和 VO-late，normal 和 occlusion，各 2 回合）：
+
+| 格子 | 實際推論頻率 | 推論 p50 | 有感測時間的命令 | sensor→command p50／p95 |
+| --- | --- | --- | --- | --- |
+| V normal | 19.3 Hz | 31 ms | 1424/1424 | 130／150 ms |
+| V occlusion | 19.9 Hz | 25–28 ms | 2388/2388 | 56／135 ms |
+| VO-late normal | 19.4 Hz | 29 ms | 1682/1682 | 118／130 ms |
+| VO-late occlusion | 19.3 Hz | 29 ms | 1581/1581 | 117／130 ms |
+
+- 四格合併，sensor→command 的 p50 是 118 ms、p95 是 139 ms。
+- 在這台主機上，G3 的 50 ms 沒有達到。這個結論現在是實際量到的，不再是推估。

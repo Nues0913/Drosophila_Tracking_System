@@ -1,0 +1,6 @@
+# Optional override: give the policy container the GPU for POLICY_DEVICE=cuda (#88 G0b).
+# run_gazebo_matrix.py adds it for --policy-device cuda. The ROS image must then be built with a
+# CUDA torch wheel (ROS_TORCH_INDEX_URL, as in #22 stage 3b). Compose >= 2.30.
+services:
+  policy:
+    gpus: all

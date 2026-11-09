@@ -21,6 +21,7 @@ elapsed step duration (including a shortened terminal collision step).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gzip
 import json
 from pathlib import Path
@@ -34,6 +35,116 @@ else:
 
 MASS_NAMES = ("visual_exclusive", "odor_exclusive", "shared")
 NOT_AVAILABLE = "NOT AVAILABLE"
+REQUIRED_DN_TYPES = ("DNp09", "DNa01", "DNa02", "DNb05")
+
+
+class DNRecorder:
+    """Observe the actual structured readout inputs without changing any tensors.
+
+    Only scalar snapshots survive a forward call; pop() clears each step and
+    the context manager removes the hook even when replay raises an exception.
+    """
+
+    def __init__(self, policy, card, lesion):
+        if lesion != "none":
+            raise ValueError("--record-dn requires --lesion none")
+        self.readout = getattr(policy, "readout", None)
+        if card["variant"] == "GRU" or getattr(self.readout, "mode", None) != "structured":
+            raise ValueError("--record-dn requires a structured DN readout; GRU/linear unsupported")
+        readout = self.readout
+        if readout.branches not in (1, 2):
+            raise ValueError("--record-dn requires one or two readout branches")
+        graph = readout._graph
+        used = (readout.difference != 0).any(0) | (readout.forward_pool != 0).any(0)
+        for name in ("extra_left", "extra_right"):
+            pool = getattr(readout, name, None)
+            if pool is not None:
+                used = used | (pool != 0).any(0)
+        used = used.cpu().numpy()
+        graph_types = {
+            str(graph.type_names[type_id]): type_id
+            for type_id in sorted(set(graph.type_index.tolist()))
+        }
+        self.in_readout = {
+            kind: bool(used[graph.type_index == type_id].any())
+            for kind, type_id in graph_types.items()
+        }
+        self.pools = {}
+        for kind, type_id in graph_types.items():
+            if not self.in_readout[kind] and kind not in REQUIRED_DN_TYPES:
+                continue
+            nodes = graph.type_index == type_id
+            self.pools[kind] = {
+                name: np.flatnonzero(mask).tolist()
+                for name, mask in (
+                    ("left", nodes & (graph.side == -1)),
+                    ("right", nodes & (graph.side == 1)),
+                    ("all", nodes),
+                )
+            }
+        missing = set(REQUIRED_DN_TYPES) - graph_types.keys()
+        missing_sides = {
+            kind: [side for side in ("left", "right") if not self.pools[kind][side]]
+            for kind in REQUIRED_DN_TYPES
+            if kind in self.pools and any(not self.pools[kind][side] for side in ("left", "right"))
+        }
+        if missing or missing_sides:
+            raise ValueError(
+                f"--record-dn missing required DN types in graph: {sorted(missing)}; "
+                f"missing required DN sides: {missing_sides}; graph types: {sorted(graph_types)}"
+            )
+        self.required_types_not_in_readout = [
+            kind for kind in REQUIRED_DN_TYPES if not self.in_readout[kind]
+        ]
+        self.pending = None
+        self.handle = None
+
+    def __enter__(self):
+        self.handle = self.readout.register_forward_hook(self._capture)
+        return self
+
+    def _capture(self, readout, inputs, output):
+        import torch
+
+        if self.pending is not None:
+            raise RuntimeError("DN snapshot was not consumed before the next readout call")
+        activities = inputs[0]
+        names = ("central",) if readout.branches == 1 else ("visual", "odor")
+        with torch.no_grad():
+            branches = [
+                {
+                    "name": name,
+                    "types": {
+                        kind: {
+                            **{
+                                side: float(activity[0, indices].mean().cpu()) if indices else None
+                                for side, indices in pools.items()
+                            },
+                            "in_readout": self.in_readout[kind],
+                        }
+                        for kind, pools in self.pools.items()
+                    },
+                }
+                for name, activity in zip(names, activities, strict=True)
+            ]
+            forward = torch.cat([a @ readout.forward_pool.T for a in activities], dim=1)
+            self.pending = {
+                "branches": branches,
+                "forward_latent": float(
+                    (forward @ readout.forward_weight + readout.forward_bias)[0]
+                ),
+                "omega_latent": float(readout.omega_latent(activities)[0]),
+            }
+
+    def pop(self):
+        if self.pending is None:
+            raise RuntimeError("Policy did not call the structured readout")
+        snapshot, self.pending = self.pending, None
+        return snapshot
+
+    def __exit__(self, *exc):
+        self.handle.remove()
+        self.pending = None
 
 
 def collision_types(env, agent_pose, target_pose) -> list[str] | str:
@@ -255,6 +366,7 @@ def replay_episode(policy, contract, card, config, env, args, seed, episode, tra
     from flytrack_core.metrics import EpisodeMetrics
     from flytrack_train.evaluation import evaluation_environment_seed
 
+    recorder = DNRecorder(policy, card, args.lesion) if getattr(args, "record_dn", False) else None
     options = config.get("evaluation", {})
     env_seed = evaluation_environment_seed(
         seed, episode, int(options.get("environment_seed", 1700000000))
@@ -276,13 +388,19 @@ def replay_episode(policy, contract, card, config, env, args, seed, episode, tra
     analyzed_steps = 0
     descriptors = Descriptors()
     step = 0
-    with gzip.open(trace_path, "wt", encoding="utf-8") as stream, torch.no_grad():
+    with (
+        recorder if recorder is not None else contextlib.nullcontext(),
+        gzip.open(trace_path, "wt", encoding="utf-8") as stream,
+        torch.no_grad(),
+    ):
         while True:
             tensors = {
                 key: torch.as_tensor(value, device=args.device).unsqueeze(0)
                 for key, value in observation.items()
             }
             action, state, activity = policy(tensors, state)
+            if recorder is not None:
+                dn = recorder.pop()
             step_mass = {}
             segment = "occluded" if decision_info["occluded"] else "non_occluded"
             segment_steps[segment] += 1
@@ -329,6 +447,8 @@ def replay_episode(policy, contract, card, config, env, args, seed, episode, tra
             }
             if card["variant"] != "GRU":
                 record["current_mass"] = step_mass
+            if recorder is not None:
+                record["dn"] = dn
             stream.write(json.dumps(clean(record), allow_nan=False) + "\n")
             step += 1
             decision_info = info
@@ -360,6 +480,14 @@ def replay_episode(policy, contract, card, config, env, args, seed, episode, tra
         descriptors=descriptors.result(float(info["time_s"])),
         trace=str(trace_path.relative_to(args.output)),
     )
+    if recorder is not None:
+        world = env.unwrapped
+        row["world"] = {
+            "walls": np.asarray(world.walls).tolist(),
+            "obstacles": world.obstacles,
+            "agent_radius_m": float(world.agent_radius_m),
+            "target_radius_m": float(world.target_radius_m),
+        }
     return clean(row)
 
 
@@ -374,12 +502,15 @@ def main():
     parser.add_argument("--episodes", type=parse_episodes, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu",), default="cpu")
+    parser.add_argument("--record-dn", action="store_true")
     args = parser.parse_args()
     import yaml
     from flytrack_core.model import load_policy_artifact
     from flytrack_train.config import contract_from_config, make_env
 
     policy, contract, card = load_policy_artifact(args.artifact, device=args.device)
+    if args.record_dn:
+        recorder = DNRecorder(policy, card, args.lesion)  # Validate before creating any output.
     if not hasattr(policy, "set_lesion"):
         raise ValueError("Policy does not expose the declared lesion analysis interface")
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -412,6 +543,22 @@ def main():
         "undefined": "Zero path length, zero teacher angular sum and zero current mass yield null. "
         "Missing wall geometry yields null clearance; missing collision geometry: NOT AVAILABLE.",
     }
+    if args.record_dn:
+        notes.update(
+            record_dn=True,
+            dn_definition="Readout-input rates, never the policy's branch-averaged activity. "
+            "branches follow readout order: central, or visual then odor. types contains "
+            "the union of required DNp09/DNa01/DNa02/DNb05 and every type used by "
+            "difference, forward_pool or extra turn pools. in_readout is true iff a node "
+            "of that type has a nonzero entry in difference, forward_pool, extra_left "
+            "or extra_right; false means the recorded rates are not used by the readout. "
+            "left/right are means over that type's nodes on side -1/+1; all averages every node "
+            "of that type (including side 0). Required types must exist on both sides "
+            "in the graph; an absent side of any other type is null. forward_latent "
+            "is before sigmoid; omega_latent is before tanh, including bias and extra turns. "
+            "world stores unwrapped walls [xmin,ymin,xmax,ymax], obstacle disks and radii.",
+            required_dn_types_not_in_readout=recorder.required_types_not_in_readout,
+        )
     policy.set_lesion(args.lesion)
     env = make_env(config, contract, scenario=args.scenario)
     rows = []

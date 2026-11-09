@@ -12,7 +12,13 @@ import numpy as np
 import rclpy
 from flytrack_core.contracts import VARIANTS
 from flytrack_core.metrics import EpisodeMetrics
-from flytrack_interfaces.msg import ControlTrace, OdorReading, ScenarioEvent, TrackingMetrics
+from flytrack_interfaces.msg import (
+    ControlTrace,
+    OdorReading,
+    ScenarioEvent,
+    SensorTiming,
+    TrackingMetrics,
+)
 from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -20,7 +26,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 
-from .latency import CausalLatency
+from .latency import CausalLatency, SensorTimingCache
 
 
 def stamp_seconds(stamp):
@@ -81,6 +87,7 @@ class EvaluatorNode(Node):
         self.pending_latency = None
         self.inference_latencies = []
         self.causal_latency = CausalLatency()
+        self.timing_cache = SensorTimingCache()
         self.event = None
         self.parameters = {}
         self.accumulator = None
@@ -121,6 +128,13 @@ class EvaluatorNode(Node):
             self.on_control_trace,
             QoSProfile(depth=256, reliability=ReliabilityPolicy.RELIABLE),
         )
+        # Independent copy of the source timings the policy may miss under load (#88 G0b).
+        self.create_subscription(
+            SensorTiming,
+            "/fly/sensor_timing",
+            self.timing_cache.add,
+            QoSProfile(depth=1024, reliability=ReliabilityPolicy.RELIABLE),
+        )
         self.publisher = self.create_publisher(TrackingMetrics, "/eval/metrics", reliable)
         self.create_timer(float(self.get_parameter("control_dt").value), self.sample)
 
@@ -150,7 +164,7 @@ class EvaluatorNode(Node):
     def on_control_trace(self, message):
         if self.accumulator is None or stamp_seconds(message.header.stamp) < self.started_s:
             return
-        row = self.causal_latency.append(message)
+        row = self.causal_latency.append(self.timing_cache.fill(message))
         if row is not None:
             row["episode_id"] = self.event.episode_id
             with (self.output / "control_traces.jsonl").open("a", encoding="utf-8") as stream:
@@ -187,6 +201,7 @@ class EvaluatorNode(Node):
             self.pending_latency = None
             self.inference_latencies = []
             self.causal_latency = CausalLatency()
+            self.timing_cache.reset()
             self.omega = 0.0
             bearing = float(self.get_parameter("success_bearing_deg").value)
             self.accumulator = EpisodeMetrics(
@@ -324,6 +339,7 @@ class EvaluatorNode(Node):
             values["inference_wall_p50_ms"] = values["inference_wall_p95_ms"] = float("nan")
         values["inference_wall_samples"] = len(self.inference_latencies)
         values.update(self.causal_latency.result())
+        values["causal_wall_evaluator_filled_samples"] = self.timing_cache.filled
         if not valid:
             self.get_logger().warning(
                 f"Episode {self.event.episode_id}: incomplete or insufficient "

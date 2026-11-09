@@ -1,13 +1,20 @@
+# #88 G2: every registered comparison on the Gazebo curved episodes (primary target motion).
+# Input: each host's runs/gazebo_eval/curved tree, merged into one checkout; the pattern
+# cannot match the other motion or the post-hoc GRU blocks. latency_* here is the evaluator's
+# simulation-clock sensor age (diagnostic); the G3 wall latency is computed by
+# scripts/summarize_gazebo_runtime.py.
 sensor_contract_path: configs/sensor_contract.json
-output: runs/evaluation/gazebo
+output: runs/evaluation/gazebo_curved
 evaluation:
   # configs/evaluation_protocol.yaml gazebo_variants (VO-late is the primary architecture).
   variants: [V, VO, VO-late, GRU, RS]
   scenarios: [normal, occlusion, noise, conflict]
   seeds: [0, 1, 2, 3, 4]
   episodes_per_seed: 20
-  recorded_episode_files: ['runs/gazebo_eval/**/episodes.jsonl']
+  recorded_episode_files: ['runs/gazebo_eval/curved/**/episodes.jsonl']
   artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
+  # true would demand all six 2D variants (O is not in Gazebo); summarize_recorded still
+  # requires exactly episodes_per_seed rows for every listed variant, scenario and seed.
   require_full_matrix: false
   verify_recorded_artifacts: true
   require_equal_budget: true

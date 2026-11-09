@@ -20,6 +20,7 @@ from .config import (
     write_json,
 )
 from .extra_turn import EXTRA_TURN_KEYS, calibrate_extra_turns
+from .forward_rows import FORWARD_ROW_KEYS, calibrate_forward_rows
 from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .parameters import parameter_groups
@@ -161,6 +162,16 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         policy.readout.extra_center_ramp = True
         policy.model_config["readout_extra_turn_center_ramp"] = True
         policy.set_readout_extra_turns(types, [0.0] * len(types), [1.0] * len(types), eps)
+    # #104 D3 (opt-in): detached forward-speed rows, also zero-weight until calibrated.
+    forward_calibration = train.get("calibrate_forward_rows")
+    if forward_calibration:
+        if not isinstance(policy, ConnectomePolicy) or policy.readout.mode != "structured":
+            raise ValueError("calibrate_forward_rows needs a connectome policy, structured readout")
+        if policy.readout.forward_row_types:
+            raise ValueError("calibrate_forward_rows needs an actor without forward rows")
+        forward_types = list(forward_calibration["types"])
+        width = len(forward_types) * policy.branches
+        policy.set_readout_forward_rows(forward_types, [0.0] * width, [1.0] * width)
     optimizer = torch.optim.Adam(parameter_groups(policy, train))
     if teacher_steps <= 0 or dagger_steps <= 0:
         raise ValueError("Fair BC/DAgger budgets must be positive")
@@ -175,6 +186,11 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
     calibrated = dict((checkpoint.get("extra_turn_calibration") if checkpoint else None) or {})
     if calibrated:
         policy.set_readout_extra_turns(*(calibrated[key] for key in EXTRA_TURN_KEYS))
+    forward_calibrated = dict(
+        (checkpoint.get("forward_row_calibration") if checkpoint else None) or {}
+    )
+    if forward_calibrated:
+        policy.set_readout_forward_rows(*(forward_calibrated[key] for key in FORWARD_ROW_KEYS))
     if checkpoint:
         policy.load_state_dict(checkpoint["actor"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -218,6 +234,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
                 reports=reports,
                 fit_state=fit_state,
                 extra_turn_calibration=calibrated or None,
+                forward_row_calibration=forward_calibrated or None,
             )
 
         def collected(
@@ -285,6 +302,21 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             calibrated.update(report["model"])
             policy.set_readout_extra_turns(*(calibrated[key] for key in EXTRA_TURN_KEYS))
             write_json(output / "extra_turn_calibration.json", report)
+        if forward_calibration and not forward_calibrated:
+            held = set(held_out_episodes(len(episodes), int(train.get("validation_every", 10))))
+            report = calibrate_forward_rows(
+                policy,
+                model,
+                episodes,
+                encoded,
+                held,
+                int(forward_calibration.get("burn_in_steps", 60)),
+            )
+            forward_calibrated.update(report["model"])
+            policy.set_readout_forward_rows(
+                *(forward_calibrated[key] for key in FORWARD_ROW_KEYS)
+            )
+            write_json(output / "forward_row_calibration.json", report)
         fit_reports = fit_behavior(
             model,
             encoded,
@@ -328,6 +360,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             reports=reports,
             fit_state=None,
             extra_turn_calibration=calibrated or None,
+            forward_row_calibration=forward_calibrated or None,
         )
     output.mkdir(parents=True, exist_ok=True)
     centering_metadata = {}

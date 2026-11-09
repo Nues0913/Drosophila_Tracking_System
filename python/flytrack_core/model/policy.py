@@ -366,6 +366,79 @@ class MotorReadout(nn.Module):
         self._graph = graph
         self.extra_turn_types: list[str] = []
         self.extra_center_ramp = bool(extra_center_ramp)
+        self.forward_row_types: list[str] = []
+
+    def set_forward_rows(self, types: list[str], center: list[float], scale: list[float]) -> None:
+        """Add, or recalibrate, calibrated forward-speed rows (#104 D3).
+
+        Each type is read as the mean rate of all its nodes, S, standardized as
+        (S - center) * scale with constants from teacher rollouts
+        (flytrack_train.forward_rows), and enters the pre-sigmoid forward latent with its
+        own weight. center and scale hold one value per (branch, type), branch-major. The
+        rows read a detached copy of the activity, so the speed error never reaches the
+        core or the encoder through them: the calibration gain (1/std, up to ~1e5 for DNp09)
+        would otherwise multiply those gradients, which broke steering in S1 (#95). New rows
+        start at zero weight, so adding them does not change the policy's actions.
+        """
+        types = list(types)
+        center, scale = [float(x) for x in center], [float(x) for x in scale]
+        if not types:
+            if self.forward_row_types:
+                raise ValueError("Forward rows cannot be removed from a policy")
+            return
+        if self.mode != "structured":
+            raise ValueError("Forward rows need the structured readout")
+        if len(set(types)) != len(types):
+            raise ValueError("Forward row types must be unique")
+        if not len(center) == len(scale) == len(types) * self.branches:
+            raise ValueError("Forward rows need one center and scale per branch and type")
+        if not all(math.isfinite(x) for x in center) or not all(
+            math.isfinite(x) and x > 0 for x in scale
+        ):
+            raise ValueError("Forward row centers must be finite and scales positive and finite")
+        if self.forward_row_types and self.forward_row_types != types:
+            raise ValueError("Forward row types cannot change once added; only recalibrate")
+        graph = self._graph
+        names = np.asarray([str(name) for name in graph.type_names])[graph.type_index]
+        pool = np.zeros((len(types), graph.n_nodes), dtype=np.float32)
+        for row, name in enumerate(types):
+            nodes = names == name
+            if not nodes.any():
+                raise ValueError(f"Forward row type {name} is not in the graph")
+            pool[row, nodes] = 1 / int(nodes.sum())
+        device = self.forward_pool.device
+        for name, value in (
+            ("forward_row_pool", pool),
+            ("forward_row_center", np.asarray(center, dtype=np.float32)),
+            ("forward_row_scale", np.asarray(scale, dtype=np.float32)),
+        ):
+            self.register_buffer(name, torch.as_tensor(value, device=device), persistent=False)
+        if not self.forward_row_types:
+            self.forward_row_weight = nn.Parameter(
+                torch.zeros(len(types) * self.branches, device=device)
+            )
+        self.forward_row_types = types
+
+    def forward_row_raw(self, activities: list[Tensor]) -> Tensor:
+        """Detached mean rate of each forward row type, (batch, branches * types)."""
+        return torch.cat([activity.detach() @ self.forward_row_pool.T for activity in activities], 1)
+
+    def forward_row_features(self, activities: list[Tensor]) -> Tensor:
+        return (self.forward_row_raw(activities) - self.forward_row_center) * self.forward_row_scale
+
+    def forward_latent(self, activities: list[Tensor]) -> Tensor:
+        """Pre-sigmoid forward speed; forward() uses exactly this value."""
+        if len(activities) != self.branches:
+            raise ValueError("Incorrect number of readout branches")
+        if self.mode == "linear":
+            return self.linear(
+                torch.cat([activity[:, self.motor_indices] for activity in activities], dim=1)
+            )[:, 0]
+        forward = torch.cat([activity @ self.forward_pool.T for activity in activities], dim=1)
+        latent = forward @ self.forward_weight + self.forward_bias
+        if self.forward_row_types:
+            latent = latent + self.forward_row_features(activities) @ self.forward_row_weight
+        return latent
 
     def set_extra_turns(
         self, types: list[str], center: list[float], scale: list[float], eps: float = 0.1
@@ -474,14 +547,13 @@ class MotorReadout(nn.Module):
                 dim=-1,
             )
         turns = torch.cat([activity @ self.difference.T for activity in activities], dim=1)
-        forward = torch.cat([activity @ self.forward_pool.T for activity in activities], dim=1)
         turn = turns @ self.turn_weight + (0 if self.turn_bias is None else self.turn_bias)
         if self.extra_turn_types:
             extra = torch.cat([self.extra_turn_features(activity) for activity in activities], 1)
             turn = turn + extra @ self.extra_turn_weight
         return torch.stack(
             (
-                self.v_max * torch.sigmoid(forward @ self.forward_weight + self.forward_bias),
+                self.v_max * torch.sigmoid(self.forward_latent(activities)),
                 self.omega_max * torch.tanh(turn),
             ),
             dim=-1,
@@ -766,6 +838,11 @@ class ConnectomePolicy(nn.Module):
             config["readout_extra_turn_scale"],
             config["readout_extra_turn_eps"],
         )
+        self.set_readout_forward_rows(
+            config["readout_forward_row_types"],
+            config["readout_forward_row_center"],
+            config["readout_forward_row_scale"],
+        )
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
     def set_readout_extra_turns(
@@ -778,6 +855,17 @@ class ConnectomePolicy(nn.Module):
             readout_extra_turn_center=[float(x) for x in center],
             readout_extra_turn_scale=[float(x) for x in scale],
             readout_extra_turn_eps=float(eps),
+        )
+
+    def set_readout_forward_rows(
+        self, types: list[str], center: list[float], scale: list[float]
+    ) -> None:
+        """Opt-in calibrated forward-speed rows (#104 D3); see MotorReadout.set_forward_rows."""
+        self.readout.set_forward_rows(types, center, scale)
+        self.model_config.update(
+            readout_forward_row_types=list(types),
+            readout_forward_row_center=[float(x) for x in center],
+            readout_forward_row_scale=[float(x) for x in scale],
         )
 
     def set_lesion(self, mode: str = "none") -> None:
@@ -1125,6 +1213,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "readout_extra_turn_eps": 0.1,
     # The center shares the max(S, eps) denominator (#4 4-R7); legacy cards load without.
     "readout_extra_turn_center_ramp": True,
+    # Opt-in calibrated forward-speed rows (#104 D3), e.g. ["DNp09", "DNa01", "DNa02"]:
+    # detached, standardized mean rates added to the forward latent; one center and scale
+    # per (branch, type). See MotorReadout.set_forward_rows.
+    "readout_forward_row_types": [],
+    "readout_forward_row_center": [],
+    "readout_forward_row_scale": [],
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

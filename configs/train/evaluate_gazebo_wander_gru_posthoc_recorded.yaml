@@ -1,0 +1,53 @@
+# #85/#88 post-hoc, unregistered: the registered comparisons on the Gazebo wander episodes,
+# with the retrained GRU in place of the formal-v1 GRU. The other variants keep their formal-v1
+# rows; GRU rows come only from the post-hoc blocks, paired by (scenario, seed, episode).
+sensor_contract_path: configs/sensor_contract.json
+output: runs/evaluation/gazebo_wander_gru_posthoc
+evaluation:
+  variants: [V, VO, VO-late, GRU, RS]
+  scenarios: [normal, occlusion, noise, conflict]
+  seeds: [0, 1, 2, 3, 4]
+  episodes_per_seed: 20
+  recorded_episode_files:
+    - 'runs/gazebo_eval/wander/**/episodes.jsonl'
+    - 'runs/gazebo_eval/posthoc_wander/**/episodes.jsonl'
+  # Literal paths: every recorded_variant_files entry must be a file matched above.
+  recorded_variant_files:
+    GRU:
+      - runs/gazebo_eval/posthoc_wander/seed_0/GRU/seed_0/normal/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_0/GRU/seed_0/occlusion/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_0/GRU/seed_0/noise/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_0/GRU/seed_0/conflict/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_1/GRU/seed_1/normal/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_1/GRU/seed_1/occlusion/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_1/GRU/seed_1/noise/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_1/GRU/seed_1/conflict/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_2/GRU/seed_2/normal/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_2/GRU/seed_2/occlusion/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_2/GRU/seed_2/noise/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_2/GRU/seed_2/conflict/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_3/GRU/seed_3/normal/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_3/GRU/seed_3/occlusion/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_3/GRU/seed_3/noise/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_3/GRU/seed_3/conflict/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_4/GRU/seed_4/normal/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_4/GRU/seed_4/occlusion/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_4/GRU/seed_4/noise/episodes.jsonl
+      - runs/gazebo_eval/posthoc_wander/seed_4/GRU/seed_4/conflict/episodes.jsonl
+  artifact_template: 'runs/bc/{variant}/seed_{seed}/actor'
+  artifacts:
+    GRU:
+      0: runs/bc_posthoc/GRU/seed_0/actor
+      1: runs/bc_posthoc/GRU/seed_1/actor
+      2: runs/bc_posthoc/GRU/seed_2/actor
+      3: runs/bc_posthoc/GRU/seed_3/actor
+      4: runs/bc_posthoc/GRU/seed_4/actor
+  # true would demand all six 2D variants (O is not in Gazebo); summarize_recorded still
+  # requires exactly episodes_per_seed rows for every listed variant, scenario and seed.
+  require_full_matrix: false
+  verify_recorded_artifacts: true
+  require_equal_budget: true
+  require_shared_sources: true
+  require_parameter_match: true
+  parameter_tolerance: 0.05
+  bootstrap_draws: 10000

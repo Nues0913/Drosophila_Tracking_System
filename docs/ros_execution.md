@@ -283,3 +283,5 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
   - 每個變體取 curved normal 的所有有計時命令，合併後算 p95，≤ 50 ms 才算通過；
   - 其他主機、其他情境和 wander 只報告，不用來判定。
 - **彙總**：PR #101 的四份設定，加上 `scripts/summarize_gazebo_runtime.py`。
+
+**G2 暫停**（[#88 Decision 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)）：派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關 −0.97。修正 G0c 在 PR #102（平光材質，見該 PR 的 `docs/gazebo_consistency.md`）。合併後，兩台主機重跑 G1 範圍，再重新發 G2。

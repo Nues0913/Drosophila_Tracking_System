@@ -67,7 +67,7 @@ formal-v1 的 actor 都在 2D 世界訓練，Gazebo 主要比較（G2）直接�
 | 1700000001 | 失敗；9°，1.99 m，0.43 | 失敗；10°，1.99 m，0.46 |
 
 - 兩邊在逐回合的層級上就幾乎一樣，代表 2D 的 actor 可以直接移轉到修正後的 Gazebo。
-- 證據：`runs/g0c_verify/`，PM 本機的 `runs/reviews/pm-2026-11-09/g0c/`。
+- 證據：release `formal-v1` 的 `gazebo_g0c_consistency_2060.tar.gz`（SHA-256 `606a1ecd432a6807510d1c1e284a4f14a210faac36832ef964c09d99fb1a9a5a`），內含修正前、探索的兩輪和修正後的匯出資料與比較結果。原始 rosbag 約 130 MB，只附 metadata。
 
 ## 限制
 - 量測只用了一個 actor、一種情境（curved normal）和一台主機（2060）。渲染結果不依賴 actor，但沒有在其他主機上重複量測。

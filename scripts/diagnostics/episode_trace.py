@@ -127,12 +127,10 @@ class DNRecorder:
                 }
                 for name, activity in zip(names, activities, strict=True)
             ]
-            forward = torch.cat([a @ readout.forward_pool.T for a in activities], dim=1)
             self.pending = {
                 "branches": branches,
-                "forward_latent": float(
-                    (forward @ readout.forward_weight + readout.forward_bias)[0]
-                ),
+                # Includes the #104 forward rows when present; the same value forward() uses.
+                "forward_latent": float(readout.forward_latent(activities)[0]),
                 "omega_latent": float(readout.omega_latent(activities)[0]),
             }
 

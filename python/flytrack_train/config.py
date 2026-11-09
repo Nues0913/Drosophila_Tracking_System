@@ -137,6 +137,21 @@ def prepare_policy(config: dict[str, Any], device: torch.device):
                 # Silently recalibrating trained rows would change the loaded behavior.
                 raise ValueError("Initial artifact already has different extra turn rows")
             policy.set_readout_extra_turns(*requested.values())
+        if isinstance(policy, ConnectomePolicy) and model.get("readout_forward_row_types"):
+            # Explicit warm-start migration (#104 D3): new rows start at zero weight.
+            requested = {
+                key: model.get(key, DEFAULT_CONFIG[key])
+                for key in (
+                    "readout_forward_row_types",
+                    "readout_forward_row_center",
+                    "readout_forward_row_scale",
+                )
+            }
+            if policy.readout.forward_row_types and any(
+                policy.model_config[key] != value for key, value in requested.items()
+            ):
+                raise ValueError("Initial artifact already has different forward rows")
+            policy.set_readout_forward_rows(*requested.values())
     else:
         policy = build_policy(
             config.get("variant", "VO"),

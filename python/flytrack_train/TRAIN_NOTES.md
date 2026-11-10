@@ -82,7 +82,7 @@ python -m flytrack_train evaluate --config configs/train/evaluate.yaml --output 
 python -m flytrack_train export --config configs/train/bc.yaml --artifact runs/bc/VO/seed_0/actor --output artifacts/VO/seed_0
 ```
 
-設定檔命名由根目錄配置提供；CLI 支援 `--device auto|cpu|cuda|cuda:0`、`--seed`、`--variant` 與 `--output`。`--variant` 不会重寫 `init_artifact` 路徑，換模型時必須同步暖啟動來源。
+設定檔命名由根目錄配置提供；CLI 支援 `--device auto|cpu|cuda|cuda:0`、`--seed`、`--variant` 與 `--output`。`--variant` 不會重寫 `init_artifact` 路徑，換模型時必須同步暖啟動來源。
 
 ### BC 結束時的轉向偏差置中（#73）
 
@@ -158,7 +158,7 @@ collection 精確消耗 `total_steps`，不因提早碰撞而縮減預算。
 
 **批次 TBPTT。** `batch_episodes`（預設 16）條回合平行前進，每條在自己的 lane 依時間順序走 `sequence_length` 窗口並延續自己的遞迴狀態；一次 optimizer step 平均各 lane 的單窗口損失（每 lane 的損失定義與單回合時完全相同）。梯度在窗口邊界 detach，回合開頭的初始狀態每窗口重建，梯度照常流到靜息 bias。
 
-**提早停止。** 每第 `validation_every`（預設 10）個回合保留為驗證集，不參與擬合；每個 epoch 後計算驗證損失，連續 `early_stopping_patience`（預設 3）個 epoch 沒有相對改善 `early_stopping_min_delta` 就停止，最後還原驗證損失最佳的參數與 optimizer 狀態。`epochs` 是上限。回合數少於 `validation_every` 時不保留驗證集，跑滿 `epochs`。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助头。
+**提早停止。** 每第 `validation_every`（預設 10）個回合保留為驗證集，不參與擬合；每個 epoch 後計算驗證損失，連續 `early_stopping_patience`（預設 3）個 epoch 沒有相對改善 `early_stopping_min_delta` 就停止，最後還原驗證損失最佳的參數與 optimizer 狀態。`epochs` 是上限。回合數少於 `validation_every` 時不保留驗證集，跑滿 `epochs`。產出 `pretraining_checkpoint.pt` 保留輔助頭供研究診斷，`actor/` 完全不含輔助頭。
 
 正式公平流程可讓 V/O 各用 240000 步，VO/VO-late/GRU/RS 各先視覺 120000 步，再以該次 `actor/` 作 `init_artifact` 做嗅覺 120000 步。模型各自暖啟動，可避免從生物模型替基準模型挑選較好的初始權重。
 
@@ -356,7 +356,7 @@ actor 的 ratio clip，與此設定無關。0、負數、NaN、無限大及非�
 `actor_grad_norm_clipped`／`critic_grad_norm_clipped`（裁剪後範數的平均）。估值及
 critic loss 使用訓練 reward 的尺度，比較實際折扣回報時必須用相同尺度。
 
-預設課程依累積步數：靜止高斯羽流 → 直線高斯羽流 → 曲線 puff → 視覺遮蔽 → 線索衝突。`train.curriculum` 可覆寫，每項有遞增 `until`（最終 ≥1）與環境參數；只在下一回合套用，不在回合中改变物理環境。
+預設課程依累積步數：靜止高斯羽流 → 直線高斯羽流 → 曲線 puff → 視覺遮蔽 → 線索衝突。`train.curriculum` 可覆寫，每項有遞增 `until`（最終 ≥1）與環境參數；只在下一回合套用，不在回合中改變物理環境。
 
 ## ES 備援
 
@@ -392,7 +392,7 @@ evaluation:
   parameter_tolerance: 0.05
 ```
 
-亦可使用 `evaluation.artifacts` 的 variant → seed → directory mapping。每組 seed/episode 使用同環境種子，跨模型可成對比較。正式評估驗证相同 graph / frozen frontend hash、相對有效 VO 的 ±5% actor effective 參數（#77，排除 optimizer lr=0 組），並以完整 `stage_budget_ledger` 依演算法合計的環境步數比較公平性；帳本繼承初始 artifact，包含預訓練、BC/DAgger 和 PPO 或 ES。
+亦可使用 `evaluation.artifacts` 的 variant → seed → directory mapping。每組 seed/episode 使用同環境種子，跨模型可成對比較。正式評估驗證相同 graph / frozen frontend hash、相對有效 VO 的 ±5% actor effective 參數（#77，排除 optimizer lr=0 組），並以完整 `stage_budget_ledger` 依演算法合計的環境步數比較公平性；帳本繼承初始 artifact，包含預訓練、BC/DAgger 和 PPO 或 ES。
 
 輸出 `episodes`、`seed_means`、`summary`、`comparisons` 的 JSON/CSV 及 `evaluation_manifest.json`。統計先在每個訓練種子內平均回合，再對五個種子平均作 95% bootstrap；不把 500 個回合當成 500 個獨立模型。預先比較照 `configs/evaluation_protocol.yaml`：原登記的 VO−V（遮蔽，優越性）、VO−GRU、VO−RS（各情境，非劣性），之後是主架構 VO-late 的同一組比較（`REGISTERED_COMPARISONS`，每列帶 `model`、`comparator`、`hypothesis`）。VO 的列排在前面，所以 bootstrap 抽樣和只算 VO 時逐位元相同。已有的 `episodes.json` 可以用 `configs/train/evaluate_registered.yaml`（wander 用 `evaluate_wander_registered.yaml`）重新彙總，不重跑模擬；每回合的 model card 會先和矩陣 actor 核對。這兩個設定以 `recorded_source_manifests` 指向原 2D 評估的 `evaluation_manifest.json`，新 manifest 沿用其中的 latency／success／reacquisition 定義，並記錄來源檔案的 SHA-256；沒有指定時（Gazebo 記錄）維持 ROS 的 latency 定義。recorded 模式會多出 `inference_wall_p50/p95_ms`、`sample_coverage`、`valid_episode` 四個 Gazebo 指標，2D 資料沒有這些欄位，所以這些列是 `n_seeds` 0 的空值，不是資料缺失。次要的 wander 評估用 `configs/train/evaluate_wander.yaml`，只差 `target_motion` 和輸出路徑。重新捕獲只統計成功完成的事件，同時報告尚未完成事件數；空值輸出 JSON `null` 與空白 CSV，避免 NaN JSON。
 
@@ -402,7 +402,7 @@ evaluation:
 
 invalid 回合仍以 success=false 納入成功率；距離、方位、重新捕獲、平滑度與碰撞摘要只使用有效完整回合，完整原始部分資料保留在 episodes 報表，另提供 valid_episode / sample_coverage 的種子摘要。模型 walltime 不依賴真值覆蓋率，仍可用於診斷。
 
-2D 評估把每格（變體／種子／情境）的回合分散到 `batch_episodes` 個平行世界，actor 批次推論；每格前 `latency_episodes`（預設 1）個回合仍以部署方式每步單筆呼叫完整 `policy(obs, state)` 並量 latency，其餘回合的 latency 欄位為空，種子平均只用量過的回合。2D latency 是 sensor tensor 組装至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
+2D 評估把每格（變體／種子／情境）的回合分散到 `batch_episodes` 個平行世界，actor 批次推論；每格前 `latency_episodes`（預設 1）個回合仍以部署方式每步單筆呼叫完整 `policy(obs, state)` 並量 latency，其餘回合的 latency 欄位為空，種子平均只用量過的回合。2D latency 是 sensor tensor 組裝至 actor CPU 動作輸出的 wall time，CUDA 會同步，排除 rendering。ROS 主 latency 是保留原 sensor timestamp 到收到 cmd 的 simulation-clock age，因 Twist 沒有 header，無法精確關聯是哪一筆輸入；這是診斷資料，不能單獨拿來驗收 wall-time end-to-end p95 <50ms。
 
 策略另發布 `/fly/inference_latency_ms`（std_msgs/Float64），ROS evaluator 在 JSON/CSV 的 `inference_wall_p50_ms` / `inference_wall_p95_ms` 保留真正 perf-counter 模型推論處理時間，含 tensor 準備與 CPU materialization，排除感測生成、DDS 與等待控制 timer。兩組 latency 指標不可混用。
 
@@ -415,7 +415,7 @@ ros2 launch flytrack_eval evaluation.launch.py artifact:=/absolute/artifacts/VO/
 ARTIFACT=/absolute/artifacts/VO/seed_0 SENSOR_CONTRACT=/absolute/configs/sensor_contract.json launch_test ros2_ws/src/flytrack_eval/launch_testing/test_truth_isolation.py
 ```
 
-record node 以 `subprocess` 啟動 `ros2 bag record --use-sim-time`，錄 `/clock`、`/fly/*` 感測及神經活性、`/cmd_vel`、`/world/*` 真值與情境、`/eval/metrics`。關閉時送 SIGINT 並等待 rosbag flush index。truth isolation launch test 啟動真实 actor artifact，檢查 policy subscription 必須只有 `/fly/*` 加 ROS framework topics，禁止 `/world/*`、`/sim/*`、`/eval/*`。每回合記憶重置由 scenario manager 呼叫 `/connectome_policy_node/reset`，不是 actor 訂閱真值情境。
+record node 以 `subprocess` 啟動 `ros2 bag record --use-sim-time`，錄 `/clock`、`/fly/*` 感測及神經活性、`/cmd_vel`、`/world/*` 真值與情境、`/eval/metrics`。關閉時送 SIGINT 並等待 rosbag flush index。truth isolation launch test 啟動真實 actor artifact，檢查 policy subscription 必須只有 `/fly/*` 加 ROS framework topics，禁止 `/world/*`、`/sim/*`、`/eval/*`。每回合記憶重置由 scenario manager 呼叫 `/connectome_policy_node/reset`，不是 actor 訂閱真值情境。
 
 evaluator 提供 `artifact` 時只讀 `model_card.json`，不載入 torch 模型；卡中的 variant 和訓練 seed 優先於手動 `variant` / `training_seed` 參數，並於啟動記錄這項決定。JSONL/CSV 每回合記錄 model card SHA-256。未提供 artifact 時才使用手動標籤，但該類記錄無法通過預設 checkpoint 一致性驗證。
 
@@ -447,6 +447,6 @@ teacher 環境 seed 1610000011／1610000012 各 600 步，
 
 ## 驗證狀態
 
-`python/tests/test_training.py`（動作 Jacobian、terminal/truncation GAE、非零初始記憶重置、actor input 隔離、seed bootstrap、重新捕獲 censoring、ES tied rank、中斷續訓）已通過；小預算預訓練/BC/PPO 已跑通，ES 尚未實跑。ROS package、launch、錄製與真值隔離測試需要已安裝並建置的 ROS 2 環境及真实 artifact。
+`python/tests/test_training.py`（動作 Jacobian、terminal/truncation GAE、非零初始記憶重置、actor input 隔離、seed bootstrap、重新捕獲 censoring、ES tied rank、中斷續訓）已通過；小預算預訓練/BC/PPO 已跑通，ES 尚未實跑。ROS package、launch、錄製與真值隔離測試需要已安裝並建置的 ROS 2 環境及真實 artifact。
 
 checkpoint 目前供保留研究狀態，CLI `init_artifact` 是 actor 權重暖啟動；沒有宣稱恢復完全相同的 optimizer、環境中途狀態或 RNG 軌跡。GPU sparse reduction 的數值可有差異；固定種子不是逐 bit 相同結果的保證。評估需要逐位元重現時（回歸測試、和參考檔比對），在評估 config 設 `evaluation.deterministic: true`，或對 `scripts/diagnostics/policy_episode_eval.py` 設 `DETERMINISTIC=1`（#3）：開啟 `torch.use_deterministic_algorithms`、固定 cuBLAS workspace，CUDA 上的稀疏乘法改用 gather 加分段加總（`flytrack_core.model.sparse.spmm`），因為 cuSPARSE 不受 deterministic 旗標控制，而且不會報錯。這只讓結果固定，不會更準：deterministic GPU、預設 GPU 和 CPU 三者之間仍有 float32 捨入層級的差異，參考檔要用同一個模式產生。訓練沒有提供這個選項（成本 2 倍以上）。

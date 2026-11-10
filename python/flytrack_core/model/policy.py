@@ -421,7 +421,9 @@ class MotorReadout(nn.Module):
 
     def forward_row_raw(self, activities: list[Tensor]) -> Tensor:
         """Detached mean rate of each forward row type, (batch, branches * types)."""
-        return torch.cat([activity.detach() @ self.forward_row_pool.T for activity in activities], 1)
+        return torch.cat(
+            [activity.detach() @ self.forward_row_pool.T for activity in activities], 1
+        )
 
     def forward_row_features(self, activities: list[Tensor]) -> Tensor:
         return (self.forward_row_raw(activities) - self.forward_row_center) * self.forward_row_scale

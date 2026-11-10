@@ -280,6 +280,9 @@ def test_recorded_variant_files_replace_one_variant(tmp_path):
         run("mixed", [formal, posthoc])
     with pytest.raises(ValueError, match="recorded_variant_files"):
         run("unlisted", [formal], {"GRU": [str(posthoc)]})
+    # A mapped variant must be one of the evaluated variants; a misspelled key is rejected.
+    with pytest.raises(ValueError, match="recorded_variant_files"):
+        run("unknown", [formal], {"gru": [str(formal)]})
     original = run("formal", [formal])
     replaced = run("posthoc", [formal, posthoc], {"GRU": [str(posthoc)]})
     assert [row for row in replaced if row["variant"] != "GRU"] == [

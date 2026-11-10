@@ -313,9 +313,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
                 int(forward_calibration.get("burn_in_steps", 60)),
             )
             forward_calibrated.update(report["model"])
-            policy.set_readout_forward_rows(
-                *(forward_calibrated[key] for key in FORWARD_ROW_KEYS)
-            )
+            policy.set_readout_forward_rows(*(forward_calibrated[key] for key in FORWARD_ROW_KEYS))
             write_json(output / "forward_row_calibration.json", report)
         fit_reports = fit_behavior(
             model,

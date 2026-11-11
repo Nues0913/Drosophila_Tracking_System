@@ -160,6 +160,8 @@ def test_agent_collision_shapes_stay_inside_the_collision_radius():
     # The drive plugin must describe the wheels it drives, or commands map to other speeds. The
     # physics touches the floor at each wheel's inner edge, so the separation is the inner-edge
     # spacing; with the centre spacing the agent turned 12% faster than commanded (measured, G0d).
+    # Inner-edge contact is how the physics engine Gazebo uses by default behaves, not something the
+    # SDF guarantees: re-measure the turn-rate gain after a Gazebo or physics-engine upgrade.
     drive = model.find("plugin[@name='gz::sim::systems::DiffDrive']")
     wheels = {
         name: [float(v) for v in model.find(f"link[@name='{name}']").findtext("pose").split()]

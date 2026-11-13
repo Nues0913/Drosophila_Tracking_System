@@ -30,7 +30,7 @@ state 是單一 `Tensor[B,policy.state_size]`，包含雙眼固定前端電位�
 
 ## flyvis 方案 A 的真實來源
 
-轉換依据閱讀時的官方 API 與原始碼，實際匯出記錄已安裝 flyvis 的版本、checkpoint SHA-256 和網路設定：
+轉換依據閱讀時的官方 API 與原始碼，實際匯出記錄已安裝 flyvis 的版本、checkpoint SHA-256 和網路設定：
 
 - [官方實作與論文來源](https://github.com/TuragaLab/flyvis)
 - [Network 官方 API](https://turagalab.github.io/flyvis/reference/network/)
@@ -68,15 +68,15 @@ ORN 先以舊 K 計算 Hill response，再以 `K += min(control_dt/τ_adapt,1)·
 | GRU | 相同固定前端、ORN 轉換及 LC／ORN 種子投射；以投射後種子電流加 valid flags 驅動無拓樸約束 GRUCell 及小讀出 |
 | RS | 中央邊經同源號誌分組的 double-edge swap，保留所有節點入／出度、密度及各目標收到的正負邊數 |
 
-V/O 是**感測消融**，保留整張中央圖和同樣參數數，不是重新萃取成更小的單模態圖。VO-late 共享 α／τ／bias 以控制預算，但各支路的 state 和 recurrent currents 完全隔離；這個比較檢验早期神經活性融合與晚期讀出的差異，不能宣稱比較了兩個獨立學習參數集。
+V/O 是**感測消融**，保留整張中央圖和同樣參數數，不是重新萃取成更小的單模態圖。VO-late 共享 α／τ／bias 以控制預算，但各支路的 state 和 recurrent currents 完全隔離；這個比較檢驗早期神經活性融合與晚期讀出的差異，不能宣稱比較了兩個獨立學習參數集。
 
 所有變體共用同一份固定種子投射。GRU 的輸入維度為 `len(seed_indices)+3`，依穩定 node 順序取得 LC／ORN 種子的外部感覺電流，再加三個 valid flags；它不直接取得投射前的完整視覺池化或 ORN 通道。因此兩種架構接收相同的感測映射資訊，不能由基準額外讀取未提供中央圖的通道。GRU 自動參數預算計算以這個投射後維度為準。
 
-中央 graph 的邊值始終為固定 `s_pre × N_edge × softplus(α_type-pair)`；只有有邊的位置被儲存。τ 和 bias 同型別共享，符號不能隨訓練翻轉。RS 的原始 type-pair sharing labels 留在**邊的參數槽**，不能按隨機後的型別重算，否則參數預算會變。RS 的 labels 因此不再代表隨機後的實際 type-pair，model_card 明示這項限制。無法產生至少一個有效且改变拓樸的 swap 時拒絕 RS，不把原圖冒充隨機控制。
+中央 graph 的邊值始終為固定 `s_pre × N_edge × softplus(α_type-pair)`；只有有邊的位置被儲存。τ 和 bias 同型別共享，符號不能隨訓練翻轉。RS 的原始 type-pair sharing labels 留在**邊的參數槽**，不能按隨機後的型別重算，否則參數預算會變。RS 的 labels 因此不再代表隨機後的實際 type-pair，model_card 明示這項限制。無法產生至少一個有效且改變拓樸的 swap 時拒絕 RS，不把原圖冒充隨機控制。
 
 `count_trainable_parameters` 計 `requires_grad=True` 的宣告容量，包括 readout、缺失電流及 log_std，排除共同凍結前端。#77 的正式 ±5% 改用 BC optimizer lr>0 且 requires_grad 的有效 actor 參數，包含 B3 新增列、排除 lr=0 的核心 bias；`flytrack_train.parameters.count_effective_parameters` 直接使用 optimizer 的 `parameter_groups`。`assert_parameter_budget` 預設保留宣告值比較，傳入 `effective_counts` 時使用有效計數並在超標訊息明示 effective。真實 no-KC 圖六變體分欄計數見 [status.md](../../../../docs/status.md)。
 
-V/O/VO/RS 的中央參數數相同；VO-late 的讀出可能稍大，而兩支路均停用的 type-pair 不配置可訓練 α，避免把不會参与運算的參數算進預算。缺失電流也只配置感覺種子型別。`budget_target` 用於 GRU 自動解析整數 hidden size 與必要的輸入 bottleneck；#77 以有效 VO=14,546 解析為 hidden=16、gru_input_size=18，共 14,904 有效參數（+2.4612%）。產生的連接體設定不設 target，由產生器檢查其有效預算。±5% 不可達時必須拒絕／調整有功能的架構，沒有補未使用的假參數。極小測試圖可能無法達到 ±5%，不可當成公平實驗結果。
+V/O/VO/RS 的中央參數數相同；VO-late 的讀出可能稍大，而兩支路均停用的 type-pair 不配置可訓練 α，避免把不會參與運算的參數算進預算。缺失電流也只配置感覺種子型別。`budget_target` 用於 GRU 自動解析整數 hidden size 與必要的輸入 bottleneck；#77 以有效 VO=14,546 解析為 hidden=16、gru_input_size=18，共 14,904 有效參數（+2.4612%）。產生的連接體設定不設 target，由產生器檢查其有效預算。±5% 不可達時必須拒絕／調整有功能的架構，沒有補未使用的假參數。極小測試圖可能無法達到 ±5%，不可當成公平實驗結果。
 
 motor readout 預設在有左右成對 turn DN 及 forward DN 時使用結構讀出；資料不足則明確記錄 linear DN fallback。完全沒有 DN 直接拒絕，不改讀普通中央神經來假造運動端點。
 

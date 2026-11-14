@@ -73,6 +73,23 @@
 - wander：VO 和 VO-late 在 normal、conflict 都不成立。
 - 完整表格見 status 的 2026-11-04 一節。
 
+### 2.4 次要終點（curved，描述性）
+協定列的次要終點（`configs/evaluation_protocol.yaml`）。數字是五個 seed 的平均（每個 seed 先平均回合），和評估器的 `summary.json` 相同，CI 在 `formal_v1_eval.tar.gz` 的 `summary.json`。延遲見 5.3。
+
+| 變體 | 平均距離 normal（m） | 方位誤差 normal（°） | 平順度 normal（rad/s） | 碰撞率 normal／occlusion／noise | 重新捕獲 occlusion（s；完成／事件） |
+| --- | --- | --- | --- | --- | --- |
+| V | 2.78 | 39.3 | 0.0020 | 0.07／0.46／0.39 | 6.7（108／500） |
+| O | 3.08 | 81.6 | 0.0004 | 0.81／0.81／0.84 | 7.9（13／500） |
+| VO | 2.69 | 40.3 | 0.0019 | 0.06／0.48／0.44 | 8.1（138／500） |
+| VO-late | 2.53 | 37.2 | 0.0015 | 0.06／0.48／0.51 | 9.3（152／500） |
+| GRU | 2.58 | 75.5 | 0.0003 | 0.97／0.97／0.91 | 3.0（5／500） |
+| RS | 2.71 | 69.3 | 0.0025 | 0.83／0.81／0.51 | 6.4（18／500） |
+
+- **重新捕獲**：時間只算完成的事件（評估器的定義），所以旁邊列出完成／遮蔽事件數。V、VO、VO-late 的 500 次遮蔽裡，完成重新捕獲的只有 108–152 次（22%–30%），其餘到回合結束都沒有重新對準，是截尾。所以重新捕獲時間只代表完成的那些事件，不能拿來比較變體。
+- **碰撞**：O、GRU、RS 在 normal、occlusion 的碰撞率是 0.81–0.97（RS 在 noise 是 0.51）。V、VO、VO-late 在 normal 是 0.06–0.07，在 occlusion、noise 是 0.39–0.51。
+- **平順度**：noise 情境的數值比 normal 大一個數量級以上，例如 V 是 0.080 對 0.002。
+- 四個情境的完整表格，以及 Gazebo 的表格，在 release `formal-v1` 的 `pm_secondary_endpoints.tar.gz`（`76248594…`）。
+
 ## 3. 分析（A1，#90，描述性診斷）
 - **拿掉視覺**：四個變體的成功率都降到 0。
 - **拿掉氣味**：
@@ -149,6 +166,19 @@
   - 不劣性和 2D（2.3）判讀不同的有 4 項：curved 的 VO conflict（Gazebo 不成立），wander 的 VO normal、VO conflict、VO-late conflict（Gazebo 成立）。區間都很寬。
   - 主架構 VO-late 在 curved 的四個情境都不劣，和 2D 相同。
   - 事後 GRU 在 Gazebo 的 conflict，curved 是 0.30（2D 配對 0.24），wander 是 0.08（2D 配對 0.21），原因沒有查。
+- **次要終點**（curved，描述性；括號是同一批回合在 2D 的值。完整表格在 `pm_secondary_endpoints.tar.gz`）：
+
+| 變體 | 平均距離 normal（m） | 方位誤差 normal（°） | 碰撞率 normal／occlusion／noise（只列 Gazebo） | 重新捕獲 occlusion（s；完成／事件） |
+| --- | --- | --- | --- | --- |
+| V | 2.67（2.66） | 43.4（37.1） | 0.13／0.38／0.23 | 6.7，26／100（7.1，24／100） |
+| VO | 2.73（2.65） | 47.4（39.0） | 0.07／0.44／0.32 | 7.3，32／100（7.2，32／100） |
+| VO-late | 2.70（2.47） | 46.5（37.0） | 0.08／0.33／0.34 | 8.4，33／100（7.8，28／100） |
+| GRU | 2.77（2.60） | 80.5（76.9） | 0.92／0.92／0.86 | —，0／100（2.3，1／100） |
+| RS | 2.78（2.66） | 72.6（70.8） | 0.81／0.80／0.44 | 7.1，5／100（15.1，4／100） |
+
+  - normal 的方位誤差，V、VO、VO-late 在 Gazebo 比 2D 大 6–10°。
+  - 重新捕獲完成的比例和 2D 接近：V、VO、VO-late 是 26–33／100，2D 是 24–32／100。
+  - Gazebo 的碰撞率會少算（揭露第 24 點），所以不和 2D 比較。
 - **兩台主機的執行狀況**：
   - 主機中斷，照例外規則重跑一次（6743008783）：4070 的 curved 1（主機使用者中止）、curved 2（Windows Update 重開機）；4060 的 curved 4、wander 3（主機關機）。未完成的嘗試都不進彙總。
   - 4060 的 wander seed 2，最後三格 RS 和主機上一段無關的 GPU 負載重疊，沒有重跑（6798991965、6806858753）。延遲見 5.3。
@@ -210,6 +240,7 @@ release [`formal-v1`](https://github.com/Nues0913/Drosophila_Tracking_System/rel
 | `pm_2d_target_brightness_g2scope.tar.gz`（`b1ce5ecd…`） | 2D 目標亮度敏感度分析：腳本、設定、評估輸出、逐格表；參考回合用 `formal_v1_eval*.tar.gz` 和 `posthoc_gru_85.tar.gz` |
 | `gazebo_g2_4070.tar.gz`（`f2c26c6e…`）、`gazebo_g2_4060.tar.gz`（`561ea8f4…`） | G2 的原始資料 |
 | `gazebo_demo_g0d_2060.tar.gz`（`4c2b74d7…`） | Gazebo 展示和 rosbag（G0d 世界） |
+| `pm_secondary_endpoints.tar.gz`（`76248594…`） | 協定的次要終點，curved，2D 和 Gazebo |
 | `pm_g2_analysis.tar.gz`（`f716e708…`） | PM 的 G2 分析：收件檢查、登記的彙總、和 2D 逐回合配對、保守重算、G3 判定、只用 4070 的敏感度分析、目標對比的判讀、延遲分群 |
 
 - 事後 GRU 在 release `posthoc-gru-85`。

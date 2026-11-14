@@ -9,6 +9,7 @@ import inspect
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import pytest
 from flytrack_core.sensing.hex_eye import HexEye
 from flytrack_sim.env import FlyTrackEnv
@@ -104,3 +105,73 @@ def test_camera_and_target_geometry_match_the_2d_defaults():
     cylinder = target.find("model/link/visual/geometry/cylinder")
     assert float(cylinder.findtext("radius")) == pytest.approx(env.target_radius_m)
     assert float(cylinder.findtext("length")) == pytest.approx(env.target_height_m)
+
+
+def _rotation(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    cr, sr, cp, sp, cy, sy = (f(a) for a in (roll, pitch, yaw) for f in (np.cos, np.sin))
+    return (
+        np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+        @ np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+        @ np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    )
+
+
+def _surface_points(geometry: ET.Element) -> np.ndarray:
+    angles = np.linspace(0, 2 * np.pi, 721)
+    if (shape := geometry.find("cylinder")) is not None:
+        r, half = float(shape.findtext("radius")), float(shape.findtext("length")) / 2
+        rim = np.stack([r * np.cos(angles), r * np.sin(angles)], 1)
+        return np.concatenate([np.c_[rim, np.full(len(rim), z)] for z in (-half, half)])
+    if (shape := geometry.find("sphere")) is not None:
+        r = float(shape.findtext("radius"))
+        polar = np.linspace(0, np.pi, 181)[:, None]
+        return r * np.stack(
+            [
+                np.sin(polar) * np.cos(angles),
+                np.sin(polar) * np.sin(angles),
+                np.cos(polar) + 0 * angles,
+            ],
+            -1,
+        ).reshape(-1, 3)
+    raise AssertionError(f"unexpected collision geometry {[c.tag for c in geometry]}")
+
+
+def test_agent_collision_shapes_stay_inside_the_collision_radius():
+    """#88 G0d: Gazebo and 2D call it a collision when the centre is within agent_radius_m of a
+    wall or the target. A shape reaching further (the wheels reached 0.195 m) lets the wall stop
+    the agent before that, so oblique wall contacts were never recorded and it slid along the wall.
+    """
+    env = FlyTrackEnv(domain_randomization=False)
+    model = ET.parse(BRINGUP / "models/agent/model.sdf").getroot().find("model")
+    reach = {}
+    for link in model.findall("link"):
+        link_pose = [float(v) for v in (link.findtext("pose") or "0 0 0 0 0 0").split()]
+        for collision in link.findall("collision"):
+            pose = [float(v) for v in (collision.findtext("pose") or "0 0 0 0 0 0").split()]
+            points = _surface_points(collision.find("geometry"))
+            points = points @ _rotation(*pose[3:]).T + pose[:3]
+            points = points @ _rotation(*link_pose[3:]).T + link_pose[:3]
+            reach[f"{link.get('name')}/{collision.get('name')}"] = np.hypot(
+                points[:, 0], points[:, 1]
+            ).max()
+    assert set(reach) == {"base_link/body", "left_wheel/wheel", "right_wheel/wheel", "caster/ball"}
+    assert reach["base_link/body"] == pytest.approx(env.agent_radius_m, abs=1e-6)
+    assert all(value <= env.agent_radius_m + 1e-6 for value in reach.values()), reach
+    # The drive plugin must describe the wheels it drives, or commands map to other speeds. The
+    # physics touches the floor at each wheel's inner edge, so the separation is the inner-edge
+    # spacing; with the centre spacing the agent turned 12% faster than commanded (measured, G0d).
+    # Inner-edge contact is how the physics engine Gazebo uses by default behaves, not something the
+    # SDF guarantees: re-measure the turn-rate gain after a Gazebo or physics-engine upgrade.
+    drive = model.find("plugin[@name='gz::sim::systems::DiffDrive']")
+    wheels = {
+        name: [float(v) for v in model.find(f"link[@name='{name}']").findtext("pose").split()]
+        for name in ("left_wheel", "right_wheel")
+    }
+    cylinder = model.find("link[@name='left_wheel']/collision/geometry/cylinder")
+    width = float(cylinder.findtext("length"))
+    assert float(drive.findtext("wheel_separation")) == pytest.approx(
+        wheels["left_wheel"][1] - wheels["right_wheel"][1] - width
+    )
+    assert float(drive.findtext("wheel_radius")) == pytest.approx(
+        float(cylinder.findtext("radius"))
+    )

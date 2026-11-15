@@ -112,6 +112,42 @@ def fit_behavior(
         activity = activity_penalty(model.policy, outputs["activity"])
         return ((error + activity_coef * activity) * step_mask).sum(0) / steps
 
+    balance = None
+    settings = train.get("speed_gradient_balance")
+    if settings:
+        # #35 S2 (exploration): the speed term's gradient on every non-readout parameter is rescaled
+        # to target_ratio x the turn (+ activity) term's; the readout keeps the plain gradient.
+        def split(outputs, targets, step_mask):
+            steps = step_mask.sum(0).clamp_min(1)
+            squared = ((outputs["action"] - targets["action"]) / scale).square()
+            activity = activity_penalty(model.policy, outputs["activity"])
+            speed = (0.5 * squared[..., 0] * step_mask).sum(0) / steps
+            turn = ((0.5 * squared[..., 1] + activity_coef * activity) * step_mask).sum(0) / steps
+            return turn, speed
+
+        # Only parameters the optimizer actually updates (lr > 0): frozen groups such as the BC
+        # core bias keep their plain gradient, so they do not inflate the clipped norm.
+        learning_rate = {
+            id(parameter): float(group["lr"])
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        }
+        upstream = [
+            parameter
+            for name, parameter in model.policy.named_parameters()
+            if not name.startswith("readout.")
+            and parameter.requires_grad
+            and learning_rate.get(id(parameter), 0.0) > 0
+        ]
+        if not upstream:
+            raise ValueError("speed_gradient_balance found no trainable non-readout parameters")
+        balance = {
+            "split": split,
+            "upstream": upstream,
+            "target_ratio": float(settings["target_ratio"]),
+            "max_scale": float(settings.get("max_scale", 1e4)),
+        }
+
     return fit_sequence_epochs(
         model,
         inputs,
@@ -124,6 +160,7 @@ def fit_behavior(
         on_checkpoint or (lambda state: None),
         on_progress or (lambda **values: None),
         fit_state,
+        balance,
     )
 
 

@@ -253,6 +253,46 @@ def _run_window(model, batch_inputs, mask, central):
     return {"action": torch.stack(actions), "activity": torch.stack(activities)}, central
 
 
+def balance_term_gradients(
+    total: torch.Tensor,
+    primary: torch.Tensor,
+    secondary: torch.Tensor,
+    upstream: list[torch.nn.Parameter],
+    target_ratio: float,
+    max_scale: float,
+) -> dict[str, float]:
+    """Backward ``total`` and rescale the secondary term on the upstream parameters (#35 S2).
+
+    ``total`` must equal ``primary + secondary``. Every parameter first receives the plain gradient
+    of ``total``; the ``upstream`` parameters are then overwritten with g_primary + s * g_secondary,
+    where s = min(max_scale, target_ratio * |g_primary| / |g_secondary|) makes the secondary
+    gradient norm a fixed fraction of the primary one (a fixed-ratio GradNorm). Parameters outside
+    ``upstream`` (the readout) keep the plain gradient. Returns the norms and the scale used.
+    """
+    if not target_ratio > 0 or not max_scale > 0:
+        raise ValueError("Gradient balance needs a positive target_ratio and max_scale")
+    primary_grads = torch.autograd.grad(primary, upstream, retain_graph=True, allow_unused=True)
+    secondary_grads = torch.autograd.grad(secondary, upstream, retain_graph=True, allow_unused=True)
+    total.backward()
+
+    def norm(grads):
+        squares = [g.detach().square().sum() for g in grads if g is not None]
+        return float(torch.sqrt(torch.stack(squares).sum())) if squares else 0.0
+
+    primary_norm, secondary_norm = norm(primary_grads), norm(secondary_grads)
+    scale = (
+        max_scale
+        if secondary_norm == 0
+        else min(max_scale, target_ratio * primary_norm / secondary_norm)
+    )
+    for parameter, a, b in zip(upstream, primary_grads, secondary_grads, strict=True):
+        if a is None and b is None:
+            continue
+        combined = (a if a is not None else 0) + scale * (b if b is not None else 0)
+        parameter.grad = combined.detach().clone()
+    return {"primary_norm": primary_norm, "secondary_norm": secondary_norm, "scale": float(scale)}
+
+
 def fit_sequence_epochs(
     model,
     inputs,
@@ -265,6 +305,7 @@ def fit_sequence_epochs(
     save,
     progress,
     fit_state=None,
+    balance=None,
 ):
     """Batched TBPTT with committed lane order, hidden state and optimizer boundaries.
 
@@ -274,6 +315,9 @@ def fit_sequence_epochs(
     early stopping (``early_stopping_patience`` epochs without relative
     improvement ``early_stopping_min_delta``) and the best parameters are kept.
     ``window_loss(outputs, labels, mask)`` returns one loss per lane.
+    ``balance`` (optional, #35 S2): a dict with ``split(outputs, labels, mask)`` returning per-lane
+    (primary, secondary) losses that sum to ``window_loss``, the ``upstream`` parameter list,
+    ``target_ratio`` and ``max_scale``; see balance_term_gradients. None keeps plain backward.
     """
     length = int(train.get("sequence_length", 32))
     lanes = int(train.get("batch_episodes", 16))
@@ -345,7 +389,19 @@ def fit_sequence_epochs(
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError("Supervised loss is nonfinite; inspect activity and gain")
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            if balance is None:
+                loss.backward()
+            else:
+                primary, secondary = balance["split"](outputs, batch_labels, mask)
+                stats = balance_term_gradients(
+                    loss,
+                    primary[active].mean(),
+                    secondary[active].mean(),
+                    balance["upstream"],
+                    float(balance["target_ratio"]),
+                    float(balance["max_scale"]),
+                )
+                fitting.setdefault("balance", []).append(stats)
             torch.nn.utils.clip_grad_norm_(parameters, max_norm, error_if_nonfinite=True)
             optimizer.step()
             central = central.detach()
@@ -367,6 +423,15 @@ def fit_sequence_epochs(
             "updates": len(fitting["losses"]),
             "sequences": total_windows,
         }
+        if fitting.get("balance"):
+            stats = fitting["balance"]
+            report["balance"] = {
+                key: float(np.median([s[key] for s in stats]))
+                for key in ("primary_norm", "secondary_norm", "scale")
+            }
+            report["balance"]["scale_at_max_fraction"] = float(
+                np.mean([s["scale"] >= float(balance["max_scale"]) for s in stats])
+            )
         if held:
             value = validation_loss()
             model.policy.train()
@@ -389,6 +454,7 @@ def fit_sequence_epochs(
         fitting.update(
             epoch=fitting["epoch"] + 1, schedule=None, state=None, losses=[], windows_done=0
         )
+        fitting.pop("balance", None)
         save(fitting)
     # Idempotent: the exported actor is the held-out-best one, also after resume.
     restore_best()

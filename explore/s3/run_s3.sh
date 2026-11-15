@@ -27,7 +27,7 @@ declare -A DIGEST=(
   [formal_v1_4060_F1.tar.gz]=2f0e2acd6adcf9add500e2b54f116661e1cffffa795daa2e47078d315cea44ac
   [formal_v1_4070_F2.tar.gz]=be05b1c780e9531f601136b6b50dc156d8ca2a612e7721c5770f0597f80fcffa
 )
-if ! sha256sum -c --quiet explore/s3/expected_cards.sha256 2>/dev/null; then
+if ! sha256sum -c --quiet explore/s3/expected_cards.sha256 >/dev/null 2>&1; then
   mkdir -p $R/dl
   for name in "${!DIGEST[@]}"; do
     [ -f "$R/dl/$name" ] || gh release download formal-v1 -R Nues0913/Drosophila_Tracking_System -D $R/dl -p "$name"

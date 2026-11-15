@@ -1,0 +1,38 @@
+# #35 S3 exploration evaluation (s3, VO-late only): configs/train/evaluate.yaml with
+# the fresh block environment_seed 1,900,000,000 and seeds 0 and 1.
+env:
+  domain_randomization: false
+  episode_seconds: 60
+  plume_model: puff
+  target_motion: curved
+evaluation:
+  artifact_template: runs/s3/bc/{variant}/seed_{seed}/actor
+  batch_episodes: 32
+  bootstrap_draws: 10000
+  deterministic: false
+  environment_audit_episodes: 40
+  environment_seed: 1900000000
+  episodes_per_seed: 100
+  latency_episodes: 1
+  require_equal_budget: true
+  require_full_matrix: false
+  scenarios:
+  - normal
+  - occlusion
+  - noise
+  - conflict
+  seeds:
+  - 0
+  - 1
+  success_bearing_deg: 45.0
+  success_distance_m: 2.0
+  success_time_fraction: 0.8
+  variants:
+  - VO-late
+output: runs/s3/eval/candidate_s3
+scenario_configs:
+  conflict: configs/scenarios/conflict.yaml
+  noise: configs/scenarios/noise.yaml
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+sensor_contract_path: configs/sensor_contract.json

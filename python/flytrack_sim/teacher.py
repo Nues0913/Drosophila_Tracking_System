@@ -40,6 +40,7 @@ def teacher_action(
     occluded: bool = False,
     observation: dict[str, np.ndarray] | None = None,
     occlusion_odor_gain: float | None = None,
+    accel_clip: bool = True,
 ) -> np.ndarray:
     limits = ActionLimits.from_contract(contract)
     displacement = np.asarray(target_pose[:2]) - np.asarray(agent_pose[:2])
@@ -75,4 +76,7 @@ def teacher_action(
         # Preserve the privileged forward-speed rule, but replace requested turn
         # before applying the normal velocity and acceleration limits once.
         requested[1] = np.clip(omega, -limits.omega_max, limits.omega_max)
-    return limits.clip(requested, previous_action, contract.control_dt)
+    # #35 S3 (exploration): accel_clip=False labels the desired command within the bounds only; the
+    # student cannot observe its previous action, which the acceleration clip makes the label depend
+    # on. The env still applies the acceleration limit to whatever command is executed.
+    return limits.clip(requested, previous_action if accel_clip else None, contract.control_dt)

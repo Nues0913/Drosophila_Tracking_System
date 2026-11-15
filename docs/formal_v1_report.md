@@ -224,7 +224,7 @@
 - **2D**：V1（#97）的 `formal_v1_demo_2d.tar.gz`，內容是軌跡、DN 活性和動作圖。
 - **Gazebo**：release `formal-v1` 的 `gazebo_demo_g0d_2060.tar.gz`（`4c2b74d7…`）。
   - V1 選的 11 個回合，用同一個 actor 和環境 seed，在 G0d 世界（main `8e19c9b`）重播，含 rosbag、四格圖和 2D 對照。
-  - 成功與否和 2D 相同的有 11／11，G0d 之前的世界是 10／11。發現斜角撞牆漏記的那一回合（V occlusion ep2），現在和 2D 一樣在撞牆時結束。
+  - 成功與否和 2D 相同的有 11／11，G0d 之前的世界是 10／11。發現斜角撞牆漏記的那一回合（V occlusion ep2），現在和 2D 一樣在撞牆時結束。碰撞不是每個回合都一致：VO-late occlusion ep3 在 2D 撞牆結束，在 Gazebo 沒有撞牆，但同樣失敗。
   - 這是展示，不是量測；行為數字以 G2 為準。
 
 ## 8. 重現

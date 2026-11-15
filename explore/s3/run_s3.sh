@@ -4,6 +4,7 @@
 # BC budget; evaluate it and the formal-v1 baseline on the fresh block 1,900,000,000; trace normal
 # episodes 0-19; judge with the rules registered on #35; pack the results.
 # Usage, from the root of a clean checkout of branch explore/35-s3-desired-labels:  bash explore/s3/run_s3.sh
+# S3_STAGE_ONLY=1 stops after downloading the actors and checking their cards (a quick pre-flight).
 # Needs: docker with --gpus, image flytrack-ml:0.1, gh logged in. Resumable: finished steps are skipped.
 # About 1-2 h per BC chain and about 1 h for the evaluations on a 4060.
 set -euo pipefail
@@ -43,6 +44,7 @@ if ! sha256sum -c --quiet explore/s3/expected_cards.sha256 2>/dev/null; then
   done
 fi
 sha256sum -c explore/s3/expected_cards.sha256 | tee -a "$log"
+if [ "${S3_STAGE_ONLY:-0}" = 1 ]; then note "staging checked (S3_STAGE_ONLY=1); stop"; exit 0; fi
 
 # 2. BC, 3. evaluations, 4. traces, 5. judgment.
 for seed in 0 1; do

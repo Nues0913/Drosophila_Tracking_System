@@ -113,7 +113,10 @@ class MaskedRateCore(nn.Module):
         pairs, labels = graph.edge_labels()
         if randomized:
             pre, post, self.random_swaps = randomize_edges(
-                graph, config["random_seed"], config["random_swaps_per_edge"]
+                graph,
+                config["random_seed"],
+                config["random_swaps_per_edge"],
+                preserve_side=bool(config["random_side_preserving"]),
             )
         else:
             pre, post, self.random_swaps = graph.pre, graph.post, 0
@@ -1139,6 +1142,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "allow_unknown_side_mean": False,
     "random_seed": 0,
     "random_swaps_per_edge": 10,
+    "random_side_preserving": False,
     "hidden_size": 16,
     "gru_input_size": None,
     "gru_odor_gain_compensation": False,
@@ -1180,6 +1184,8 @@ def build_policy(
     config = {**DEFAULT_CONFIG, **model_config}
     if not isinstance(config["gru_odor_gain_compensation"], bool):
         raise ValueError("gru_odor_gain_compensation must be bool")
+    if not isinstance(config["random_side_preserving"], bool):
+        raise ValueError("random_side_preserving must be bool")
     if variant != "GRU" and config["gru_odor_gain_compensation"]:
         raise ValueError("gru_odor_gain_compensation is only supported for GRU")
     config["odor_K"] = list(config["odor_K"])

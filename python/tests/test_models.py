@@ -1138,3 +1138,26 @@ def test_cards_before_the_spec_keep_per_side_adaptation_and_the_legacy_center(
     migrated, _ = prepare_policy({**config, "init_artifact": str(source)}, torch.device("cpu"))
     assert migrated.readout.extra_center_ramp
     assert migrated.model_config["readout_extra_turn_center_ramp"] is True
+
+
+def test_side_preserving_rs_keeps_partner_sides_and_default_rs_is_unchanged(graph):
+    """#35 R2: preserve_side keeps degrees, signs and each edge's (source side, target side)."""
+    from flytrack_core.model.graph import randomize_edges
+
+    default = randomize_edges(graph, seed=3, swaps_per_edge=5)
+    explicit = randomize_edges(graph, seed=3, swaps_per_edge=5, preserve_side=False)
+    np.testing.assert_array_equal(default[1], explicit[1])
+    pre, post, accepted = randomize_edges(graph, seed=3, swaps_per_edge=5, preserve_side=True)
+    assert accepted > 0
+    np.testing.assert_array_equal(pre, graph.pre)
+    n = graph.n_nodes
+    np.testing.assert_array_equal(np.bincount(post, minlength=n), np.bincount(graph.post, minlength=n))
+    pairs = lambda a, b: sorted(zip(graph.sign[a].tolist(), graph.side[a].tolist(), graph.side[b].tolist()))
+    assert pairs(pre, post) == pairs(graph.pre, graph.post)
+    # Per edge, the target keeps its side.
+    np.testing.assert_array_equal(graph.side[post], graph.side[graph.post])
+
+
+def test_random_side_preserving_must_be_bool(graph_path, official_frontend):
+    with pytest.raises(ValueError, match="random_side_preserving"):
+        build_policy("RS", graph_path, SensorContract(), official_frontend, random_side_preserving="yes")

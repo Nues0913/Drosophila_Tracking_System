@@ -96,27 +96,42 @@ class Graph:
 
 
 def randomize_edges(
-    graph: Graph, seed: int = 0, swaps_per_edge: int = 10
+    graph: Graph, seed: int = 0, swaps_per_edge: int = 10, preserve_side: bool = False
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Swap edge targets within source-sign classes; retain each edge's parameter slot.
 
     Incoming and outgoing degrees, incoming sign counts, edge count, source Dale
     signs, and the original sharing-label multiset are all preserved. Labels stay
     attached to edge slots rather than being recomputed from randomized types.
+
+    ``preserve_side`` (#35 R2, exploration): swap only within classes of equal source sign, source side
+    and target side, chosen with probability proportional to class size, so every node also keeps the
+    left/right sides of its partners. False keeps the formal RS rule and its exact random stream.
     """
     if swaps_per_edge < 1:
         raise ValueError("RS requires at least one requested swap per edge")
     pre, post = graph.pre.copy(), graph.post.copy()
     occupied = set(zip(pre.tolist(), post.tolist(), strict=True))
     rng = np.random.default_rng(seed)
-    classes = [np.flatnonzero(graph.sign[pre] == sign) for sign in (-1, 1)]
+    if preserve_side:
+        keys = np.stack((graph.sign[pre], graph.side[pre], graph.side[post]), axis=1)
+        _, inverse = np.unique(keys, axis=0, return_inverse=True)
+        classes = [np.flatnonzero(inverse.ravel() == k) for k in range(int(inverse.max()) + 1)]
+    else:
+        classes = [np.flatnonzero(graph.sign[pre] == sign) for sign in (-1, 1)]
     classes = [indices for indices in classes if len(indices) >= 2]
     if not classes:
         raise ValueError("Graph has no sign class that permits an RS double-edge swap")
+    weights = np.asarray([len(c) for c in classes], dtype=float)
+    weights /= weights.sum()
     accepted = 0
     target = swaps_per_edge * len(pre)
     for _ in range(max(100, target * 30)):
-        indices = classes[int(rng.integers(len(classes)))]
+        indices = (
+            classes[int(rng.choice(len(classes), p=weights))]
+            if preserve_side
+            else classes[int(rng.integers(len(classes)))]
+        )
         a, b = rng.choice(indices, size=2, replace=False)
         u, v, x, y = int(pre[a]), int(post[a]), int(pre[b]), int(post[b])
         if u == x or v == y or u == y or x == v:
@@ -139,4 +154,8 @@ def randomize_edges(
         np.bincount(post, minlength=graph.n_nodes), np.bincount(graph.post, minlength=graph.n_nodes)
     ):
         raise RuntimeError("RS in-degree preservation failed")
+    if preserve_side and not np.array_equal(
+        np.sort(graph.side[graph.pre] * 3 + graph.side[graph.post]), np.sort(graph.side[pre] * 3 + graph.side[post])
+    ):
+        raise RuntimeError("RS side preservation failed")
     return pre, post, accepted

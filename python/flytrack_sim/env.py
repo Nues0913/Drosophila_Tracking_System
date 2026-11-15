@@ -105,6 +105,16 @@ class FlyTrackEnv(gym.Env):
             if not valid_gain:
                 raise ValueError("occlusion odor gain must be finite and nonnegative")
             self.occlusion_odor_steering = {"gain": float(gain)}
+        # #35 M1 (exploration): while occluded the teacher label repeats the last unoccluded label
+        # (re-clipped to the acceleration limit), so it uses nothing the student could not have:
+        # no privileged pose and no distance rule. Off by default.
+        hold = options.pop("occlusion_hold_teacher", False)
+        if not isinstance(hold, bool):
+            raise ValueError("occlusion_hold_teacher must be a bool")
+        if hold and self.occlusion_odor_steering is not None:
+            raise ValueError("occlusion_hold_teacher and occlusion_odor_steering are exclusive")
+        self.occlusion_hold_teacher = hold
+        self._held_teacher = None
         self.initial_agent_pose = options.pop("initial_agent_pose", None)
         # Per-episode layout diversity is on by default; layout_preset: legacy (or the
         # individual LayoutConfig keys) reproduces the old fixed layout.
@@ -288,6 +298,7 @@ class FlyTrackEnv(gym.Env):
         if self.agent_pose.shape != (3,) or not np.all(np.isfinite(self.agent_pose)):
             raise ValueError("initial agent pose must be finite [x,y,yaw]")
         self.previous_action = np.zeros(2, dtype=np.float32)
+        self._held_teacher = None
         self.time_s = 0.0
         self.step_count = 0
         self.episode_return = 0.0
@@ -535,17 +546,25 @@ class FlyTrackEnv(gym.Env):
                 "observation": self._observation() if observation is None else observation,
                 "occlusion_odor_gain": self.occlusion_odor_steering["gain"],
             }
+        label = teacher_action(
+            self.agent_pose,
+            self.target_pose,
+            self.previous_action,
+            self.contract,
+            self.following_distance_m,
+            target_velocity=self.target_velocity,
+            **teacher_options,
+        )
+        if self.occlusion_hold_teacher:
+            if not self.scenario_spec.occluded_at(self.time_s):
+                self._held_teacher = np.asarray(label, dtype=np.float32).copy()
+            elif self._held_teacher is not None:
+                label = ActionLimits.from_contract(self.contract).clip(
+                    self._held_teacher, self.previous_action, self.contract.control_dt
+                )
         return {
             "privileged_state": privileged,
-            "teacher_action": teacher_action(
-                self.agent_pose,
-                self.target_pose,
-                self.previous_action,
-                self.contract,
-                self.following_distance_m,
-                target_velocity=self.target_velocity,
-                **teacher_options,
-            ),
+            "teacher_action": label,
             "target_bearing_rad": bearing,
             "target_distance_m": distance,
             "target_visible": self._target_visible(bearing, distance),

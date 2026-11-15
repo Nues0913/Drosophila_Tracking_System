@@ -1,0 +1,74 @@
+# #35 R2 exploration: the formal-v1 RS config of this stage (source: formal package f1/formal_v1_4060_F1/runs/experiment_configs/RS/seed_4/bc.yaml),
+# with model.random_seed = training seed, model.random_side_preserving: true, and runs/r2/ paths.
+variant: RS
+seed: 4
+sensor_contract_path: configs/sensor_contract.json
+graph_path: data/subgraphs/olfactory_v2_nokc/graph.npz
+frontend_path: artifacts/frontend/frontend.npz
+output: runs/r2/bc/RS/seed_4
+model:
+  alpha_init: 0.01
+  init_spectral_radius: 0.9
+  tau_init: 0.05
+  bias_init: 0.0
+  motor_rate_beta: 10.0
+  motor_input_gain: 100.0
+  olfactory_rate_beta: null
+  odor_input_gain: 100.0
+  dense_threshold: 4000
+  readout: structured
+  readout_turn_bias: true
+  readout_extra_turn_types: []
+  readout_extra_turn_center: []
+  readout_extra_turn_scale: []
+  readout_extra_turn_eps: 0.1
+  readout_extra_turn_center_ramp: true
+  odor_K:
+  - 0.1
+  - 0.3
+  - 1.0
+  odor_hill_n: 2.0
+  odor_adaptation_tau_s: 2.0
+  odor_shared_adaptation: true
+  visual_bins: 5
+  visual_input_mapping: {}
+  visual_seed_types: null
+  odor_seed_types: null
+  allow_unknown_side_mean: false
+  random_seed: 4
+  random_side_preserving: true
+  random_swaps_per_edge: 10
+  hidden_size: 16
+  gru_input_size: null
+  budget_target: null
+  log_std_init: -0.5
+scenario_configs:
+  normal: configs/scenarios/normal.yaml
+  occlusion: configs/scenarios/occlusion.yaml
+  noise: configs/scenarios/noise.yaml
+  conflict: configs/scenarios/conflict.yaml
+env:
+  episode_seconds: 60
+  scenario: normal
+  target_motion:
+  - curved
+  - wander
+  plume_model: puff
+train:
+  center_turn_bias: false
+  teacher_steps: 60000
+  dagger_steps_per_round: 30000
+  dagger_rounds: 3
+  dagger_beta: 0.5
+  epochs: 30
+  batch_episodes: 16
+  validation_every: 10
+  early_stopping_patience: 3
+  sequence_length: 32
+  learning_rate: 0.001
+  core_bias_learning_rate: 0.0
+  readout_learning_rate: 0.01
+  early_stopping_min_delta: 0.005
+  max_grad_norm: 0.5
+  activity_coef: 0.0001
+init_artifact: runs/r2/pretrain/RS/seed_4/odor/actor

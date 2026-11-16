@@ -189,6 +189,9 @@ class MaskedRateCore(nn.Module):
         self.substeps = round(contract.control_dt / self.dt)
         self.dense = graph.n_nodes < config["dense_threshold"]
         self._adjacency_cache: list[tuple[Tensor | None, bool, Tensor]] | None = None
+        # No-grad reuse across calls (#35 G3 latency): deployment rebuilt the CSR operator
+        # (COO, coalesce, CSR: ~1.7 ms on one CPU thread) every control step.
+        self._inference_operator: tuple[tuple, tuple[Tensor, Tensor, Tensor]] | None = None
 
     @contextlib.contextmanager
     def adjacency_cache(self):
@@ -204,11 +207,34 @@ class MaskedRateCore(nn.Module):
         finally:
             self._adjacency_cache = previous
 
+    def _tensor_state(self) -> tuple | None:
+        """Identity of every core parameter and buffer: storage, version, layout.
+
+        Any optimizer step, load_state_dict, in-place edit or device move changes it. None
+        when a tensor does not track versions (made under inference_mode), so no reuse.
+        """
+        try:
+            return tuple(
+                (
+                    name,
+                    tensor.data_ptr(),
+                    tensor._version,
+                    tensor.dtype,
+                    tensor.device,
+                    tensor.shape,
+                )
+                for name, tensor in (*self._parameters.items(), *self._buffers.items())
+                if tensor is not None
+            )
+        except RuntimeError:
+            return None
+
     def _dynamics(self, active: Tensor | None) -> tuple[Tensor, Tensor, Tensor]:
         """Recurrent operator, per-node ratio dt/tau and resting bias.
 
         Inside adjacency_cache() these are assembled once per forward graph
-        instead of once per control step.
+        instead of once per control step. Without gradients and without a mask they
+        are also reused across calls until any core tensor changes (_tensor_state).
         """
         if self._adjacency_cache is not None:
             grad = torch.is_grad_enabled()
@@ -218,6 +244,12 @@ class MaskedRateCore(nn.Module):
                     or (key is not None and active is not None and torch.equal(key, active))
                 ):
                     return value
+        reusable = active is None and not torch.is_grad_enabled()
+        state = self._tensor_state() if reusable else None
+        if state is not None and self._inference_operator is not None:
+            key, value = self._inference_operator
+            if key == state:
+                return value
         matrix = self.adjacency(active)
         # Dense: keep W^T as one view so autograd sees a single transpose per graph.
         value = (
@@ -227,6 +259,8 @@ class MaskedRateCore(nn.Module):
         )
         if self._adjacency_cache is not None:
             self._adjacency_cache.append((active, torch.is_grad_enabled(), value))
+        if state is not None:
+            self._inference_operator = (state, value)
         return value
 
     @property

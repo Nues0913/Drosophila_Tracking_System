@@ -1198,3 +1198,56 @@ def test_cards_before_the_spec_keep_per_side_adaptation_and_the_legacy_center(
     migrated, _ = prepare_policy({**config, "init_artifact": str(source)}, torch.device("cpu"))
     assert migrated.readout.extra_center_ramp
     assert migrated.model_config["readout_extra_turn_center_ramp"] is True
+
+
+@pytest.mark.parametrize("threshold", [1, 5000])
+def test_no_grad_operator_reuse_tracks_every_core_change(graph, threshold):
+    # #35 G3 latency: without gradients the core reuses its operator across calls, and
+    # any optimizer step, load_state_dict or in-place edit must rebuild it.
+    core = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "dense_threshold": threshold})
+    external = torch.rand((2, graph.n_nodes), generator=torch.Generator().manual_seed(0))
+    state = core.initial_state(2, "cpu")
+
+    def fresh():
+        core._inference_operator = None
+        with torch.no_grad():
+            return core(external, state)
+
+    with torch.no_grad():
+        first = core(external, state)
+        operator = core._inference_operator[1][0]
+        assert torch.equal(core(external, state), first)
+        assert core._inference_operator[1][0] is operator  # reused, not rebuilt
+    optimizer = torch.optim.SGD(core.parameters(), lr=0.5)
+    core(external, state).square().sum().backward()  # with gradients: never the cached operator
+    optimizer.step()
+    with torch.no_grad():
+        stepped = core(external, state)
+    assert not torch.equal(stepped, first)
+    assert torch.equal(stepped, fresh())
+    other = MaskedRateCore(
+        graph, SensorContract(), {**DEFAULT_CONFIG, "dense_threshold": threshold}
+    )
+    with torch.no_grad():
+        other.raw_alpha.add_(0.3)
+        other.bias.add_(0.1)
+    core.load_state_dict(other.state_dict())
+    with torch.no_grad():
+        loaded = core(external, state)
+    assert torch.equal(loaded, fresh())
+    with torch.no_grad():
+        core.edge_enabled.zero_()  # a buffer edit invalidates too
+        edited = core(external, state)
+    assert torch.equal(edited, fresh())
+    assert not torch.equal(edited, loaded)
+
+
+def test_operator_reuse_is_skipped_with_gradients_and_masks(graph):
+    core = MaskedRateCore(graph, SensorContract(), DEFAULT_CONFIG)
+    external = torch.rand((1, graph.n_nodes))
+    state = core.initial_state(1, "cpu")
+    core(external, state)
+    assert core._inference_operator is None
+    with torch.no_grad():
+        core(external, state, torch.ones(graph.n_nodes))
+    assert core._inference_operator is None

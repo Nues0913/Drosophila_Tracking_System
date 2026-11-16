@@ -191,7 +191,9 @@ class MaskedRateCore(nn.Module):
         self._adjacency_cache: list[tuple[Tensor | None, bool, Tensor]] | None = None
         # No-grad reuse across calls (#35 G3 latency): deployment rebuilt the CSR operator
         # (COO, coalesce, CSR: ~1.7 ms on one CPU thread) every control step.
-        self._inference_operator: tuple[tuple, tuple[Tensor, Tensor, Tensor]] | None = None
+        self._inference_operator: (
+            tuple[tuple, tuple[Tensor, Tensor, Tensor], tuple[Tensor, ...]] | None
+        ) = None
 
     @contextlib.contextmanager
     def adjacency_cache(self):
@@ -212,24 +214,38 @@ class MaskedRateCore(nn.Module):
 
         Any optimizer step, load_state_dict, in-place edit or device move changes it. None
         when a tensor does not track versions (made under inference_mode), so no reuse.
-        Edits through ``tensor.data`` bypass the version counter; the repository has none on
-        core tensors (ES rebinds them to fresh storage), and new code must not add one.
+
+        Rebinding ``parameter.data`` (ES: nn.utils.vector_to_parameters) does not bump the
+        version, so only the storage address tells the old tensor from the new one. The
+        cached entry therefore keeps the tensors it was built from alive (_dynamics): their
+        addresses cannot be handed to a later rebinding. In-place writes through
+        ``tensor.data`` change neither address nor version and remain unsupported on core
+        tensors; the repository has none, and new code must not add one.
         """
         try:
-            return tuple(
-                (
-                    name,
-                    tensor.data_ptr(),
-                    tensor._version,
-                    tensor.dtype,
-                    tensor.device,
-                    tensor.shape,
-                )
-                for name, tensor in (*self._parameters.items(), *self._buffers.items())
-                if tensor is not None
+            return (
+                self.dense,
+                *(
+                    (
+                        name,
+                        tensor.data_ptr(),
+                        tensor._version,
+                        tensor.dtype,
+                        tensor.device,
+                        tensor.shape,
+                    )
+                    for name, tensor in self._core_tensors()
+                ),
             )
         except RuntimeError:
             return None
+
+    def _core_tensors(self) -> list[tuple[str, Tensor]]:
+        return [
+            (name, tensor)
+            for name, tensor in (*self._parameters.items(), *self._buffers.items())
+            if tensor is not None
+        ]
 
     def _dynamics(self, active: Tensor | None) -> tuple[Tensor, Tensor, Tensor]:
         """Recurrent operator, per-node ratio dt/tau and resting bias.
@@ -249,7 +265,7 @@ class MaskedRateCore(nn.Module):
         reusable = active is None and not torch.is_grad_enabled()
         state = self._tensor_state() if reusable else None
         if state is not None and self._inference_operator is not None:
-            key, value = self._inference_operator
+            key, value, _ = self._inference_operator
             if key == state:
                 return value
         matrix = self.adjacency(active)
@@ -262,7 +278,10 @@ class MaskedRateCore(nn.Module):
         if self._adjacency_cache is not None:
             self._adjacency_cache.append((active, torch.is_grad_enabled(), value))
         if state is not None:
-            self._inference_operator = (state, value)
+            # Aliases of the keyed tensors: while this entry lives, their storage cannot be
+            # freed and reused by a tensor that would then produce the same key.
+            held = tuple(tensor.detach() for _, tensor in self._core_tensors())
+            self._inference_operator = (state, value, held)
         return value
 
     @property

@@ -1242,6 +1242,48 @@ def test_no_grad_operator_reuse_tracks_every_core_change(graph, threshold):
     assert not torch.equal(edited, loaded)
 
 
+@pytest.mark.parametrize("threshold", [1, 5000])
+def test_no_grad_operator_reuse_survives_rebinding_parameter_data(graph, threshold):
+    # PR #117 review: torch.nn.utils.vector_to_parameters rebinds .data without bumping the
+    # version. ES rebinds twice between two calls (es.py: back to theta, then the next
+    # perturbation), and the second vector could land on the address the cached operator
+    # was built from. The cache keeps that storage alive, so the address cannot recur.
+    core = MaskedRateCore(graph, SensorContract(), {**DEFAULT_CONFIG, "dense_threshold": threshold})
+    parameters = list(core.parameters())
+    theta = torch.nn.utils.parameters_to_vector(parameters).detach().clone()
+    generator = torch.Generator().manual_seed(0)
+    external = torch.rand((2, graph.n_nodes), generator=generator)
+    state = core.initial_state(2, "cpu")
+    for _ in range(200):
+        noise = torch.randn(theta.shape, generator=generator)
+        torch.nn.utils.vector_to_parameters((theta + 0.3 * noise).clone(), parameters)
+        with torch.no_grad():
+            core(external, state)
+        version = core.raw_alpha._version
+        torch.nn.utils.vector_to_parameters(theta.clone(), parameters)
+        torch.nn.utils.vector_to_parameters((theta - 0.3 * noise).clone(), parameters)
+        assert core.raw_alpha._version == version  # the premise: rebinding is not versioned
+        with torch.no_grad():
+            got = core(external, state)
+        core._inference_operator = None
+        with torch.no_grad():
+            reference = core(external, state)
+        assert torch.equal(got, reference)
+
+
+def test_no_grad_operator_reuse_tracks_the_storage_format(graph):
+    core = MaskedRateCore(graph, SensorContract(), DEFAULT_CONFIG)
+    external = torch.rand((1, graph.n_nodes), generator=torch.Generator().manual_seed(0))
+    state = core.initial_state(1, "cpu")
+    with torch.no_grad():
+        core(external, state)
+        dense = core._inference_operator[1][0]
+        core.dense = not core.dense
+        core(external, state)
+        assert core._inference_operator[1][0] is not dense
+        assert core._inference_operator[1][0].layout != dense.layout
+
+
 def test_operator_reuse_is_skipped_with_gradients_and_masks(graph):
     core = MaskedRateCore(graph, SensorContract(), DEFAULT_CONFIG)
     external = torch.rand((1, graph.n_nodes))

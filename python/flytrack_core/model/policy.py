@@ -308,6 +308,37 @@ class MaskedRateCore(nn.Module):
                 voltage = voltage * active
         return voltage
 
+    def forward_branches(
+        self, externals: list[Tensor], voltages: list[Tensor], actives: list[Tensor]
+    ) -> list[Tensor]:
+        """Run several masked branches through one unmasked operator, stacked on the batch axis.
+
+        Equal to calling forward(external, voltage, active) per branch (#35 latency): rates are
+        zero on inactive presynaptic nodes and the voltage is re-masked after every substep, so the
+        unmasked edges only reach nodes that are zeroed again. One sparse product per substep
+        replaces one per branch.
+        """
+        if not (len(externals) == len(voltages) == len(actives)) or not externals:
+            raise ValueError("forward_branches needs one external, voltage and mask per branch")
+        operator, ratio, bias = self._dynamics(None)
+        sizes = [len(v) for v in voltages]
+        mask = torch.cat(
+            [
+                active.to(voltage.dtype).expand(len(voltage), -1)
+                for active, voltage in zip(actives, voltages, strict=True)
+            ]
+        )
+        voltage = torch.cat(voltages) * mask
+        drive = bias * mask + torch.cat(externals) * mask
+        for _ in range(self.substeps):
+            rates = self.rates(voltage, mask)
+            if self.dense:
+                target = torch.addmm(drive, rates, operator)
+            else:
+                target = drive + spmm(operator, rates.T).T
+            voltage = torch.lerp(voltage, target, ratio) * mask
+        return list(torch.split(voltage, sizes))
+
 
 class MotorReadout(nn.Module):
     """Structured DN left/right differences, with an explicit linear fallback."""
@@ -917,8 +948,12 @@ class ConnectomePolicy(nn.Module):
         odor_active = (
             self.odor_active if self.lesion != "odor" else torch.zeros_like(self.odor_active)
         )
-        visual = self.core(v_external, initial[:, : self.n_nodes], visual_active)
-        odor = self.core(o_external, initial[:, self.n_nodes :], odor_active)
+        # One stacked recurrence for both branches; equal to two masked core calls (#35 latency).
+        visual, odor = self.core.forward_branches(
+            [v_external, o_external],
+            [initial[:, : self.n_nodes], initial[:, self.n_nodes :]],
+            [visual_active, odor_active],
+        )
         rates_v = self.core.rates(visual, visual_active)
         rates_o = self.core.rates(odor, odor_active)
         action = self.readout([rates_v, rates_o])

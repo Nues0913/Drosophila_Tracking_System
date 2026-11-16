@@ -497,6 +497,66 @@ def test_late_fusion_lesion_cannot_leak_softplus_rest_rates(graph_path, official
     torch.testing.assert_close(activity, odor_rates, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("dense", [True, False])
+def test_stacked_branches_equal_separate_masked_branches(graph_path, official_frontend, dense):
+    """#35 latency: one unmasked stacked recurrence == one masked recurrence per branch (here
+    bitwise for these shapes; forward_code below allows float32 rounding)."""
+    policy = build_policy("VO-late", graph_path, SensorContract(), official_frontend)
+    core = policy.core
+    core.dense = dense
+    torch.manual_seed(35)
+    with torch.no_grad():
+        core.raw_alpha.add_(torch.randn_like(core.raw_alpha))
+        core.raw_tau.add_(torch.randn_like(core.raw_tau))
+        core.bias.add_(torch.randn_like(core.bias))
+    n = core.n_nodes
+    masks = [policy.visual_active, policy.odor_active, torch.zeros_like(policy.visual_active)]
+    externals = [torch.randn(3, n) for _ in masks]
+    voltages = [torch.randn(3, n) for _ in masks]
+    separate = [core(e, v, m) for e, v, m in zip(externals, voltages, masks, strict=True)]
+    stacked = core.forward_branches(externals, voltages, masks)
+    for a, b in zip(separate, stacked, strict=True):
+        torch.testing.assert_close(b, a, atol=0, rtol=0)
+    # Gradients agree up to summation order.
+    grads = []
+    for run in ("separate", "stacked"):
+        core.zero_grad()
+        outs = (
+            [core(e, v, m) for e, v, m in zip(externals, voltages, masks, strict=True)]
+            if run == "separate"
+            else core.forward_branches(externals, voltages, masks)
+        )
+        sum((core.rates(o, m) ** 2).sum() for o, m in zip(outs, masks, strict=True)).backward()
+        grads.append([p.grad.clone() for p in (core.raw_alpha, core.raw_tau, core.bias)])
+    for a, b in zip(*grads, strict=True):
+        torch.testing.assert_close(b, a, atol=1e-7, rtol=1e-6)
+
+
+@pytest.mark.parametrize("dense", [True, False])
+def test_late_fusion_forward_code_matches_two_masked_core_calls(
+    graph_path, official_frontend, dense
+):
+    """Equal up to float32 rounding: stacking changes the dense-operand width of the CPU matmul,
+    which may regroup sums (observed 1.5e-8). The 2D evaluation is not bitwise either (GPU, not
+    deterministic)."""
+    policy = build_policy("VO-late", graph_path, SensorContract(), official_frontend)
+    policy.core.dense = dense
+    torch.manual_seed(36)
+    code = torch.randn(2, policy.encoder.code_size)
+    initial = torch.randn(2, policy.state_size - policy.encoder.state_size)
+    _, central, _ = policy.forward_code(code, initial)
+    external, _, missing = policy.encoder.project(code)
+    external = external + missing * policy.missing_bias[policy.node_missing_index]
+    n = policy.n_nodes
+    visual_inputs, odor_inputs = policy.encoder.visual_inputs, policy.encoder.odor_inputs
+    visual = policy.core(external * visual_inputs, initial[:, :n], policy.visual_active)
+    odor = policy.core(external * odor_inputs, initial[:, n:], policy.odor_active)
+    tolerance = 1e-6
+    torch.testing.assert_close(
+        central, torch.cat((visual, odor), dim=1), atol=tolerance, rtol=tolerance
+    )
+
+
 @pytest.mark.parametrize("variant", ["VO", "VO-late", "GRU"])
 def test_activity_penalty_excludes_only_connectome_motor_nodes(
     graph_path, official_frontend, variant

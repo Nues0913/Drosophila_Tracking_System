@@ -15,6 +15,19 @@ from flytrack_core.model.sparse import spmm
 from flytrack_core.sensing.hex_eye import axial_coordinates
 
 
+def _csr_int32(matrix: Tensor) -> Tensor:
+    """A coalesced sparse COO matrix as CSR with int32 indices (#35 G3 latency)."""
+    csr = matrix.to_sparse_csr()
+    if csr.values().numel() >= 2**31:
+        raise ValueError("Sparse matrix too large for int32 indices")
+    return torch.sparse_csr_tensor(
+        csr.crow_indices().to(torch.int32),
+        csr.col_indices().to(torch.int32),
+        csr.values(),
+        csr.shape,
+    )
+
+
 class FrozenFlyvis(nn.Module):
     """Run one authentic exported network per eye and fixed spatial pooling.
 
@@ -137,7 +150,9 @@ class FrozenFlyvis(nn.Module):
             torch.as_tensor(data["weight"], dtype=torch.float32),
             (self.n_nodes, self.n_nodes),
         ).coalesce()
-        self.register_buffer("weight", matrix.to_sparse_csr(), persistent=False)
+        # int32 CSR indices: bitwise identical to int64 at every width we checked (1-16
+        # columns), and on CPU about 35% less time in this product.
+        self.register_buffer("weight", _csr_int32(matrix), persistent=False)
         self.visual_bins = visual_bins
         self.features_per_eye = len(self.output_types) * visual_bins
         x = data["node_u"][output_node] + data["node_v"][output_node] / 2
@@ -156,6 +171,7 @@ class FrozenFlyvis(nn.Module):
             torch.as_tensor(1.0 / counts[feature_index], dtype=torch.float32),
             (self.features_per_eye, self.n_nodes),
         ).coalesce()
+        # Stays COO: on CPU a CSR product sums in a different order for 4+ columns (batch >= 2).
         self.register_buffer("pooling", pooling, persistent=False)
         self.control_dt, self.neural_dt = contract.control_dt, contract.neural_dt
         self.substeps = round(self.control_dt / self.neural_dt)
@@ -183,10 +199,16 @@ class FrozenFlyvis(nn.Module):
         ratio = (self.neural_dt / self.tau.clamp_min(self.neural_dt)).unsqueeze(1)
         bias = self.bias.unsqueeze(1)
         columns = available.reshape(1, batch * 2)
+        # Selecting is a no-op when every eye is available; skip it on CPU (on GPU the
+        # check would synchronize every step).
+        select = available.is_cuda or not bool(available.all())
         for _ in range(self.substeps):
             recurrent = spmm(self.weight, torch.relu(voltage))
-            evolved = voltage + ratio * (-voltage + bias + recurrent + current)
-            voltage = torch.where(columns, evolved, voltage)
+            # voltage + ratio * (-voltage + bias + recurrent + current), with the same
+            # operations in the same order but fewer temporaries: bias - voltage equals
+            # -voltage + bias exactly, and the last two steps only commute.
+            evolved = (bias - voltage).add_(recurrent).add_(current).mul_(ratio).add_(voltage)
+            voltage = torch.where(columns, evolved, voltage) if select else evolved
         features = spmm(self.pooling, torch.relu(voltage)).T
         features = torch.where(available, features, 0.0)
         return features.reshape(batch, 2, -1), voltage.T.reshape(batch, -1)

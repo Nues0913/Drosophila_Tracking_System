@@ -105,6 +105,12 @@ class FlyTrackEnv(gym.Env):
             if not valid_gain:
                 raise ValueError("occlusion odor gain must be finite and nonnegative")
             self.occlusion_odor_steering = {"gain": float(gain)}
+        # #35 S3 (exploration): False labels the teacher's desired command (bounds only, no
+        # acceleration clip around the student's previous action). Default True keeps the formal labels.
+        accel_clip = options.pop("teacher_accel_clip", True)
+        if not isinstance(accel_clip, bool):
+            raise ValueError("teacher_accel_clip must be a bool")
+        self.teacher_accel_clip = accel_clip
         self.initial_agent_pose = options.pop("initial_agent_pose", None)
         # Per-episode layout diversity is on by default; layout_preset: legacy (or the
         # individual LayoutConfig keys) reproduces the old fixed layout.
@@ -544,6 +550,7 @@ class FlyTrackEnv(gym.Env):
                 self.contract,
                 self.following_distance_m,
                 target_velocity=self.target_velocity,
+                accel_clip=self.teacher_accel_clip,
                 **teacher_options,
             ),
             "target_bearing_rad": bearing,

@@ -35,7 +35,9 @@ def spmm(matrix: Tensor, dense: Tensor) -> Tensor:
         matrix = matrix.coalesce()  # row-major order, like CSR
         rows, columns = matrix.indices()
         lengths = torch.bincount(rows, minlength=matrix.shape[0])
-    product = dense[columns] * matrix.values().unsqueeze(1).to(dense.dtype)
+    # index_select gathers the same rows as dense[columns] (bitwise), and takes int32 indices
+    # without first converting them to int64 (the frontend's CSR is int32, #35 G3 latency).
+    product = dense.index_select(0, columns) * matrix.values().unsqueeze(1).to(dense.dtype)
     # Each row's entries are contiguous, so a segmented sum replaces scattered adds
     # (index_add_ under deterministic mode was about 2x slower on the frontend).
     return torch.segment_reduce(product, "sum", lengths=lengths, axis=0, unsafe=True)

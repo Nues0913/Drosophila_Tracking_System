@@ -111,6 +111,7 @@
 | D3（#104） | 速度讀出加上校準過、切斷梯度的 DN 列 | 不成立：速度只是整體變快，撞上目標的次數變多 | `d3_forward_rows.tar.gz` |
 
 - formal-v2 沒有觸發。使用者 11-11 同意 PM 的建議，formal-v1 不再做速度讀出的實驗（[#35 6894303266](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6894303266)）；P3／PPO 留在 #35。
+- formal-v1 交付之後的探索（#35，2026-11-16 起：S2、M1、R2、S4 等）都標為未登記，不改這份報告的結論；結果見 [status.md](status.md) 的 2026-11-16 一節，證據包在 release `research-35`。
 
 ## 5. Gazebo（#88）
 ### 5.1 平台的一致性

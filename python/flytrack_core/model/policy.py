@@ -367,6 +367,27 @@ class MotorReadout(nn.Module):
         self.extra_turn_types: list[str] = []
         self.extra_center_ramp = bool(extra_center_ramp)
         self.forward_row_types: list[str] = []
+        # #35 S4 (opt-in): False lets the speed error reach the core through the rows, and a
+        # positive clip bounds each standardized row (a type silent at calibration can wake up).
+        self.forward_row_detach = True
+        self.forward_row_clip: float | None = None
+
+    def set_forward_row_gradient(self, detach: bool, clip: float | None) -> None:
+        """Choose whether the forward rows pass gradients upstream, and their feature clip (#35 S4).
+
+        detach=True (D3, the default) reads a detached copy. With detach=False the rows are an
+        ordinary readout of the core, so the BC speed term trains it through them; pair that with
+        train.speed_gradient_balance, since the 1/std scales would otherwise multiply those
+        gradients (S1, #95). clip, when set, bounds each standardized row to [-clip, clip]; a row's
+        gradient is zero while it is clipped. Neither changes the actions of a policy whose rows
+        stay inside the clip.
+        """
+        if not isinstance(detach, bool):
+            raise ValueError("Forward row detach must be a bool")
+        if clip is not None and not (math.isfinite(float(clip)) and float(clip) > 0):
+            raise ValueError("Forward row clip must be positive and finite, or None")
+        self.forward_row_detach = detach
+        self.forward_row_clip = None if clip is None else float(clip)
 
     def set_forward_rows(self, types: list[str], center: list[float], scale: list[float]) -> None:
         """Add, or recalibrate, calibrated forward-speed rows (#104 D3).
@@ -419,14 +440,22 @@ class MotorReadout(nn.Module):
             )
         self.forward_row_types = types
 
-    def forward_row_raw(self, activities: list[Tensor]) -> Tensor:
-        """Detached mean rate of each forward row type, (batch, branches * types)."""
+    def forward_row_raw(self, activities: list[Tensor], detach: bool = True) -> Tensor:
+        """Mean rate of each forward row type, (batch, branches * types); detached by default."""
         return torch.cat(
-            [activity.detach() @ self.forward_row_pool.T for activity in activities], 1
+            [
+                (activity.detach() if detach else activity) @ self.forward_row_pool.T
+                for activity in activities
+            ],
+            1,
         )
 
     def forward_row_features(self, activities: list[Tensor]) -> Tensor:
-        return (self.forward_row_raw(activities) - self.forward_row_center) * self.forward_row_scale
+        raw = self.forward_row_raw(activities, self.forward_row_detach)
+        features = (raw - self.forward_row_center) * self.forward_row_scale
+        if self.forward_row_clip is not None:
+            features = features.clamp(-self.forward_row_clip, self.forward_row_clip)
+        return features
 
     def forward_latent(self, activities: list[Tensor]) -> Tensor:
         """Pre-sigmoid forward speed; forward() uses exactly this value."""
@@ -845,6 +874,9 @@ class ConnectomePolicy(nn.Module):
             config["readout_forward_row_center"],
             config["readout_forward_row_scale"],
         )
+        self.readout.set_forward_row_gradient(
+            config["readout_forward_row_detach"], config["readout_forward_row_clip"]
+        )
         self.state_size = self.encoder.state_size + self.branches * graph.n_nodes
 
     def set_readout_extra_turns(
@@ -868,6 +900,14 @@ class ConnectomePolicy(nn.Module):
             readout_forward_row_types=list(types),
             readout_forward_row_center=[float(x) for x in center],
             readout_forward_row_scale=[float(x) for x in scale],
+        )
+
+    def set_readout_forward_row_gradient(self, detach: bool, clip: float | None) -> None:
+        """Opt-in (#35 S4); see MotorReadout.set_forward_row_gradient."""
+        self.readout.set_forward_row_gradient(detach, clip)
+        self.model_config.update(
+            readout_forward_row_detach=detach,
+            readout_forward_row_clip=None if clip is None else float(clip),
         )
 
     def set_lesion(self, mode: str = "none") -> None:
@@ -1221,6 +1261,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "readout_forward_row_types": [],
     "readout_forward_row_center": [],
     "readout_forward_row_scale": [],
+    # #35 S4 (opt-in): pass the BC speed gradient upstream through the rows, and bound each
+    # standardized row; the defaults are D3's detached, unbounded rows.
+    "readout_forward_row_detach": True,
+    "readout_forward_row_clip": None,
     "odor_K": [0.3],
     "odor_hill_n": 2.0,
     "odor_adaptation_tau_s": 2.0,

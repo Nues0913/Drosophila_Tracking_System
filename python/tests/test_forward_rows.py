@@ -154,3 +154,101 @@ def test_bc_calibrates_forward_rows(monkeypatch, tmp_path):
     for key in ("readout_forward_row_center", "readout_forward_row_scale"):
         assert actor.model_config[key] == pytest.approx(model[key])
     assert actor.readout.forward_row_weight.shape == (len(TYPES),)
+
+
+# --- #35 S4: rows that train the core, bounded, recalibrated every round ---------------------
+
+
+def test_undetached_rows_send_gradient_upstream_and_clip_bounds_them(monkeypatch):
+    _, policy = smoke_policy(monkeypatch, "VO-late")
+    readout = policy.readout
+    width = len(TYPES) * policy.branches
+    policy.set_readout_forward_rows(TYPES, [0.0] * width, [100.0] * width)
+    policy.set_readout_forward_row_gradient(False, 5.0)
+    assert policy.model_config["readout_forward_row_detach"] is False
+    assert policy.model_config["readout_forward_row_clip"] == 5.0
+    with torch.no_grad():
+        readout.forward_row_weight.fill_(1.0)
+    n = readout._graph.n_nodes
+    small = [(0.001 * torch.rand((3, n))).requires_grad_() for _ in range(2)]
+    term = readout.forward_row_features(small) @ readout.forward_row_weight
+    assert torch.autograd.grad(term.sum(), small[0])[0].abs().sum() > 0
+    # Large activity: every row is clipped at 5, so the value is bounded and the gradient is zero.
+    large = [torch.ones((3, n), requires_grad=True) for _ in range(2)]
+    features = readout.forward_row_features(large)
+    assert torch.equal(features, torch.full_like(features, 5.0))
+    assert torch.autograd.grad(features.sum(), large[0])[0].abs().sum() == 0
+    with pytest.raises(ValueError, match="bool"):
+        readout.set_forward_row_gradient(0, None)
+    with pytest.raises(ValueError, match="clip"):
+        readout.set_forward_row_gradient(False, 0.0)
+
+
+def test_recalibration_keeps_the_latent_and_rescales_adam(monkeypatch):
+    from flytrack_train.forward_rows import recalibrate_forward_rows
+
+    _, policy = smoke_policy(monkeypatch, "VO-late")
+    readout = policy.readout
+    width = len(TYPES) * policy.branches
+    policy.set_readout_forward_rows(TYPES, [0.07] * width, [1e3] * width)
+    with torch.no_grad():
+        readout.forward_row_weight.copy_(torch.linspace(-0.4, 0.4, width))
+        readout.forward_bias.fill_(-0.6)
+    weight = readout.forward_row_weight
+    optimizer = torch.optim.Adam([weight, readout.forward_bias], lr=0.01)
+    n = readout._graph.n_nodes
+    activities = [0.07 + 0.001 * torch.rand((4, n), dtype=torch.float32) for _ in range(2)]
+    readout.forward_latent(activities).sum().backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    before = readout.forward_latent(activities).detach()
+    old_weight = weight.detach().clone()
+    exp_avg = optimizer.state[weight]["exp_avg"].clone()
+    exp_avg_sq = optimizer.state[weight]["exp_avg_sq"].clone()
+    new_center = [0.0705 + 0.0001 * i for i in range(width)]
+    new_scale = [2e3 + 100.0 * i for i in range(width)]
+    report = recalibrate_forward_rows(policy, optimizer, new_center, new_scale)
+    assert torch.allclose(readout.forward_latent(activities), before, atol=1e-5)
+    ratio = torch.full((width,), 1e3) / torch.tensor(new_scale)
+    assert torch.allclose(weight, old_weight * ratio)
+    assert torch.allclose(optimizer.state[weight]["exp_avg"], exp_avg / ratio)
+    assert torch.allclose(optimizer.state[weight]["exp_avg_sq"], exp_avg_sq / ratio**2)
+    assert policy.model_config["readout_forward_row_scale"] == pytest.approx(new_scale)
+    assert report["weight_ratio_max"] == pytest.approx(float(ratio.max()))
+
+
+def test_bc_recalibrates_undetached_rows_every_round(monkeypatch, tmp_path):
+    monkeypatch.chdir(ROOT)
+    config = copy.deepcopy(read_config("configs/train/smoke.yaml"))
+    config.pop("init_artifact", None)
+    config["variant"] = "V"
+    config["env"]["episode_seconds"] = 5
+    config["train"].update(
+        teacher_steps=500,
+        dagger_steps_per_round=300,
+        dagger_rounds=1,
+        epochs=1,
+        calibrate_forward_rows={
+            "types": TYPES,
+            "burn_in_steps": 60,
+            "detach": False,
+            "clip": 5.0,
+            "std_floor": 1e-3,
+            "every_round": True,
+        },
+    )
+    imitation.train_bc(config, tmp_path / "bc", 0, torch.device("cpu"))
+    reports = [
+        json.loads((tmp_path / f"bc/forward_row_calibration_round_{r}.json").read_text())
+        for r in (0, 1)
+    ]
+    for report in reports:
+        assert report["std_floor"] == 1e-3
+        assert all(0 < x <= 1e3 * (1 + 1e-6) for x in report["model"]["readout_forward_row_scale"])
+        assert "recalibration" in report
+    actor = load_policy_artifact(tmp_path / "bc/actor")[0]
+    assert actor.model_config["readout_forward_row_detach"] is False
+    assert actor.model_config["readout_forward_row_clip"] == 5.0
+    assert actor.model_config["readout_forward_row_scale"] == pytest.approx(
+        reports[1]["model"]["readout_forward_row_scale"]
+    )

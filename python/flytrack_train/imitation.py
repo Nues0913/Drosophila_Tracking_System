@@ -20,7 +20,7 @@ from .config import (
     write_json,
 )
 from .extra_turn import EXTRA_TURN_KEYS, calibrate_extra_turns
-from .forward_rows import FORWARD_ROW_KEYS, calibrate_forward_rows
+from .forward_rows import FORWARD_ROW_KEYS, calibrate_forward_rows, recalibrate_forward_rows
 from .losses import activity_penalty
 from .parallel import EnvPool, default_workers
 from .parameters import parameter_groups
@@ -201,6 +201,7 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         policy.set_readout_extra_turns(types, [0.0] * len(types), [1.0] * len(types), eps)
     # #104 D3 (opt-in): detached forward-speed rows, also zero-weight until calibrated.
     forward_calibration = train.get("calibrate_forward_rows")
+    forward_every_round = False
     if forward_calibration:
         if not isinstance(policy, ConnectomePolicy) or policy.readout.mode != "structured":
             raise ValueError("calibrate_forward_rows needs a connectome policy, structured readout")
@@ -209,6 +210,15 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
         forward_types = list(forward_calibration["types"])
         width = len(forward_types) * policy.branches
         policy.set_readout_forward_rows(forward_types, [0.0] * width, [1.0] * width)
+        # #35 S4 (opt-in): rows that train the core, bounded, recalibrated every round.
+        detach = forward_calibration.get("detach", True)
+        clip = forward_calibration.get("clip")
+        if not isinstance(detach, bool):
+            raise ValueError("calibrate_forward_rows.detach must be a bool")
+        policy.set_readout_forward_row_gradient(detach, None if clip is None else float(clip))
+        forward_every_round = forward_calibration.get("every_round", False)
+        if not isinstance(forward_every_round, bool):
+            raise ValueError("calibrate_forward_rows.every_round must be a bool")
     optimizer = torch.optim.Adam(parameter_groups(policy, train))
     if teacher_steps <= 0 or dagger_steps <= 0:
         raise ValueError("Fair BC/DAgger budgets must be positive")
@@ -339,7 +349,10 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
             calibrated.update(report["model"])
             policy.set_readout_extra_turns(*(calibrated[key] for key in EXTRA_TURN_KEYS))
             write_json(output / "extra_turn_calibration.json", report)
-        if forward_calibration and not forward_calibrated:
+        if forward_calibration and (
+            not forward_calibrated
+            or (forward_every_round and forward_calibrated.get("round") != round_index)
+        ):
             held = set(held_out_episodes(len(episodes), int(train.get("validation_every", 10))))
             report = calibrate_forward_rows(
                 policy,
@@ -348,10 +361,22 @@ def train_bc(config: dict[str, Any], output: Path, seed: int, device: torch.devi
                 encoded,
                 held,
                 int(forward_calibration.get("burn_in_steps", 60)),
+                float(forward_calibration.get("std_floor", 0.0)),
             )
-            forward_calibrated.update(report["model"])
-            policy.set_readout_forward_rows(*(forward_calibrated[key] for key in FORWARD_ROW_KEYS))
-            write_json(output / "forward_row_calibration.json", report)
+            # Function-preserving: a later round re-standardizes the rows without moving the policy.
+            report["recalibration"] = recalibrate_forward_rows(
+                policy,
+                optimizer,
+                report["model"]["readout_forward_row_center"],
+                report["model"]["readout_forward_row_scale"],
+            )
+            forward_calibrated.update(report["model"], round=round_index)
+            name = (
+                f"forward_row_calibration_round_{round_index}.json"
+                if forward_every_round
+                else "forward_row_calibration.json"
+            )
+            write_json(output / name, report)
         fit_reports = fit_behavior(
             model,
             encoded,

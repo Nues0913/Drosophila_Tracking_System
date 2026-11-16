@@ -212,6 +212,8 @@ class MaskedRateCore(nn.Module):
 
         Any optimizer step, load_state_dict, in-place edit or device move changes it. None
         when a tensor does not track versions (made under inference_mode), so no reuse.
+        Edits through ``tensor.data`` bypass the version counter; the repository has none on
+        core tensors (ES rebinds them to fresh storage), and new code must not add one.
         """
         try:
             return tuple(

@@ -1,6 +1,6 @@
 """S5 (PM, #35 exploration): fit ONLY the forward-speed readout over the DN population; the core is frozen.
 
-  python explore/s5/fit_readout.py SOURCE_ACTOR OUT_DIR [ROUND_EPISODES]
+  python explore/s5/fit_readout.py SOURCE_ACTOR OUT_DIR [ROUND_EPISODES] [ROW_TYPES]
 Run in flytrack-ml:0.1 from the repo root (PYTHONPATH=python), one torch thread, CPU.
 S4 trained the same rows together with the core and failed (calibration drift, speed not tied to distance). The
 zero-training probe showed that the frozen formal core already carries the speed signal in its DN population
@@ -35,8 +35,12 @@ torch.set_num_threads(1)
 source, out = sys.argv[1], Path(sys.argv[2])
 round_episodes = int(sys.argv[3]) if len(sys.argv) > 3 else 12
 BURN_IN, FLOOR, CLIP, PENALTY, ROUNDS = 60, 1e-4, 5.0, 1.6e-4, 3
-types = (Path(__file__).resolve().parent.parent / "s4" / "dn_types.txt").read_text().split()
-assert len(types) == 134
+# Optional 4th argument: a comma-separated list of row types instead of the 134 DN types (S7: "DNp09").
+if len(sys.argv) > 4:
+    types = sys.argv[4].split(",")
+else:
+    types = (Path(__file__).resolve().parent.parent / "s4" / "dn_types.txt").read_text().split()
+    assert len(types) == 134
 config = yaml.safe_load(open("configs/train/evaluate.yaml"))
 config.setdefault("env", {})["teacher_accel_clip"] = False
 policy, contract, card = load_policy_artifact(source, device="cpu")
@@ -106,7 +110,7 @@ def corr(a, b):
     return float(np.corrcoef(a, b)[0, 1]) if a.std() > 0 and b.std() > 0 else None
 
 
-report = {"rule": __doc__, "source": source, "types": len(types), "rows": n_rows, "formal_forward_bias": float(readout.forward_bias.detach()),
+report = {"rule": __doc__, "source": source, "types": len(types), "row_types": types if len(types) <= 8 else len(types), "rows": n_rows, "formal_forward_bias": float(readout.forward_bias.detach()),
           "formal_forward_weight": readout.forward_weight.tolist(), "rounds": []}
 data = [[], [], []]
 for r in range(ROUNDS + 1):

@@ -77,6 +77,8 @@ def main():
     # Policy runtime (#88 G0b): torch threads for the policy container and its device.
     parser.add_argument("--policy-threads", type=int, default=1)
     parser.add_argument("--policy-device", choices=("cpu", "cuda"), default="cpu")
+    # Camera hex-eye kernel (#111 G0e): "gaussian" reproduces runs before G0e (formal-v1 G2).
+    parser.add_argument("--vision-kernel", choices=("subrays", "gaussian"), default="subrays")
     args = parser.parse_args()
     if (
         args.episodes < 1
@@ -145,6 +147,7 @@ def main():
         "target_motion": args.target_motion,
         "policy_torch_threads": args.policy_threads,
         "policy_device": args.policy_device,
+        "policy_vision_kernel": args.vision_kernel,
         "cpu_rendering": bool(args.cpu),
         "cells": [],
     }
@@ -163,6 +166,7 @@ def main():
                 EVAL_OUTPUT="/workspace/" + str(cell.relative_to(root)),
                 POLICY_TORCH_THREADS=str(args.policy_threads),
                 POLICY_DEVICE=args.policy_device,
+                POLICY_VISION_KERNEL=args.vision_kernel,
             )
             print(f"Gazebo {variant}, model seed {seed}, {scenario}", flush=True)
             cell_started = datetime.now(timezone.utc).isoformat()

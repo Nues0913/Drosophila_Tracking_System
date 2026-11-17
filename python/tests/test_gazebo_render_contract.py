@@ -175,3 +175,103 @@ def test_agent_collision_shapes_stay_inside_the_collision_radius():
     assert float(drive.findtext("wheel_radius")) == pytest.approx(
         float(cylinder.findtext("radius"))
     )
+
+
+def _pinhole_image(eye: HexEye, env: FlyTrackEnv, agent, walls, disks, index: int) -> np.ndarray:
+    """The 2D scene as the camera's rectilinear image: one central ray per pixel."""
+    c = eye.contract
+    width, height = c.camera_width, c.camera_height
+    fx = width / (2 * np.tan(np.radians(c.horizontal_fov_deg / 2)))
+    fy = height / (2 * np.tan(np.radians(c.vertical_fov_deg / 2)))
+    uu, vv = np.meshgrid(np.arange(width), np.arange(height))
+    y, z = ((width - 1) / 2 - uu) / fx, ((height - 1) / 2 - vv) / fy
+    centre = np.radians(c.eye_yaw_deg) * (1 if index == 0 else -1)
+    directions = np.stack((np.arctan(y) + centre, np.arctan2(z, np.sqrt(1 + y**2))), -1)
+    pixels = HexEye(c)
+    pixels.directions_rad = np.stack([directions.reshape(-1, 2)] * 2)
+    flat = pixels.raycast(
+        agent,
+        walls,
+        disks,
+        index,
+        subrays=1,
+        wall_intensity=env._wall_intensity,
+        camera_height_m=env.camera_height_m,
+        camera_forward_m=env.camera_forward_m,
+        camera_baseline_m=env.camera_baseline_m,
+    )
+    return flat.reshape(height, width)
+
+
+def test_camera_kernel_reproduces_the_2d_target_contrast():
+    """#111 G0e: the policy samples the camera with the 2D ray cast's own quadrature.
+
+    The 2D scene rendered as an exact camera image and sampled by the policy's default kernel
+    must give the target contrast the actors were trained on (Gazebo/2D within 0.97-1.03).
+    The pre-G0e full-Gaussian kernel is wider and loses about 10%, which is what G0c measured.
+    """
+    env = FlyTrackEnv(domain_randomization=False)
+    env.reset(seed=0)
+    eye = env.retina
+    walls = np.array([-5.0, -5.0, 5.0, 5.0])
+    ratios = {"subrays": [], "gaussian": []}
+    correlations = []
+
+    def cast(agent, disks, index):
+        return eye.raycast(
+            agent,
+            walls,
+            disks,
+            index,
+            subrays=env.subrays,
+            wall_intensity=env._wall_intensity,
+            camera_height_m=env.camera_height_m,
+            camera_forward_m=env.camera_forward_m,
+            camera_baseline_m=env.camera_baseline_m,
+        )
+
+    agent = np.array([0.3, -0.2, 0.1])
+    for distance in (0.7, 1.0, 1.5, 2.2):
+        for bearing in (15, 35, 55, -15, -35, -55):
+            b = agent[2] + np.radians(bearing)
+            target = {
+                "x": agent[0] + distance * np.cos(b),
+                "y": agent[1] + distance * np.sin(b),
+                "radius": env.target_radius_m,
+                "height": env.target_height_m,
+                "intensity": env._target_intensity,
+            }
+            index = 0 if bearing > 0 else 1
+            two_d = cast(agent, [target], index)
+            on = np.abs(two_d - cast(agent, [], index)) > 1e-6
+            assert on.any() and (~on).any()
+            image = _pinhole_image(eye, env, agent, walls, [target], index)
+            reference = two_d[on].mean() - two_d[~on].mean()
+            for kernel in ratios:
+                sampled = eye.sample_image(image, eye=index, kernel=kernel, subrays=env.subrays)
+                ratios[kernel].append((sampled[on].mean() - sampled[~on].mean()) / reference)
+                if kernel == "subrays":
+                    correlations.append(np.corrcoef(sampled, two_d)[0, 1])
+    assert 0.97 <= np.median(ratios["subrays"]) <= 1.03
+    assert np.median(correlations) >= 0.99
+    assert np.median(ratios["gaussian"]) < 0.97  # outside the G0e acceptance band
+
+
+def test_camera_kernels_keep_constant_brightness_and_reject_unknown_names():
+    eye = HexEye()
+    gray = np.full((eye.contract.camera_height, eye.contract.camera_width), 0.4, np.float32)
+    for kernel in ("subrays", "gaussian"):
+        np.testing.assert_allclose(eye.sample_image(gray, kernel=kernel), 0.4, atol=1e-6)
+    with pytest.raises(ValueError, match="kernel"):
+        eye.sample_image(gray, kernel="box")
+
+
+def test_policy_node_defaults_to_the_2d_camera_kernel():
+    source = (ROOT / "ros2_ws/src/flytrack_policy/flytrack_policy/node.py").read_text("utf-8")
+    assert 'declare_parameter("vision_kernel", "subrays")' in source
+    assert "kernel=self.vision_kernel" in source
+    assert inspect.signature(HexEye.sample_image).parameters["kernel"].default == "subrays"
+    assert (
+        inspect.signature(HexEye.raycast).parameters["subrays"].default
+        == FlyTrackEnv(domain_randomization=False).subrays
+    )

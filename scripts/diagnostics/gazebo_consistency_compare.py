@@ -204,6 +204,8 @@ def main() -> None:
     if env.domain_randomization:
         raise ValueError("Compare with the evaluation world: domain_randomization must be false")
     result = compare(data, env, contract)
+    # Which camera kernel the export used (#111 G0e); exports before G0e do not record it.
+    result["vision_kernel"] = str(data["vision_kernel"]) if "vision_kernel" in data else None
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     for name, eye in result["vision"].items():
         print(
@@ -211,6 +213,7 @@ def main() -> None:
             f"target contrast gazebo {eye['median_gz_target_contrast']:+.3f} "
             f"2D {eye['median_2d_target_contrast']:+.3f} accepted {eye['accepted']}"
         )
+    print("vision kernel", result["vision_kernel"])
     print("odor", result["odor"])
     print("ACCEPTED" if result["accepted"] else "NOT ACCEPTED")
 

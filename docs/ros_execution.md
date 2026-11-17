@@ -285,3 +285,13 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
 - **彙總**：PR #101 的四份設定，加上 `scripts/summarize_gazebo_runtime.py`。
 
 **G2 暫停**（[#88 Decision 6744333249](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88#issuecomment-6744333249)）：派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關 −0.97。修正 G0c 已合併（PR #102，main `a58b7b2`；平光材質，見 [gazebo_consistency.md](gazebo_consistency.md)）。2060 重跑的 G1 範圍，行為和 2D 一致，見該文件；4070、4060 的 G1 範圍通過後重新開跑 G2。
+
+## 2026-11-17：相機取樣核（#111 G0e）
+
+policy node 新增參數 `vision_kernel`，預設是 `subrays`：用和 2D ray cast 相同的 7 條子射線，在相機像素上做雙線性內插。舊的完整高斯核保留為 `gaussian`，用來重現 G0e 之前的 Gazebo 執行（formal-v1 的 G2）。原因、驗收和 G1 範圍見 [gazebo_consistency.md](gazebo_consistency.md) 的 G0e 一節。
+
+怎麼設：
+
+- 正式矩陣：`python scripts/run_gazebo_matrix.py ... --vision-kernel gaussian` 重現 G2；不加就是 `subrays`。這個值透過環境變數 `POLICY_VISION_KERNEL` 傳給 `compose.yaml` 的 policy 指令，並寫進 `gazebo_matrix_manifest.json` 的 `policy_vision_kernel`。
+- 直接用 Compose：`POLICY_VISION_KERNEL=gaussian docker compose --profile sim up`。
+- 從 bag 匯出：`scripts/diagnostics/gazebo_consistency_export.py BAG CONTRACT OUT.npz gaussian`。第 4 個參數預設是 `subrays`；重新匯出 G0c／G2 的舊 bag 時要寫 `gaussian`，才會得到當時 policy 收到的輸入。匯出檔記有 `vision_kernel`，`gazebo_consistency_compare.py` 會把它印出來並寫進輸出（G0e 之前的匯出檔沒有這個欄位，記成 `null`）。

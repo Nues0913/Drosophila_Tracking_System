@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 baseline=$1
-WT=$PWD; log=runs/s7/run_s5.log; mkdir -p runs/s7/eval
+WT=$PWD; log=runs/s7/run_s7.log; mkdir -p runs/s7/eval
 note() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$log"; }
 note "start head $(git rev-parse HEAD)"
 sha256sum runs/s7/VO-late/seed_{0,1}/actor/model_card.json "$baseline/episodes.json" | tee -a "$log"
@@ -14,7 +14,7 @@ sha256sum runs/s7/VO-late/seed_{0,1}/actor/model_card.json "$baseline/episodes.j
 D=(docker run --rm --gpus all --network none --user "$(id -u):$(id -g)" -v "$WT:/workspace"
    -w /workspace -e PYTHONPATH=/workspace/python -e HOME=/tmp flytrack-ml:0.1)
 T=("${D[@]:0:3}" --cpus 1 -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 "${D[@]:3}")
-if [ ! -f runs/s7/eval/candidate_s5/episodes.json ]; then
+if [ ! -f runs/s7/eval/candidate_s7/episodes.json ]; then
   note "evaluate s7"
   "${D[@]}" python -m flytrack_train evaluate --config explore/s5/eval_s7.yaml --device cuda > runs/s7/eval_s7.log 2>&1
   note "evaluate s7 done"

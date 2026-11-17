@@ -99,7 +99,16 @@ def test_world_launch_passes_motion_to_both_world_nodes(monkeypatch, tmp_path):
     module("ament_index_python")
     module("ament_index_python.packages", get_package_share_directory=lambda _: str(tmp_path))
     module("launch", LaunchDescription=Capture)
-    module("launch.actions", DeclareLaunchArgument=Capture, IncludeLaunchDescription=Capture)
+
+    class OpaqueFunction(Capture):
+        pass
+
+    module(
+        "launch.actions",
+        DeclareLaunchArgument=Capture,
+        IncludeLaunchDescription=Capture,
+        OpaqueFunction=OpaqueFunction,
+    )
     module("launch.launch_description_sources", PythonLaunchDescriptionSource=Capture)
     module(
         "launch.substitutions",
@@ -122,6 +131,24 @@ def test_world_launch_passes_motion_to_both_world_nodes(monkeypatch, tmp_path):
         parameter_sets = nodes[name].kwargs["parameters"]
         motion = next(p["target_motion"] for p in parameter_sets if "target_motion" in p)
         assert isinstance(motion, LaunchConfiguration) and motion.name == "target_motion"
+    # #116: contact_check defaults to false; then Gazebo gets gz_args unchanged, nothing else.
+    contact = next(a for a in actions if a.args and a.args[0] == "contact_check")
+    assert contact.kwargs["default_value"] == "false"
+    simulator = next(a for a in actions if isinstance(a, OpaqueFunction))
+    gz_args = next(a for a in actions if a.args and a.args[0] == "gz_args").kwargs["default_value"]
+
+    def run(check, args=gz_args):
+        values = {"gz_args": args, "contact_check": check}
+        context = SimpleNamespace(perform_substitution=lambda config: values[config.name])
+        return simulator.kwargs["function"](context, *simulator.kwargs["args"])
+
+    (include,) = run("false")
+    assert dict(include.kwargs["launch_arguments"]) == {"gz_args": gz_args}
+    with pytest.raises(RuntimeError):
+        run("maybe")
+    monkeypatch.syspath_prepend(str(ROOT / "ros2_ws/src/flytrack_world"))
+    with pytest.raises(RuntimeError):
+        run("true", "-r -s other.sdf")
 
 
 def test_compose_passes_target_motion_with_curved_default():

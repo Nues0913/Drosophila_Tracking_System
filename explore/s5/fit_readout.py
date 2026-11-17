@@ -27,6 +27,7 @@ import yaml
 
 from flytrack_core.model import load_policy_artifact, save_policy_artifact
 from flytrack_train.batches import SequenceModel
+from flytrack_train.config import count_effective_parameters
 from flytrack_train.extra_turn import branch_activities
 from flytrack_train.worlds import make_env
 
@@ -131,6 +132,8 @@ report["top_rows"] = [{"row": labels[k], "weight": float(weight[k]), "std": floa
 metadata = dict(card.get("metadata", {}))
 metadata["s5_readout_fit"] = {"source_weights_sha256": card["files"]["weights.pt"], "rounds": ROUNDS, "round_episodes": round_episodes,
                               "active_rows": report["rounds"][-1]["active_rows"]}
+# The evaluation recomputes this from the card's training config; the new row weights count as declared.
+metadata["actor_parameter_budget"] = count_effective_parameters(policy, metadata["config"]["train"])
 new_card = save_policy_artifact(out / "actor", policy, policy.model_config, contract, source + "/graph.npz", source + "/frontend.npz", metadata)
 report["trainable_parameters"] = new_card["trainable_parameters"]
 json.dump(report, open(out / "fit_report.json", "w"), indent=1)

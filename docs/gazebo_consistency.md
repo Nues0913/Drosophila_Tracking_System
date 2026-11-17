@@ -220,7 +220,7 @@ G0c 之後，Gazebo 的目標區對比只有 2D 的 0.89–0.91（上面「修�
 - 證據：release `research-35` 的 `gazebo_g0e_4070.tar.gz`（SHA-256 `741c1730b73d165f10211bd44b98729ba110453e40a5ca76e2b724cd091ed79e`，113 個檔案的 `SHA256SUMS`），內含找原因的探針、驗收的匯出和比較結果、G1 範圍的輸出，以及 pytest、colcon 和映像建置的紀錄。
 
 **對 formal-v1 的影響**
-- formal-v1 的 G2 是用舊的核跑的，結果和判讀都不變，揭露第 26 點仍然適用於 G2。G0e 之後的 Gazebo 執行預設用新的核；要重現 G2，請把 `vision_kernel` 設成 `gaussian`。
+- formal-v1 的 G2 是用舊的核跑的，結果和判讀都不變，揭露第 26 點仍然適用於 G2。G0e 之後的 Gazebo 執行預設用新的核；要重現 G2，正式矩陣加 `--vision-kernel gaussian`（其他設法見 [ros_execution.md](ros_execution.md) 的 G0e 一節）。
 
 ## 限制
 - 量測只用了一個 actor、一種情境（curved normal）。G0c 只在 2060 上量；G0e 在 4070 上量，舊的核在兩台主機上的結果一致。渲染結果不依賴 actor。

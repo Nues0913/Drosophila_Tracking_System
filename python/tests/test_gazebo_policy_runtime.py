@@ -63,6 +63,8 @@ def test_matrix_defaults_to_one_cpu_thread_and_records_it(tmp_path, monkeypatch)
     assert environments[0]["POLICY_DEVICE"] == "cpu"
     assert manifest["policy_torch_threads"] == 1
     assert manifest["policy_device"] == "cpu"
+    assert environments[0]["POLICY_VISION_KERNEL"] == "subrays"
+    assert manifest["policy_vision_kernel"] == "subrays"
     assert manifest["cpu_rendering"] is True
     assert not any(str(part).endswith("compose.policy-gpu.yaml") for c in commands for part in c)
 
@@ -77,6 +79,17 @@ def test_matrix_forwards_policy_threads_and_cuda_override(tmp_path, monkeypatch)
     assert manifest["cpu_rendering"] is False
     up = next(c for c in commands if "up" in c)
     assert any(str(part).endswith("compose.policy-gpu.yaml") for part in up)
+
+
+def test_matrix_forwards_and_records_the_vision_kernel(tmp_path, monkeypatch):
+    _, environments, manifest = run_matrix(tmp_path, monkeypatch, "--vision-kernel", "gaussian")
+    assert environments[0]["POLICY_VISION_KERNEL"] == "gaussian"
+    assert manifest["policy_vision_kernel"] == "gaussian"
+
+
+def test_matrix_rejects_unknown_vision_kernel(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit):
+        run_matrix(tmp_path, monkeypatch, "--vision-kernel", "box")
 
 
 @pytest.mark.parametrize("threads", ["0", "-1"])
@@ -95,5 +108,6 @@ def test_compose_policy_threads_device_and_shared_environment():
     assert environment["OMP_NUM_THREADS"] == "${POLICY_TORCH_THREADS:-1}"
     assert environment["MKL_NUM_THREADS"] == "${POLICY_TORCH_THREADS:-1}"
     assert "device:=${POLICY_DEVICE:-cpu}" in policy["command"]
+    assert "vision_kernel:=${POLICY_VISION_KERNEL:-subrays}" in policy["command"]
     override = yaml.safe_load((ROOT / "compose.policy-gpu.yaml").read_text())
     assert override == {"services": {"policy": {"gpus": "all"}}}

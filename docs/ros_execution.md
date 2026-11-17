@@ -289,3 +289,9 @@ camera hex-eye 投影的等價優化列為下一份設計提案，尚未批准�
 ## 2026-11-17：相機取樣核（#111 G0e）
 
 policy node 新增參數 `vision_kernel`，預設是 `subrays`：用和 2D ray cast 相同的 7 條子射線，在相機像素上做雙線性內插。舊的完整高斯核保留為 `gaussian`，用來重現 G0e 之前的 Gazebo 執行（formal-v1 的 G2）。原因、驗收和 G1 範圍見 [gazebo_consistency.md](gazebo_consistency.md) 的 G0e 一節。
+
+怎麼設：
+
+- 正式矩陣：`python scripts/run_gazebo_matrix.py ... --vision-kernel gaussian` 重現 G2；不加就是 `subrays`。這個值透過環境變數 `POLICY_VISION_KERNEL` 傳給 `compose.yaml` 的 policy 指令，並寫進 `gazebo_matrix_manifest.json` 的 `policy_vision_kernel`。
+- 直接用 Compose：`POLICY_VISION_KERNEL=gaussian docker compose --profile sim up`。
+- 從 bag 匯出：`scripts/diagnostics/gazebo_consistency_export.py BAG CONTRACT OUT.npz gaussian`。第 4 個參數預設是 `subrays`；重新匯出 G0c／G2 的舊 bag 時要寫 `gaussian`，才會得到當時 policy 收到的輸入。匯出檔記有 `vision_kernel`，`gazebo_consistency_compare.py` 會把它印出來並寫進輸出（G0e 之前的匯出檔沒有這個欄位，記成 `null`）。

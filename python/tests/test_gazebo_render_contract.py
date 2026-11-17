@@ -6,6 +6,7 @@ pre-G0c world rendered the target darker than a bright sky and floor, the opposi
 """
 
 import inspect
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -275,3 +276,31 @@ def test_policy_node_defaults_to_the_2d_camera_kernel():
         inspect.signature(HexEye.raycast).parameters["subrays"].default
         == FlyTrackEnv(domain_randomization=False).subrays
     )
+
+
+def test_target_collision_shape_stays_inside_the_collision_distance():
+    """#121 G0g: the evaluator calls it a collision when the centres are within agent_radius_m +
+    target_radius_m. With a target collision shape as wide as the visual one, the physics held the
+    centres at 0.329-0.335 m on contact, so the flag waited for a lucky pose sample (5.7-57 s late
+    or never, G0f). Each target collision shape must end inside that distance minus the agent's
+    radius; the visual shape keeps the 2D radius (checked above), so the camera image is unchanged.
+    """
+    env = FlyTrackEnv(domain_randomization=False)
+    model = ET.parse(BRINGUP / "models/target/model.sdf").getroot().find("model")
+    config = (ROOT / "ros2_ws/src/flytrack_eval/config/evaluation.yaml").read_text()
+    distance = float(re.search(r"collision_distance_m:\s*([0-9.]+)", config).group(1))
+    assert distance == pytest.approx(env.agent_radius_m + env.target_radius_m)
+    limit = distance - env.agent_radius_m
+    reach = {}
+    for link in model.findall("link"):
+        link_pose = [float(v) for v in (link.findtext("pose") or "0 0 0 0 0 0").split()]
+        for collision in link.findall("collision"):
+            pose = [float(v) for v in (collision.findtext("pose") or "0 0 0 0 0 0").split()]
+            points = _surface_points(collision.find("geometry"))
+            points = points @ _rotation(*pose[3:]).T + pose[:3]
+            points = points @ _rotation(*link_pose[3:]).T + link_pose[:3]
+            reach[f"{link.get('name')}/{collision.get('name')}"] = np.hypot(
+                points[:, 0], points[:, 1]
+            ).max()
+    assert set(reach) == {"body/target"}
+    assert all(value < limit for value in reach.values()), reach

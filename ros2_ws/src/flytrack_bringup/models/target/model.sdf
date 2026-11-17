@@ -8,7 +8,10 @@
   <link name="body">
     <visual name="target"><geometry><cylinder><radius>0.15</radius><length>0.5</length></cylinder></geometry>
       <material><ambient>0 0 0 1</ambient><diffuse>0 0 0 1</diffuse><specular>0 0 0 1</specular><emissive>0.7874 0.7874 0.7874 1</emissive></material></visual>
-    <collision name="target"><geometry><cylinder><radius>0.15</radius><length>0.5</length></cylinder></geometry></collision>
+    <!-- #121 G0g: the collision cylinder is 5 mm smaller than the visual one, so the centre distance can
+         reach the evaluator's collision distance (0.33 m = agent 0.18 + target 0.15) before the physics
+         stops it; with 0.15 contact held the centres at 0.329-0.335 m and the flag came late or never. -->
+    <collision name="target"><geometry><cylinder><radius>0.145</radius><length>0.5</length></cylinder></geometry></collision>
   </link>
   <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
     <publish_model_pose>true</publish_model_pose><publish_link_pose>false</publish_link_pose>

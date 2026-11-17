@@ -11,7 +11,7 @@ import numpy as np
 import rclpy
 from flytrack_core.contracts import SensorContract
 from flytrack_core.model import load_policy_artifact
-from flytrack_core.sensing.hex_eye import HexEye
+from flytrack_core.sensing.hex_eye import CAMERA_KERNELS, HexEye
 from flytrack_interfaces.msg import NeuralActivity, OdorReading
 from geometry_msgs.msg import Twist
 from rclpy.duration import Duration
@@ -91,6 +91,9 @@ class ConnectomePolicyNode(Node):
         self.declare_parameter("device", "cpu")
         self.declare_parameter("profiler_enabled", False)
         self.declare_parameter("profiler_output_path", "")
+        # #111 G0e: "subrays" samples the camera with the 2D ray cast's quadrature (the kernel the
+        # actors were trained on); "gaussian" reproduces the runs made before G0e (formal-v1 G2).
+        self.declare_parameter("vision_kernel", "subrays")
         profiler_enabled = bool(self.get_parameter("profiler_enabled").value)
         profiler_output_path = str(self.get_parameter("profiler_output_path").value)
         if profiler_enabled and not profiler_output_path:
@@ -110,6 +113,9 @@ class ConnectomePolicyNode(Node):
             if expected.sha256() != contract.sha256():
                 raise ValueError("Deployment sensor contract differs from model artifact")
         self.contract = contract
+        self.vision_kernel = str(self.get_parameter("vision_kernel").value)
+        if self.vision_kernel not in CAMERA_KERNELS:
+            raise ValueError(f"vision_kernel must be one of {CAMERA_KERNELS}")
         self.eye = HexEye(contract)
         self.runtime = PolicyRuntime(policy, contract, device, profiler_enabled=profiler_enabled)
         self.tracer = ControlTracer(self)
@@ -179,7 +185,7 @@ class ConnectomePolicyNode(Node):
                 self.runtime.mark_missing(eye, stamp_seconds(message.header))
                 return
             sample_started_ns = time.monotonic_ns() if profile is not None else 0
-            values = self.eye.sample_image(gray, eye=eye)
+            values = self.eye.sample_image(gray, eye=eye, kernel=self.vision_kernel)
             if profile is not None:
                 self.profiler.span(
                     profile, "hex_eye_sample", sample_started_ns, time.monotonic_ns()

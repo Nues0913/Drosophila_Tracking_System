@@ -1,8 +1,16 @@
-"""A deterministic binocular hexagonal retina and Gaussian pixel projection.
+"""A deterministic binocular hexagonal retina and its camera-pixel projection.
 
 Directions are (yaw, pitch) radians in the robot frame. Image coordinates use
 rectilinear camera optics, +x forward, +y left and +z up. No SciPy/ROS dependency
 is needed: the sparse projector stores only contributing pixel indices.
+
+The 2D world renders each ommatidium as the mean of ``subrays`` quadrature rays
+(``HexEye.raycast``); the trained actors only ever saw that kernel. A camera image
+is therefore sampled by default with the same rays (``kernel="subrays"``), each
+read bilinearly from the pixels. The older full-Gaussian kernel (``"gaussian"``,
+3 sigma support) is wider than the 7-ray quadrature and lowered the target
+contrast in Gazebo by about 10% (#111 G0e); it stays available to reproduce runs
+made before G0e.
 """
 
 import hashlib
@@ -26,6 +34,28 @@ def axial_coordinates(radius: int) -> np.ndarray:
         ],
         dtype=np.int32,
     )
+
+
+DEFAULT_SUBRAYS = 7
+CAMERA_KERNELS = ("subrays", "gaussian")
+
+
+def subray_offsets(sigma_rad: float, subrays: int) -> list[tuple[float, float]]:
+    """(dyaw, dpitch) of each quadrature ray; ray 0 is the ommatidium axis.
+
+    Shared by the 2D ray cast and the camera projection so both use the same kernel.
+    """
+    if subrays < 1:
+        raise ValueError("subrays must be positive")
+    offsets = []
+    for sample_index in range(subrays):
+        if sample_index == 0:
+            offsets.append((0.0, 0.0))
+            continue
+        radial = math.sqrt(-2 * math.log(1 - (sample_index - 0.5) / (subrays - 1)))
+        angle = sample_index * math.pi * (3 - math.sqrt(5))
+        offsets.append((sigma_rad * radial * math.cos(angle), sigma_rad * radial * math.sin(angle)))
+    return offsets
 
 
 def compute_directions(contract: SensorContract | None = None) -> np.ndarray:
@@ -84,24 +114,85 @@ class HexEye:
         self.contract = contract or SensorContract()
         self.directions_rad = compute_directions(self.contract)
         self.axial = axial_coordinates(self.contract.eye_radius)
-        self._projectors: dict[tuple[int, int, int], GaussianProjection] = {}
+        self._projectors: dict[tuple, GaussianProjection] = {}
 
     def sha256(self) -> str:
         """Hash the canonical little-endian float64 direction table in C order."""
         return hashlib.sha256(self.directions_rad.astype("<f8").tobytes(order="C")).hexdigest()
 
     def projection(
-        self, eye: int = 0, width: int | None = None, height: int | None = None
+        self,
+        eye: int = 0,
+        width: int | None = None,
+        height: int | None = None,
+        kernel: str = "subrays",
+        subrays: int = DEFAULT_SUBRAYS,
     ) -> GaussianProjection:
         if eye not in (0, 1):
             raise ValueError("eye must be 0 (left) or 1 (right)")
+        if kernel not in CAMERA_KERNELS:
+            raise ValueError(f"kernel must be one of {CAMERA_KERNELS}")
         width = width or self.contract.camera_width
         height = height or self.contract.camera_height
         if min(width, height) < 2:
             raise ValueError("camera dimensions must be at least 2")
-        key = (eye, width, height)
+        key = (eye, width, height, kernel, subrays if kernel == "subrays" else None)
         if key in self._projectors:
             return self._projectors[key]
+        if kernel == "subrays":
+            projector = self._subray_projection(eye, width, height, subrays)
+        else:
+            projector = self._gaussian_projection(eye, width, height)
+        self._projectors[key] = projector
+        return projector
+
+    def _subray_projection(
+        self, eye: int, width: int, height: int, subrays: int
+    ) -> GaussianProjection:
+        """Mean of the raycast's admissible quadrature rays, each read bilinearly."""
+        center_yaw = math.radians(self.contract.eye_yaw_deg) * (1 if eye == 0 else -1)
+        fx = width / (2 * math.tan(math.radians(self.contract.horizontal_fov_deg / 2)))
+        fy = height / (2 * math.tan(math.radians(self.contract.vertical_fov_deg / 2)))
+        half_hfov = math.radians(self.contract.horizontal_fov_deg / 2)
+        tan_half_vfov = math.tan(math.radians(self.contract.vertical_fov_deg / 2))
+        offsets = subray_offsets(math.radians(self.contract.acceptance_angle_deg), subrays)
+        rows, columns, weights = [], [], []
+        for index, (yaw, pitch) in enumerate(self.directions_rad[eye]):
+            points = []
+            for dyaw, dpitch in offsets:
+                # Same admissibility test as raycast: rays outside the frustum are dropped.
+                relative_yaw = yaw + dyaw - center_yaw
+                ray_pitch = pitch + dpitch
+                if abs(relative_yaw) > half_hfov + 1e-10 or (
+                    abs(math.tan(ray_pitch) / math.cos(relative_yaw)) > tan_half_vfov + 1e-10
+                ):
+                    continue
+                px = (width - 1) / 2 - fx * math.tan(relative_yaw)
+                py = (height - 1) / 2 - fy * math.tan(ray_pitch) / math.cos(relative_yaw)
+                points.append((min(max(px, 0.0), width - 1.0), min(max(py, 0.0), height - 1.0)))
+            for px, py in points:
+                x0, y0 = min(int(px), width - 2), min(int(py), height - 2)
+                ax, ay = px - x0, py - y0
+                for x, y, w in (
+                    (x0, y0, (1 - ax) * (1 - ay)),
+                    (x0 + 1, y0, ax * (1 - ay)),
+                    (x0, y0 + 1, (1 - ax) * ay),
+                    (x0 + 1, y0 + 1, ax * ay),
+                ):
+                    if w > 0:
+                        rows.append(index)
+                        columns.append(y * width + x)
+                        weights.append(w / len(points))
+        return GaussianProjection(
+            np.asarray(rows, dtype=np.int64),
+            np.asarray(columns, dtype=np.int64),
+            np.asarray(weights, dtype=np.float32),
+            len(self.axial),
+            (height, width),
+        )
+
+    def _gaussian_projection(self, eye: int, width: int, height: int) -> GaussianProjection:
+        """Pre-G0e kernel: a full Gaussian over the pixels (3 sigma support)."""
         center_yaw = math.radians(self.contract.eye_yaw_deg) * (1 if eye == 0 else -1)
         fx = width / (2 * math.tan(math.radians(self.contract.horizontal_fov_deg / 2)))
         fy = height / (2 * math.tan(math.radians(self.contract.vertical_fov_deg / 2)))
@@ -124,18 +215,22 @@ class HexEye:
             rows.extend([index] * xx.size)
             columns.extend((yy * width + xx).ravel().tolist())
             weights.extend(local_weights.ravel().tolist())
-        projector = GaussianProjection(
+        return GaussianProjection(
             np.asarray(rows, dtype=np.int64),
             np.asarray(columns, dtype=np.int64),
             np.asarray(weights, dtype=np.float32),
             len(self.axial),
             (height, width),
         )
-        self._projectors[key] = projector
-        return projector
 
-    def sample_image(self, image: np.ndarray, eye: int = 0) -> np.ndarray:
-        return self.projection(eye, image.shape[1], image.shape[0]).sample(image)
+    def sample_image(
+        self,
+        image: np.ndarray,
+        eye: int = 0,
+        kernel: str = "subrays",
+        subrays: int = DEFAULT_SUBRAYS,
+    ) -> np.ndarray:
+        return self.projection(eye, image.shape[1], image.shape[0], kernel, subrays).sample(image)
 
     def raycast(
         self,
@@ -144,7 +239,7 @@ class HexEye:
         disks: list[dict],
         eye: int = 0,
         *,
-        subrays: int = 7,
+        subrays: int = DEFAULT_SUBRAYS,
         camera_height_m: float = 0.27,
         camera_forward_m: float = 0.14,
         camera_baseline_m: float = 0.12,
@@ -157,8 +252,7 @@ class HexEye:
         This is a 2.5D approximation: vertical rays intersect extruded disks and
         boundary walls, while the robot dynamics remain planar.
         """
-        if subrays < 1:
-            raise ValueError("subrays must be positive")
+        offsets = subray_offsets(math.radians(self.contract.acceptance_angle_deg), subrays)
         pose = np.asarray(agent_pose, dtype=np.float64).copy()
         yaw = pose[2]
         pose[:2] += camera_forward_m * np.asarray([np.cos(yaw), np.sin(yaw)])
@@ -171,17 +265,10 @@ class HexEye:
         directions = self.directions_rad[eye]
         samples = np.full((subrays, len(directions)), background, dtype=np.float64)
         admissible = np.zeros_like(samples, dtype=bool)
-        sigma = math.radians(self.contract.acceptance_angle_deg)
         optical_yaw = math.radians(self.contract.eye_yaw_deg) * (1 if eye == 0 else -1)
         half_hfov = math.radians(self.contract.horizontal_fov_deg / 2)
         tan_half_vfov = math.tan(math.radians(self.contract.vertical_fov_deg / 2))
-        for sample_index in range(subrays):
-            if sample_index == 0:
-                dyaw = dpitch = 0.0
-            else:
-                radial = math.sqrt(-2 * math.log(1 - (sample_index - 0.5) / (subrays - 1)))
-                angle = sample_index * math.pi * (3 - math.sqrt(5))
-                dyaw, dpitch = sigma * radial * math.cos(angle), sigma * radial * math.sin(angle)
+        for sample_index, (dyaw, dpitch) in enumerate(offsets):
             yaw = directions[:, 0] + pose[2] + dyaw
             pitch = directions[:, 1] + dpitch
             relative_yaw = directions[:, 0] + dyaw - optical_yaw
@@ -238,7 +325,10 @@ class HexEye:
 
 
 def sample_image(
-    image: np.ndarray, contract: SensorContract | None = None, eye: int = 0
+    image: np.ndarray,
+    contract: SensorContract | None = None,
+    eye: int = 0,
+    kernel: str = "subrays",
 ) -> np.ndarray:
     """Convenience API; retain a HexEye instance for repeated camera frames."""
-    return HexEye(contract).sample_image(image, eye)
+    return HexEye(contract).sample_image(image, eye, kernel)

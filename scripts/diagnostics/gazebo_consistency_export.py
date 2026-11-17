@@ -1,10 +1,14 @@
 """Export a Gazebo rosbag for the 2D/Gazebo input consistency check (#88, formerly #23).
 
 Usage (ROS image, e.g. docker run ... flytrack-ros:0.1):
-  python3 scripts/diagnostics/gazebo_consistency_export.py BAG_DIR SENSOR_CONTRACT_JSON OUT.npz
+  python3 scripts/diagnostics/gazebo_consistency_export.py BAG_DIR SENSOR_CONTRACT_JSON OUT.npz \
+      [KERNEL]
+KERNEL is the policy node's vision_kernel: "subrays" (default since #111 G0e) or "gaussian"
+(the kernel used before G0e, e.g. to re-export a G0c/G2 bag as the policy saw it).
 Record the bag with flytrack_eval's bag_recorder_node (default topics) during a Gazebo cell.
 Camera frames are converted exactly as the policy node does (image_to_grayscale, then
-HexEye(contract).sample_image), so the exported vectors are the policy's vision input. Also
+HexEye(contract).sample_image with the same kernel), so the exported vectors are the policy's
+vision input. Also
 exported: agent/target poses [t, x, y, yaw], odor [t, left, right, valid] and the /world/scenario
 events (JSON). Times are header stamps (simulation clock). Compare with
 gazebo_consistency_compare.py in the ML image.
@@ -23,6 +27,7 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
 bag, contract_path, output = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+kernel = sys.argv[4] if len(sys.argv) > 4 else "subrays"
 contract = SensorContract.from_dict(json.loads(contract_path.read_text(encoding="utf-8")))
 eye = HexEye(contract)
 reader = rosbag2_py.SequentialReader()
@@ -60,7 +65,8 @@ while reader.has_next():
     if topic.startswith("/fly/camera/"):
         index = 0 if "/left/" in topic else 1
         gray = image_to_grayscale(message)
-        vision[index].append((stamp(message.header), eye.sample_image(gray, eye=index)))
+        values = eye.sample_image(gray, eye=index, kernel=kernel)
+        vision[index].append((stamp(message.header), values))
         gray_stats[index].append((stamp(message.header), float(gray.mean()), float(gray.std())))
     elif topic in poses:
         p = message.pose
@@ -89,5 +95,6 @@ arrays["target"] = np.array(sorted(poses["/world/target/pose"]))
 arrays["odor"] = np.array(sorted(odor))
 arrays["events_json"] = np.array(json.dumps(events, sort_keys=True))
 arrays["contract_sha256"] = np.array(contract.sha256())
+arrays["vision_kernel"] = np.array(kernel)
 np.savez_compressed(output, **arrays)
 print({k: v.shape for k, v in arrays.items()}, len(events), "events")

@@ -49,7 +49,7 @@ services:
     <<: *ros
     profiles: [sim]
     gpus: all
-    command: [ros2, launch, flytrack_bringup, world.launch.py, "scenario:=${SCENARIO:-normal}", "target_motion:=${TARGET_MOTION:-curved}", "seed:=${ENVIRONMENT_SEED:-731}", "training_seed:=${TRAINING_SEED:-0}", "max_episodes:=${MAX_EPISODES:-0}"]
+    command: [ros2, launch, flytrack_bringup, world.launch.py, "scenario:=${SCENARIO:-normal}", "target_motion:=${TARGET_MOTION:-curved}", "seed:=${ENVIRONMENT_SEED:-731}", "training_seed:=${TRAINING_SEED:-0}", "max_episodes:=${MAX_EPISODES:-0}", "episode_seconds:=${EPISODE_SECONDS:-60}", "contact_check:=${CONTACT_CHECK:-false}"]
     healthcheck:
       test: [CMD, bash, /flytrack-entrypoint.sh, python, /workspace/scripts/check_ros_clock.py]
       interval: 10s

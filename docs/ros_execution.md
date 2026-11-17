@@ -295,3 +295,32 @@ policy node 新增參數 `vision_kernel`，預設是 `subrays`：用和 2D ray c
 - 正式矩陣：`python scripts/run_gazebo_matrix.py ... --vision-kernel gaussian` 重現 G2；不加就是 `subrays`。這個值透過環境變數 `POLICY_VISION_KERNEL` 傳給 `compose.yaml` 的 policy 指令，並寫進 `gazebo_matrix_manifest.json` 的 `policy_vision_kernel`。
 - 直接用 Compose：`POLICY_VISION_KERNEL=gaussian docker compose --profile sim up`。
 - 從 bag 匯出：`scripts/diagnostics/gazebo_consistency_export.py BAG CONTRACT OUT.npz gaussian`。第 4 個參數預設是 `subrays`；重新匯出 G0c／G2 的舊 bag 時要寫 `gaussian`，才會得到當時 policy 收到的輸入。匯出檔記有 `vision_kernel`，`gazebo_consistency_compare.py` 會把它印出來並寫進輸出（G0e 之前的匯出檔沒有這個欄位，記成 `null`）。
+
+## 2026-11-17：Gazebo contact 核對（#116 G0f）
+
+`world.launch.py` 新增 `contact_check`，預設 `false`；正式世界、模型、topic 和 bag 的預設 topic 都不變。設成 `true` 時：
+
+- launch 會另外寫一份衍生世界：把 agent 模型直接內嵌進去，每個 collision 加一個 contact sensor（body、兩個輪子、caster），並載入 `gz-sim-contact-system`。
+- bridge 把 `/model/agent/contact/<link>` 轉成 ROS 的 `/sim/contact/<link>`。
+- `contact_monitor` 去掉和地板的接觸（輪子和 caster 一直貼地），其餘的接觸以 JSON 發到 `/sim/contact_events`，時間是模擬時鐘。
+
+Compose 以 `CONTACT_CHECK` 和 `EPISODE_SECONDS` 傳入，預設值和 launch 相同。
+
+工具都在 `scripts/diagnostics/`：
+
+- `contact_probe_driver.py`：不跑 policy，用腳本控制刻意碰撞，全程定速、不煞車。
+- `contact_check_export.py`：在 ROS 映像裡把 bag 轉成 JSON。
+- `contact_check_analyze.py`：每個回合算 contact、幾何旗標、幾何條件第一次成立的 pose 樣本三者的時間差，以及第一次接觸時的入射角和俯仰角。
+
+4070 的結果（程式 `81d8b3a`，映像 `sha256:9439c1833779…`）：
+
+| 組別 | 回合 | 幾何旗標 | 旗標之前就有 contact | contact − 旗標 | contact − 幾何條件成立 |
+| --- | --- | --- | --- | --- | --- |
+| (a) V seed 0，curved normal，G2 的環境 seed 1700000000 | 20 | 0 | 0 | — | — |
+| (b) 撞牆，四面牆，入射角 0°–80°，車身水平 | 27 | 27 | 27 | −61 到 −4 ms（中位數 −32 ms） | −18 到 +1 ms（中位數 −9 ms） |
+| (b) 撞目標：追目標 8 次，撞牆途中撞到 1 次 | 9 | 7 | 9 | −57.0 到 −0.04 s | — |
+
+- **(a)**：20 個回合都沒有碰撞，也沒有任何 contact；policy 離目標最近 0.665 m，12/20 成功。
+- **撞牆**：每次都是 contact 先到。和幾何條件第一次成立的 pose 樣本相比，差距在一個 pose 週期（20 ms）內；旗標本身還要再等 20 Hz 的 tick。幾何判定在時間上沒有落後實際接觸，只差在取樣。
+- **撞目標**：agent 一碰到目標，物理引擎就讓兩者的中心距離停在 0.3294–0.3349 m，正好在判定門檻 0.33 m 上下。所以旗標要等某次取樣剛好 ≤ 0.33 才會觸發，晚了 5.7–57 秒；有 2 個回合到 120 秒結束都沒有觸發（之前已經接觸 108 秒）。撞牆途中正面撞到目標的那一次，旗標只晚 40 ms。這是**幾何旗標晚於實際接觸**的情況，依 #116 的驗收規則，交給 PM 判斷。
+- **煞車會讓車身前傾**：agent 只要減速，車身就往前傾約 35°，前緣貼地（重心正好在輪軸上方，只有後方有 caster）。前傾後車身頂緣離中心最遠約 0.21 m，比判定半徑 0.18 m 大。policy 執行時這只發生在回合之間，下一回合的傳送會扶正：G0e 的 policy bag 和 (a) 的回合內，俯仰角都 ≤ 0.07°。(b) 的控制腳本因此全程不煞車；早期用「先開到起始點再轉向」的煙霧測試，會在起始點煞車而前傾，contact 比旗標早 0.4–0.9 s，那幾次沒有算進結果。

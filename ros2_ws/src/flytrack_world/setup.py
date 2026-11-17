@@ -21,6 +21,7 @@ setup(
             "target_mover = flytrack_world.target_mover:main",
             "scenario_manager = flytrack_world.scenario_manager:main",
             "sensor_corruptor = flytrack_world.sensor_corruptor:main",
+            "contact_monitor = flytrack_world.contact_monitor:main",
         ]
     },
 )

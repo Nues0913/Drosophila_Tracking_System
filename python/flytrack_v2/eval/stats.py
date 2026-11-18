@@ -80,6 +80,9 @@ class Comparison:
     p_value: float  # one-sided paired t test, H0: difference <= threshold
     p_holm: float | None = None
     passed: bool | None = None  # Holm-adjusted p < alpha, set by holm()
+    # All seed differences equal (standard error 0): p is the exact sign-flip value instead of
+    # a t value, and reports must say so (#155 review).
+    degenerate: bool = False
 
 
 def comparison_rng(protocol_seed: int, name: str) -> np.random.Generator:
@@ -104,6 +107,10 @@ def paired_comparison(
     """
     if kind not in ("superiority", "noninferiority"):
         raise ValueError("kind must be superiority or noninferiority")
+    if kind == "superiority" and margin != 0:
+        raise ValueError(
+            "superiority tests against 0; a gate's minimum difference goes to gate_passes"
+        )
     if set(candidate) != set(reference) or not candidate:
         missing = sorted(set(candidate) ^ set(reference))
         raise ValueError(f"{name}: both sides need the same training seeds; unmatched {missing}")
@@ -114,8 +121,11 @@ def paired_comparison(
     threshold = 0.0 if kind == "superiority" else -float(margin)
     n, mean = len(differences), float(differences.mean())
     se = float(differences.std(ddof=1)) / math.sqrt(n)
-    if se == 0:
-        p_value, low, high = (0.0 if mean > threshold else 1.0), mean, mean
+    degenerate = se == 0
+    if degenerate:
+        # Exact one-sided sign-flip test: n equal differences above the threshold reach
+        # p = 1 / 2^n (1/32 for five seeds), not 0.
+        p_value, low, high = (0.5**n if mean > threshold else 1.0), mean, mean
     else:
         p_value = float(scipy_stats.t.sf((mean - threshold) / se, n - 1))
         half = float(scipy_stats.t.ppf(1 - (1 - confidence) / 2, n - 1)) * se
@@ -130,6 +140,7 @@ def paired_comparison(
         Interval(mean, low, high, n),
         Interval(mean, float(boot_low), float(boot_high), n),
         p_value,
+        degenerate=degenerate,
     )
 
 
@@ -154,6 +165,7 @@ def holm(comparisons: Sequence[Comparison], alpha: float = 0.05) -> list[Compari
             c.p_value,
             p_holm=adjusted[i],
             passed=adjusted[i] < alpha,
+            degenerate=c.degenerate,
         )
         for i, c in enumerate(comparisons)
     ]
@@ -183,6 +195,9 @@ def restricted_reacquisition(records: Iterable[Mapping], bound_s: float) -> list
         elif censored:
             value = float(bound_s)
         else:
-            value = min(float(record["reacquisition_time_s"]), float(bound_s))
+            value = float(record["reacquisition_time_s"])
+            if value > bound_s:
+                # Beyond the observable bound means a wrong bound or episode length (#155 review).
+                raise ValueError(f"reacquisition time {value} s exceeds the bound {bound_s} s")
         out.append({**record, "restricted_reacquisition_time_s": value})
     return out

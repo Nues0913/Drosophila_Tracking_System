@@ -1,4 +1,4 @@
-"""Throughput of the v2 v1compat world (#132 acceptance; plan 3.3: 1,024 envs <= 5 ms/step).
+"""Throughput of the v2 worlds (#132, #133 acceptance; plan 3.3: 1,024 envs <= 5 ms/step).
 
 ``python scripts/v2/bench_world.py --host-label 4070`` steps the world without a model, with a
 pursuit action computed from the privileged state (so episodes end mostly by time, as in
@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "python"))
 
 from flytrack_v2.contracts import SensorContractV2  # noqa: E402
 from flytrack_v2.world.v1compat import V1CompatWorld  # noqa: E402
+from flytrack_v2.world.wind import WindConfig  # noqa: E402
 
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
 
@@ -47,7 +48,9 @@ def _pursuit(world: V1CompatWorld) -> torch.Tensor:
     return torch.stack(((d.norm(dim=-1) - 1.0).clamp(0, 0.5), (2 * bearing).clamp(-1.5, 1.5)), -1)
 
 
-def bench(batch: int, scenarios: tuple[str, ...], steps: int, device: str) -> dict:
+def bench(
+    batch: int, scenarios: tuple[str, ...], steps: int, device: str, world_kind: str = "v1compat"
+) -> dict:
     contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
     configs = {
         name: yaml.safe_load((ROOT / f"configs/scenarios/{name}.yaml").read_text())
@@ -60,6 +63,7 @@ def bench(batch: int, scenarios: tuple[str, ...], steps: int, device: str) -> di
         {"episode_seconds": 60, "target_motion": ["curved", "wander"]},
         device=device,
         scenario_configs=configs,
+        wind=WindConfig() if world_kind == "wind" else None,
     )
     world.reset()
     for _ in range(20):  # graph capture and warm-up
@@ -79,6 +83,7 @@ def bench(batch: int, scenarios: tuple[str, ...], steps: int, device: str) -> di
     steady, one_reset = timed(False), timed(True)
     p_reset = 1 - math.exp(-batch / world.max_steps)
     return {
+        "world": world_kind,
         "batch": batch,
         "scenarios": list(scenarios),
         "steady_ms": round(steady, 3),
@@ -95,19 +100,21 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--host-label", required=True, help="2060, 4060 or 4070")
     parser.add_argument("--batches", default="256,1024,4096")
     parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--worlds", default="v1compat,wind")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if not torch.cuda.is_available():
         raise SystemExit("the world bench needs CUDA")
     results = []
-    for batch in (int(b) for b in args.batches.split(",")):
-        for scenarios in (("normal",), SCENARIOS):
-            torch.cuda.reset_peak_memory_stats()
-            results.append(bench(batch, scenarios, args.steps, "cuda"))
-            print(json.dumps(results[-1]), flush=True)
-            torch.cuda.empty_cache()
+    for world_kind in args.worlds.split(","):
+        for batch in (int(b) for b in args.batches.split(",")):
+            for scenarios in (("normal",), SCENARIOS):
+                torch.cuda.reset_peak_memory_stats()
+                results.append(bench(batch, scenarios, args.steps, "cuda", world_kind))
+                print(json.dumps(results[-1]), flush=True)
+                torch.cuda.empty_cache()
     report = {
-        "mode": "world-v1compat",
+        "mode": "world",
         "host_label": args.host_label,
         "commit": _git("rev-parse", "HEAD"),
         "dirty": bool(_git("status", "--porcelain")),

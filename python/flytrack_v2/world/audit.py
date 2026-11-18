@@ -22,9 +22,10 @@ from flytrack_train.audit import (
 )
 
 from flytrack_v2.contracts import SensorContractV2
-from flytrack_v2.world.teacher import PrivilegedTeacher
+from flytrack_v2.world.teacher import OcclusionTeacher, PrivilegedTeacher
 from flytrack_v2.world.v1compat import V1CompatWorld
 
+MIN_ODOR_TEACHER_SUCCESS = 0.5  # protocol world_audits.odor_teacher_min_occlusion_success
 _EPISODE_KEYS = ("episode_success", "episode_collision", "episode_tracking_fraction")
 _EPISODE_KEYS += ("episode_bearing_error_deg",)
 
@@ -85,16 +86,24 @@ def audit_world(
     scenario_configs: dict[str, dict] | None = None,
     max_blind_success: float = MAX_BLIND_SUCCESS,
     min_teacher_success: float = MIN_TEACHER_SUCCESS,
+    wind: Any = None,
+    min_odor_teacher_success: float = MIN_ODOR_TEACHER_SUCCESS,
 ) -> dict[str, Any]:
-    """Teacher must succeed and every blind policy must fail in ``scenario``."""
+    """Teacher must succeed and every blind policy must fail in ``scenario``.
+
+    In the wind world's occlusion scenario the observation-only OcclusionTeacher must also
+    reach ``min_odor_teacher_success`` (plan 3.3, #133); the same teacher without odor or
+    wind (memory and wall avoidance only) is reported beside it as the baseline.
+    """
     if episodes < 1 or not 0 <= max_blind_success < min_teacher_success <= 1:
         raise ValueError("Audit needs episodes > 0 and 0 <= blind max < teacher min <= 1")
     options = dict(options or {})
 
     def world(rows: int) -> V1CompatWorld:
         return V1CompatWorld(
-            contract, rows, scenario, options, device=device, scenario_configs=scenario_configs
-        )
+            contract, rows, scenario, options, device=device, scenario_configs=scenario_configs,
+            wind=wind,
+        )  # fmt: skip
 
     seeds = seed_start + torch.arange(episodes, device=device)
     teacher_world = world(episodes)
@@ -113,7 +122,20 @@ def audit_world(
         for i, name in enumerate(names)
     }
     teacher_summary = _summary(teacher_metrics, slice(None))
+    odor = {}
+    if wind is not None and scenario == "occlusion":
+        for name, kwargs in (
+            ("odor_teacher", {}),
+            ("memory_only", {"odor_gain": 0.0, "upwind_gain": 0.0, "detect": float("inf")}),
+        ):
+            rule = OcclusionTeacher(teacher, walls=teacher_world.walls, **kwargs)
+            odor[name] = _summary(_run(world(episodes), seeds, None, rule)[0], slice(None))
     failures = []
+    if odor and odor["odor_teacher"]["success_rate"] < min_odor_teacher_success:
+        failures.append(
+            f"odor teacher success {odor['odor_teacher']['success_rate']:.2f}"
+            f" < {min_odor_teacher_success:.2f}"
+        )
     if teacher_summary["success_rate"] < min_teacher_success:
         failures.append(
             f"teacher success {teacher_summary['success_rate']:.2f} < {min_teacher_success:.2f}"
@@ -130,6 +152,7 @@ def audit_world(
         "episodes": episodes,
         "environment_seed_start": seed_start,
         "teacher": teacher_summary,
+        **({"occlusion_teachers": odor} if odor else {}),
         "teacher_mean_action": list(blind_actions["teacher_mean"]),
         "blind_policies": blind,
         "thresholds": {

@@ -61,16 +61,17 @@ __device__ __forceinline__ double ft_wrap(double a) {
 _PLUME = (
     _HASH
     + """
-template <typename T> void ft_plume_tick(T x, T y, T age, T seq, T tick, T seed_hi, T seed_lo,
-    T tick_index, T dt, T wind_x, T wind_y, T sigma, T lifetime, T& ox, T& oy, T& oage, T& oseq) {
+template <typename T> void ft_plume_tick(T x, T y, T age, T seq, T seed, T tick_index,
+    T wind_x, T wind_y, T dt, T sigma, T lifetime, T& ox, T& oy, T& oage, T& oseq) {
+  // tick_index < 0: this row does not tick. seed < 2^52, exact in a double.
   ox = x; oy = y; oage = age; oseq = seq;
-  if (tick != T(0) && seq >= T(0)) {
+  if (tick_index >= T(0) && seq >= T(0)) {
     oage = age + dt;
     ox = x + wind_x * dt;
     oy = y + wind_y * dt;
     if (sigma != T(0)) {
       // rng.key(rng.key(seed, stream, tick, seq), axis): a new chain starts with mix(k + G).
-      u64 key = ft_key4(ft_seed(seed_hi, seed_lo), PLUME_STREAM, (long long)tick_index,
+      u64 key = ft_key4((u64)(long long)seed, PLUME_STREAM, (long long)tick_index,
                         (long long)seq);
       u64 k = ft_mix(key + 0x9E3779B97F4A7C15ULL);
       ox = ox + sigma * ft_normal_f(ft_next(k, 0));
@@ -185,7 +186,7 @@ def _get(name: str):
 
             code = _PLUME.replace("PLUME_STREAM", f"{PLUME_STREAM}LL")
             _CACHE[name] = jiterator._create_multi_output_jit_fn(
-                code, num_outputs=4, dt=0.0, wind_x=0.0, wind_y=0.0, sigma=0.0, lifetime=0.0
+                code, num_outputs=4, dt=0.0, sigma=0.0, lifetime=0.0
             )
         elif name == "clock":
             _CACHE[name] = jiterator._create_multi_output_jit_fn(
@@ -214,19 +215,19 @@ def split_key(key: Tensor) -> tuple[Tensor, Tensor]:
     return high.to(torch.float64), (key & 0xFFFFFFFF).to(torch.float64)
 
 
-def plume_tick(x, y, age, seq, tick, seeds, tick_index, plume) -> tuple[Tensor, ...]:
-    """Age, advect, diffuse and expire the puffs of rows in ``tick`` ([B,C] each).
+def plume_tick(x, y, age, seq, tick, seeds, tick_index, wind, plume) -> tuple[Tensor, ...]:
+    """Age, advect (by each row's wind [B,2]), diffuse and expire the puffs of rows in ``tick``.
 
     The turbulence is HashDraws.turbulence: key(seed, PLUME_STREAM, tick, puff number), then
-    one sub-key per axis.
+    one sub-key per axis. Episode seeds are below 2**52 (rng.SEED_BITS), so one double holds
+    them exactly.
     """
-    high, low = split_key(seeds)
     sigma = math.sqrt(2 * plume.turbulent_diffusion_m2_s * plume.integration_dt)
+    index = torch.where(tick, tick_index, -1).to(torch.float64)[:, None]
     ox, oy, oage, oseq = _get("plume")(
-        x, y, age, seq.to(torch.float64), tick.to(torch.float64)[:, None],
-        high[:, None], low[:, None], tick_index.to(torch.float64)[:, None],
-        dt=plume.integration_dt, wind_x=plume.wind_x, wind_y=plume.wind_y,
-        sigma=sigma, lifetime=plume.lifetime_s,
+        x, y, age, seq.to(torch.float64), seeds.to(torch.float64)[:, None], index,
+        wind[:, 0, None], wind[:, 1, None],
+        dt=plume.integration_dt, sigma=sigma, lifetime=plume.lifetime_s,
     )  # fmt: skip
     return ox, oy, oage, oseq.to(torch.int64)
 

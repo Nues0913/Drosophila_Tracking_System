@@ -21,3 +21,18 @@ def test_audit_reports_teacher_and_blind_policies():
     assert report["blind_policies"]["stop"]["success_rate"] == 0.0
     assert len(report["teacher_mean_action"]) == 2 and report["teacher_mean_action"][0] > 0
     assert report["passed"] == (not report["failures"])
+
+
+@pytest.mark.slow  # about 15 s on CPU
+def test_wind_occlusion_audit_reports_both_occlusion_teachers():
+    from flytrack_v2.world.wind import WindConfig
+
+    contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
+    configs = {"occlusion": {"occlusion_start_s": 2, "occlusion_duration_s": 4}}
+    report = audit_world(
+        contract, "occlusion", {"episode_seconds": 10}, episodes=3,
+        scenario_configs=configs, wind=WindConfig(),
+    )  # fmt: skip
+    assert set(report["occlusion_teachers"]) == {"odor_teacher", "memory_only"}
+    for row in report["occlusion_teachers"].values():
+        assert 0 <= row["success_rate"] <= 1

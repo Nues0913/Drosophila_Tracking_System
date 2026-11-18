@@ -20,12 +20,23 @@ from flytrack_core.contracts import (
     GROUP_OLFACTORY,
     GROUP_TURN,
     GROUP_VISUAL,
+    GROUP_WIND,
     canonical_json,
     file_sha256,
 )
 
 from .download import FILES
+from .rules import EdgeRule, brain_inputs, collect_edges
 from .tables import edge_batches, load_annotations, load_neurotransmitters, table_schema
+from .v2 import (
+    CoverageRepairError,
+    coverage_markdown,
+    positive_hops,
+    repair_coverage,
+    required_paths,
+    seed_retention,
+    validate_options,
+)
 
 NT_SIGNS = {"ach": 1, "acetylcholine": 1, "gaba": -1, "glu": -1, "glutamate": -1}
 LOGGER = logging.getLogger(__name__)
@@ -82,6 +93,7 @@ def bounded_reach(
     min_synapses: float,
     reverse: bool,
     columns: dict,
+    edge_rule: EdgeRule | None = None,
 ) -> dict[int, int]:
     distances = {node: 0 for node in seeds}
     frontier = set(seeds)
@@ -95,7 +107,7 @@ def bounded_reach(
             src, dst = (post, pre) if reverse else (pre, post)
             # Restrict low-weight edges before ID membership: the official table
             # contains many single-synapse edges between unannotated segments.
-            eligible = weight >= min_synapses
+            eligible = edge_rule.mask(pre, post, weight) if edge_rule else weight >= min_synapses
             src, dst = src[eligible], dst[eligible]
             destinations = dst[in_sorted(src, frontier_array)]
             discovered.update(
@@ -197,6 +209,18 @@ def inventory(raw_dir: Path, output: Path, columns: dict | None = None) -> None:
 
 
 def extract(config: dict) -> Path:
+    validate_options(config)
+    is_v2 = (
+        config.get("spec_version") == "v2"
+        or config.get("edge_rule", "single_edge") != "single_edge"
+        or config.get("coverage_repair", False)
+        or bool(config.get("selection", {}).get("wind_seed_patterns"))
+    )
+    audit_seed_types = (
+        is_v2
+        or config.get("required_seed_types") is not None
+        or bool(config.get("required_seed_groups"))
+    )
     raw_dir = Path(config.get("raw_dir", "data/raw"))
     output = Path(config.get("output", "data/subgraphs/main"))
     columns = config.get("columns", {})
@@ -214,6 +238,25 @@ def extract(config: dict) -> Path:
     inventory(raw_dir, output, columns)
     nodes[nodes.sign.isna()][["id", "type", "NT"]].to_csv(output / "nt_unresolved.csv", index=False)
     selection = config["selection"]
+    wind = set()
+    unknown_wind_sides = set()
+    unknown_wind_side_counts = {}
+    if selection.get("wind_seed_patterns"):
+        wind = select_types(nodes, selection["wind_seed_patterns"], "wind seeds")
+        root_column = columns.get("root_side", "rootSide")
+        if root_column not in nodes:
+            raise ValueError("Wind seeds require publisher rootSide")
+        selected = nodes.id.isin(wind)
+        labels = nodes.loc[selected, root_column].fillna("").str.lower()
+        nodes.loc[selected, "side"] = np.select(
+            [labels.isin(["l", "left"]), labels.isin(["r", "right"])], [-1, 1], default=0
+        ).astype("int8")
+        nodes.loc[selected, "side_source"] = root_column
+        unknown_wind_sides = wind & set(nodes.loc[nodes.side == 0, "id"])
+        unknown_wind_side_counts = (
+            nodes[nodes.id.isin(unknown_wind_sides)].groupby("type").size().to_dict()
+        )
+        wind -= unknown_wind_sides
     visual = select_types(nodes, selection["visual_seed_patterns"], "visual seeds")
     odor = select_types(nodes, selection["odor_seed_patterns"], "odor seeds")
     requested_odor_types = set(nodes.loc[nodes.id.isin(odor), "type"])
@@ -226,7 +269,7 @@ def extract(config: dict) -> Path:
             raise ValueError(f"{len(unknown_odor_sides)} odor seeds lack confirmed antenna side")
         odor -= unknown_odor_sides
     missing_odor_sides = requested_odor_types - set(nodes.loc[nodes.id.isin(odor), "type"])
-    if missing_odor_sides:
+    if missing_odor_sides and config.get("required_seed_types") is None:
         raise ValueError(f"Odor types without confirmed-side seeds: {sorted(missing_odor_sides)}")
     nodes[nodes.id.isin(unknown_odor_sides)][["id", "type", "side_label", "side_source"]].to_csv(
         output / "excluded_odor_seed_sides.csv", index=False
@@ -235,14 +278,15 @@ def extract(config: dict) -> Path:
     forward = select_types(nodes, selection["forward_dn_patterns"], "forward DN")
     seed_type_ids = {
         cell_type: set(int(body) for body in group.id)
-        for cell_type, group in nodes[nodes.id.isin(visual | odor)].groupby("type")
+        for cell_type, group in nodes[nodes.id.isin(visual | odor | wind)].groupby("type")
     }
     motors = turn | forward
-    seeds = visual | odor
+    seeds = visual | odor | wind
     edges_path = raw_dir / FILES["weights"]
     minimum = float(config.get("min_synapses", 5))
     downstream_hops = int(config.get("downstream_hops", 4))
     odor_downstream_hops = int(config.get("odor_downstream_hops", downstream_hops))
+    wind_downstream_hops = positive_hops(config, "wind_downstream_hops", downstream_hops)
     upstream_hops = int(config.get("upstream_hops", 4))
     convergence_hops = int(config.get("convergence_hops", 3))
     if (
@@ -273,20 +317,34 @@ def extract(config: dict) -> Path:
         raise ValueError("Configured exclusion removes a sensory seed or motor readout")
     excluded_in_scope = excluded & allowed
     allowed -= excluded
+    if is_v2:
+        allowed -= unknown_wind_sides | unknown_odor_sides
     untyped_in_scope = set(nodes.loc[nodes.type.eq(""), "id"]) & allowed
     if config.get("unknown_type_policy", "error") == "drop":
         allowed -= untyped_in_scope
     nodes[nodes.id.isin(untyped_in_scope)][["id", "type", "NT"]].to_csv(
         output / "untyped_in_scope.csv", index=False
     )
-    backward = bounded_reach(edges_path, motors, allowed, upstream_hops, minimum, True, columns)
-    visual_reach = bounded_reach(
-        edges_path, visual, allowed, downstream_hops, minimum, False, columns
-    )
-    odor_reach = bounded_reach(
-        edges_path, odor, allowed, odor_downstream_hops, minimum, False, columns
-    )
-    retained = (visual_reach.keys() | odor_reach.keys()) & backward.keys()
+    rule = EdgeRule(config, nodes, edges_path, columns, minimum)
+    scoped_edges = None
+    wind_reach = {}
+    if is_v2:
+        scoped_edges = collect_edges(edges_path, columns, allowed, rule)
+        backward = bounded_reach_in_memory(scoped_edges, motors, upstream_hops, True)
+        visual_reach = bounded_reach_in_memory(scoped_edges, visual, downstream_hops)
+        odor_reach = bounded_reach_in_memory(scoped_edges, odor, odor_downstream_hops)
+        wind_reach = bounded_reach_in_memory(scoped_edges, wind, wind_downstream_hops)
+    else:
+        backward = bounded_reach(
+            edges_path, motors, allowed, upstream_hops, minimum, True, columns, rule
+        )
+        visual_reach = bounded_reach(
+            edges_path, visual, allowed, downstream_hops, minimum, False, columns, rule
+        )
+        odor_reach = bounded_reach(
+            edges_path, odor, allowed, odor_downstream_hops, minimum, False, columns, rule
+        )
+    retained = (visual_reach.keys() | odor_reach.keys() | wind_reach.keys()) & backward.keys()
     LOGGER.info("Initial bounded sensory/motor intersection: %s neurons", len(retained))
     candidate_count_before_nt = len(retained)
     unresolved = set(nodes.loc[nodes.sign.isna(), "id"]) & retained
@@ -298,40 +356,74 @@ def extract(config: dict) -> Path:
                 f"{len(unresolved)} retained neurons have unresolved NT signs; "
                 "see nt_unresolved.csv"
             )
-    parts = []
-    retained_array = np.array(sorted(retained), dtype=np.int64)
-    for pre, post, weight in edge_batches(edges_path, columns):
-        eligible = weight >= minimum
-        pre, post, weight = pre[eligible], post[eligible], weight[eligible]
-        mask = in_sorted(pre, retained_array) & in_sorted(post, retained_array)
-        if mask.any():
-            parts.append(
-                pd.DataFrame({"pre": pre[mask], "post": post[mask], "synapse_count": weight[mask]})
-            )
-    if not parts:
-        raise ValueError(
-            "No sensory-to-motor paths survive; adjust confirmed seeds / hop budgets / thresholds"
-        )
-    edges = (
-        pd.concat(parts, ignore_index=True)
-        .groupby(["pre", "post"], sort=True, as_index=False)
-        .synapse_count.sum()
-    )
+    if scoped_edges is None:
+        edges = collect_edges(edges_path, columns, retained, rule)
+    else:
+        edges = scoped_edges[
+            scoped_edges.pre.isin(retained) & scoped_edges.post.isin(retained)
+        ].copy()
+    if edges.empty:
+        raise ValueError("No sensory-to-motor paths survive")
+    protected = set()
+    repaired = False
+    coverage_failure = None
     degree_threshold = float(config.get("min_total_synapses", 5))
     while True:
         previous = set(retained)
         outgoing = edges.groupby("pre").synapse_count.sum()
         incoming = edges.groupby("post").synapse_count.sum()
         total = outgoing.add(incoming, fill_value=0)
-        retained &= set(int(body) for body in total.index[total >= degree_threshold])
+        retained &= set(int(body) for body in total.index[total >= degree_threshold]) | protected
         edges = edges[edges.pre.isin(retained) & edges.post.isin(retained)]
         visual_reach = bounded_reach_in_memory(edges, visual & retained, downstream_hops)
         odor_reach = bounded_reach_in_memory(edges, odor & retained, odor_downstream_hops)
+        wind_reach = bounded_reach_in_memory(edges, wind & retained, wind_downstream_hops)
         motor_reach = bounded_reach_in_memory(edges, motors & retained, upstream_hops, True)
-        retained &= (visual_reach.keys() | odor_reach.keys()) & motor_reach.keys()
+        retained &= (
+            (visual_reach.keys() | odor_reach.keys() | wind_reach.keys()) & motor_reach.keys()
+        ) | protected
         edges = edges[edges.pre.isin(retained) & edges.post.isin(retained)]
         if retained == previous:
+            if is_v2 and not repaired:
+                brain = brain_inputs(edges_path, columns, allowed | motors)
+                try:
+                    retained, protected, repair_report = repair_coverage(
+                        config,
+                        nodes[nodes.id.isin(allowed)],
+                        scoped_edges,
+                        retained,
+                        seeds,
+                        motors,
+                        brain,
+                        edges,
+                    )
+                except CoverageRepairError as error:
+                    retained, protected, repair_report = (
+                        error.retained,
+                        error.protected,
+                        error.report,
+                    )
+                    coverage_failure = str(error)
+                edges = scoped_edges[
+                    scoped_edges.pre.isin(retained) & scoped_edges.post.isin(retained)
+                ].copy()
+                repaired = True
+                continue
             break
+    if is_v2:
+        if not protected <= (
+            reach_in_memory(edges, seeds & retained)
+            & reach_in_memory(edges, motors & retained, True)
+        ):
+            raise ValueError("Protected repair nodes lack a surviving seed-to-DN path")
+        # Preserve bounded branch populations, extending only actual repair paths.
+        for path in repair_report["paths"]:
+            bodies = path["nodes"]
+            for sensory, reach in ((visual, visual_reach), (odor, odor_reach), (wind, wind_reach)):
+                if bodies[0] in sensory:
+                    for hop, body in enumerate(bodies):
+                        reach[body] = min(reach.get(body, hop), hop)
+    all_nodes = nodes
     nodes = nodes[nodes.id.isin(retained)].sort_values("id", kind="stable").reset_index(drop=True)
     min_neurons = int(config.get("min_neurons", 1))
     # Explicit null removes the initial engineering cap; omitted retains legacy behavior.
@@ -341,11 +433,20 @@ def extract(config: dict) -> Path:
         raise ValueError(
             f"Retained {len(nodes)} neurons, outside [{min_neurons}, {max_neurons}] budget"
         )
-    missing_seed_types = [name for name, bodies in seed_type_ids.items() if not bodies & retained]
-    if missing_seed_types:
+    requested_seed_types = set(seed_type_ids)
+    if audit_seed_types:
+        requested_seed_types.update(unknown_odor_side_counts, unknown_wind_side_counts)
+    retained_seed_types = {name for name, bodies in seed_type_ids.items() if bodies & retained}
+    seed_audit = seed_retention(config, requested_seed_types, retained_seed_types)
+    if not seed_audit["passed"] and not is_v2:
+        missing_types = seed_audit["missing_required_types"]
+        missing_groups = seed_audit["missing_required_groups"]
+        group_details = (
+            f" Missing required seed groups: {missing_groups}." if missing_groups else ""
+        )
         raise ValueError(
-            f"Seed types without retained DN paths: {missing_seed_types}; "
-            "refine the graph configuration"
+            f"Seed types without retained DN paths: {missing_types}; "
+            f"refine the graph configuration.{group_details}"
         )
     if (nodes.type == "").any():
         raise ValueError(
@@ -373,6 +474,11 @@ def extract(config: dict) -> Path:
             edges, odor & retained, set(odor_reach), motors & retained
         ),
     }
+    if wind:
+        branch_paths["wind"] = modality_motor_paths(
+            edges, wind & retained, set(wind_reach), motors & retained
+        )
+    branch_failures = []
     for role in config.get("require_branch_motor_paths", []):
         if role not in branch_paths:
             raise ValueError(f"Unknown required branch: {role}")
@@ -385,7 +491,10 @@ def extract(config: dict) -> Path:
                 for row in rows.values()
             )
         ):
-            raise ValueError(f"{role} branch does not connect every retained seed to every DN")
+            if is_v2:
+                branch_failures.append(role)
+            else:
+                raise ValueError(f"{role} branch does not connect every retained seed to every DN")
     groups = np.zeros(len(nodes), dtype=np.uint8)
     input_mask = np.zeros(len(nodes), dtype=np.uint8)
     for index, body in enumerate(nodes.id):
@@ -393,6 +502,8 @@ def extract(config: dict) -> Path:
             groups[index] |= GROUP_VISUAL
         if body in odor_reach:
             groups[index] |= GROUP_OLFACTORY
+        if body in wind_reach:
+            groups[index] |= GROUP_WIND
         if (
             visual_reach.get(body, convergence_hops + 1) <= convergence_hops
             and odor_reach.get(body, convergence_hops + 1) <= convergence_hops
@@ -402,8 +513,10 @@ def extract(config: dict) -> Path:
             groups[index] |= GROUP_TURN
         if body in forward:
             groups[index] |= GROUP_FORWARD
-        input_mask[index] = (GROUP_VISUAL if body in visual else 0) | (
-            GROUP_OLFACTORY if body in odor else 0
+        input_mask[index] = (
+            (GROUP_VISUAL if body in visual else 0)
+            | (GROUP_OLFACTORY if body in odor else 0)
+            | (GROUP_WIND if body in wind else 0)
         )
     nodes["group_mask"] = groups
     nodes["input_mask"] = input_mask
@@ -426,6 +539,16 @@ def extract(config: dict) -> Path:
         "group_mask": groups,
         "input_mask": input_mask,
     }
+    if is_v2:
+        arrays.update(
+            brain_input_synapses=np.array(
+                [brain.get(body, 0) for body in nodes.id], dtype=np.float32
+            ),
+            subgraph_input_synapses=nodes.id.map(edges.groupby("post").synapse_count.sum())
+            .fillna(0)
+            .to_numpy(np.float32),
+            protected=nodes.id.isin(protected).to_numpy(np.uint8),
+        )
     deterministic_npz(output / "graph.npz", arrays)
     node_columns = [
         "id",
@@ -540,5 +663,99 @@ def extract(config: dict) -> Path:
             "type_patterns": excluded_type_patterns,
             "in_scope_neurons": len(excluded_in_scope),
         }
+    if audit_seed_types:
+        available = allowed & set(all_nodes.loc[all_nodes.sign.notna(), "id"])
+        dropped_seed_types = requested_seed_types - retained_seed_types
+        distances = {}
+        if dropped_seed_types and scoped_edges is not None:
+            # Measure distance before hop pruning, using only eligible cells and edges.
+            usable_edges = scoped_edges[
+                scoped_edges.pre.isin(available) & scoped_edges.post.isin(available)
+            ]
+            distances = bounded_reach_in_memory(
+                usable_edges, motors & available, len(available), reverse=True
+            )
+        retained_counts, dropped_counts = {}, {}
+        for name in sorted(requested_seed_types):
+            bodies = seed_type_ids.get(name, set())
+            available_seeds = bodies & available
+            counts = {
+                "published": int(published_type_counts[name]),
+                "available": len(available_seeds),
+                "retained": len(bodies & retained),
+            }
+            if name in retained_seed_types:
+                retained_counts[name] = counts
+            else:
+                hops = min(
+                    (distances[body] for body in available_seeds & distances.keys()), default=None
+                )
+                if hops is not None:
+                    counts["minimum_dn_hops"] = hops
+                dropped_counts[name] = counts
+        manifest.update(
+            seed_retention=seed_audit,
+            retained_seed_type_counts=retained_counts,
+            dropped_seed_types=dropped_counts,
+        )
+    if is_v2:
+        import yaml
+
+        paths = required_paths(nodes, edges, config)
+        paths["checks"]["all_requested_seed_types_retained"] = seed_audit["passed"]
+        paths["checks"]["dn_coverage"] = all(
+            row["coverage"] >= config.get("coverage_min", 0.4) for row in repair_report["after"]
+        )
+        for role in config.get("require_branch_motor_paths", []):
+            paths["checks"][f"{role}_branch_all_inputs_to_all_motors"] = role not in branch_failures
+        paths["passed"] = all(paths["checks"].values())
+        kc_count = int(nodes["class"].eq("Kenyon_Cell").sum()) if "class" in nodes else 0
+        dn_nodes = (
+            nodes[nodes.superclass.eq("descending_neuron")]
+            if "superclass" in nodes
+            else nodes[nodes.id.isin(motors)]
+        )
+        manifest.update(
+            spec_version="v2",
+            edge_rule=rule.name,
+            type_min_synapses=rule.type_minimum,
+            edge_min_synapses=rule.minimum,
+            qualified_type_pairs=len(rule.pairs),
+            coverage_repair=repair_report,
+            coverage_failure=coverage_failure,
+            necessary_paths=paths,
+            kc_neurons=kc_count,
+            dn_types={
+                name: {str(side): int(group.side.eq(side).sum()) for side in (-1, 0, 1)}
+                for name, group in dn_nodes.groupby("type", sort=True)
+            },
+            excluded_unknown_wind_side_seeds=len(unknown_wind_sides),
+            excluded_unknown_wind_side_by_type={
+                name: int(count) for name, count in sorted(unknown_wind_side_counts.items())
+            },
+            seed_types={
+                role: sorted(set(all_nodes.loc[all_nodes.id.isin(bodies), "type"]))
+                for role, bodies in (("visual", visual), ("olfactory", odor), ("wind", wind))
+            },
+            retained_seed_types={
+                role: sorted(set(nodes.loc[nodes.id.isin(bodies), "type"]))
+                for role, bodies in (("visual", visual), ("olfactory", odor), ("wind", wind))
+            },
+        )
+        manifest["input_side_counts"]["wind"] = {
+            str(side): int((nodes.id.isin(wind) & nodes.side.eq(side)).sum()) for side in (-1, 0, 1)
+        }
+        manifest["extractor_source_sha256"].update(
+            {name: file_sha256(Path(__file__).with_name(name)) for name in ("rules.py", "v2.py")}
+        )
+        (output / "config.yaml").write_text(
+            yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+        )
+        (output / "coverage.md").write_text(coverage_markdown(manifest), encoding="utf-8")
     (output / "manifest.json").write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    if is_v2 and not paths["passed"]:
+        failures = [name for name, passed in paths["checks"].items() if not passed]
+        if coverage_failure:
+            raise ValueError(coverage_failure + f"; failed checks: {failures}")
+        raise ValueError(f"Required v2 paths failed: {failures}; see output manifest.json")
     return output

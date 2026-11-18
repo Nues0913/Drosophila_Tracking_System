@@ -807,7 +807,7 @@ def test_bc_anchor_loss_matches_analytic_gradients(coef, perturbation):
 
 
 @pytest.mark.parametrize("coef", [None, 0])
-def test_ppo_bc_anchor_disabled_matches_default_bitwise(tmp_path, monkeypatch, coef):
+def test_ppo_bc_anchor_disabled_matches_default(tmp_path, monkeypatch, coef):
     from flytrack_core.contracts import SensorContract
     from flytrack_train import ppo
 
@@ -1397,7 +1397,7 @@ def test_pretrain_decoder_scale_rejects_invalid_options(tmp_path, monkeypatch, v
         pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
 
 
-def test_pretrain_explicit_none_matches_default_bitwise(tmp_path, monkeypatch):
+def test_pretrain_explicit_none_matches_default(tmp_path, monkeypatch):
     pretrain, config = _patch_small_pretrain(monkeypatch)
     pretrain.train_pretrain(config, tmp_path / "default", 17, torch.device("cpu"))
     config["train"]["decoder_input_scale"] = "none"
@@ -1556,3 +1556,10 @@ def test_decoder_population_rms_floor_and_nonfinite_inputs(value):
         with pytest.raises(ValueError, match="finite"):
             initialize_decoder_inputs(*args)
         assert not bool(decoder.input_initialized)
+
+
+def test_evaluate_rejects_the_removed_deterministic_option(tmp_path):
+    from flytrack_train.evaluation import evaluate
+
+    with pytest.raises(ValueError, match="deterministic was removed"):
+        evaluate({"evaluation": {"deterministic": False}}, tmp_path, torch.device("cpu"))

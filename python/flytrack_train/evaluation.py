@@ -468,6 +468,12 @@ def summarize_recorded(config, output, variants, scenarios, seeds, expected_epis
 
 def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None:
     options = config.get("evaluation", {})
+    if "deterministic" in options:
+        # An old config would otherwise run without the mode it asks for (#131 review).
+        raise ValueError(
+            "evaluation.deterministic was removed on v2 (#131): bitwise reruns are not "
+            "supported; delete the key"
+        )
     variants = tuple(options.get("variants", VARIANTS))
     scenarios = tuple(options.get("scenarios", SCENARIOS))
     seeds = tuple(int(seed) for seed in options.get("seeds", range(5)))

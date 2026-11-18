@@ -1,16 +1,13 @@
 {
   "artifact": "artifacts/input_norm_v2/input_norm.npz",
-  "sha256": "47f8396616806bbda23c8677bf9d09e486237cc6f5dc94e8a8408f10c768c9c1",
-  "commit": "b26d6ea01e2836f772b120072347108dc611586a",
-  "world": "v1compat (hide_target)",
-  "episodes": 100,
-  "samples": 120000,
-  "unfitted_columns": 2,
-  "unfitted_column_index": [
-    290,
-    291
-  ],
+  "sha256": "5d393b5c8a284305a0c7286f771655aad6467892f55f97430f1e114b396702a9",
+  "commit": "928a5cf362c65b672724b0a56d0a8edea47219df",
+  "worlds": "v1compat and wind (U = 0.5 m/s), hide_target, half each",
+  "teacher": "OcclusionTeacher (walls on)",
+  "episodes": 200,
+  "samples": 239560,
+  "unfitted_columns": 0,
+  "unfitted_column_index": [],
   "std_below_floor": 0,
-  "note": "wind channels are never valid in v1compat; refit on both worlds after #133",
   "fit": "flytrack_v2.model.sensory.fit_input_norm"
 }

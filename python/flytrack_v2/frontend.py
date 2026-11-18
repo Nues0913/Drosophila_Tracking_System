@@ -18,6 +18,8 @@ import torch
 from flytrack_core.contracts import SensorContract
 from flytrack_core.model.frontend import FrozenFlyvis
 from torch import Tensor, nn
+from torch._dynamo.exc import BackendCompilerFailed
+from torch._inductor.exc import InductorError
 
 
 def _update(voltage, recurrent, current, ratio, bias, columns):
@@ -27,9 +29,25 @@ def _update(voltage, recurrent, current, ratio, bias, columns):
 
 
 _fused_update = torch.compile(_update, dynamic=False)
-# Why the fused update is unavailable on this host, once it has failed (#158 review: the
-# Triton backend needs a C compiler, which 4070's WSL lacks). None until a failure.
+# Why the fused update is unavailable in this process, once compiling it has failed (#158
+# review: the Triton backend needs a C compiler, which 4070's WSL lacks). None until a failure.
+# It is module-wide on purpose: one host runs one update path, for every frontend instance.
 _FUSED_FAILURE: str | None = None
+# Only the compiler's own failures fall back (a missing C compiler raises InductorError). Out of
+# memory, and every other runtime error, propagate as in eager code (#159 review): a chain that
+# silently ran at half speed would also distort the throughput gate.
+_COMPILE_ERRORS = (BackendCompilerFailed, InductorError)
+
+
+def _out_of_memory(error: BaseException) -> bool:
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, torch.OutOfMemoryError):
+            return True
+        seen.add(id(error))
+        # Inductor wraps with `raise InductorError(e) from None`, keeping e as inner_exception
+        error = getattr(error, "inner_exception", None) or error.__cause__ or error.__context__
+    return False
 
 
 def _run_update(fused: bool, *args):
@@ -38,7 +56,9 @@ def _run_update(fused: bool, *args):
     if fused and _FUSED_FAILURE is None:
         try:
             return _fused_update(*args)
-        except Exception as error:  # noqa: BLE001 - any compiler failure falls back
+        except _COMPILE_ERRORS as error:
+            if _out_of_memory(error):  # e.g. out of memory while autotuning: not a compiler gap
+                raise
             _FUSED_FAILURE = f"{type(error).__name__}: {error}"[:300]
             warnings.warn(
                 "Fused frontend update unavailable, falling back to eager (about half the "

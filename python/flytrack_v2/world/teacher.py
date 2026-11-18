@@ -9,7 +9,9 @@ The same rule as ``flytrack_sim.teacher.teacher_action``, on [B] tensors:
 - optionally (v1's #33 option, ``occlusion_odor_gain``), during occlusion the turn comes from
   the student's own raw odor reading, never from plume truth;
 - the label is clipped to the contract's speed and acceleration limits around the previous
-  applied action, as v1 does.
+  applied action, as v1 does. Under DAgger with beta < 1 that previous action is the
+  student's, so the label for one state depends on what the student just did: the teacher
+  only demonstrates actions reachable from there (#165 review).
 
 The teacher keeps no state (width 0). Labels are training targets, never observations.
 """
@@ -138,7 +140,9 @@ class OcclusionTeacher:
       odor approaches ``near`` (the source is close: slow down rather than hit it).
 
     With ``walls``, a look-ahead point that leaves the arena's safe box turns the agent toward
-    the centre (the agent's own pose: self-knowledge, not the target).
+    the centre. This reads the agent's own pose (self-knowledge, not the target); the student
+    sees the walls in its images, so it can learn the same behaviour. Model cards that cite
+    this teacher should say so (#169 review).
 
     State [B,4]: held speed, held turn rate, seconds since odor was last present, cast side.
     The occlusion flag is the scenario's timing, a label-side switch, never an observation.

@@ -37,4 +37,24 @@
 - `mean_distance_m`、`bearing_error_deg` 只平均到回合結束。碰撞會讓回合提早結束，所以提早撞的變體只算到前段的步數。
 - 因此碰撞率不同的變體，不能直接比較這兩項。要比較時，另外報告沒有碰撞的回合（#108 的 review）。
 
-**彙總 JSON**：格式（seed 平均、bootstrap 信賴區間、配對比較、Holm 校正）由 WP5（#139）定義，加在這份文件。
+## 彙總 JSON（`flytrack_v2/eval/summary.py`，#139）
+
+`build_summary(records, specs, protocol_seed=…, protocol_sha256=…)` 先跑 `check_records`（#163），再產生下面的 JSON，最後用 `validate_summary` 檢查。
+
+| 欄位 | 內容 |
+| --- | --- |
+| `spec_version` | 1 |
+| `protocol_sha256`、`protocol_seed` | 凍結協定的雜湊，以及 bootstrap 抽樣的 seed（每個比較、每個格子各自用 `comparison_rng` 衍生，結果可以重現） |
+| `records_sha256` | 逐回合紀錄的雜湊，和紀錄的順序無關。彙總一定要指得出它來自哪一組紀錄 |
+| `n_records`、`commits` | 紀錄數，以及評估程式的 commit |
+| `comparisons` | 登記的比較，每項一列（見下） |
+| `cells` | 每個 (variant, world, scenario, motion, noise_scale) × 指標一列：各 seed 的平均、`n_seeds`、`mean`、`t95`（seed 少於 2 個時是 null）、`bootstrap95` |
+
+**比較**（`ComparisonSpec`）
+- 兩邊各是一組「選取條件」，例如 `{"variant": "VO2", "world": "wind", "scenario": "occlusion"}`。每個 seed 的值，是那個 seed 所有符合條件的回合的平均。
+  - 所以 G-B 照登記的方式，兩種運動合併；加上 `motion` 就是分運動的次要分析（#169 的 Decision 2）。
+- 每一列：`p_value`（單尾配對 t 檢定，自由度 n − 1）、`p_holm`（在 `family` 內做 Holm 校正）、`t95`、`bootstrap95`（只報告，不拿來判定）、`degenerate`。
+  - `degenerate` 是 true 時，表示每個 seed 的差值都相同：p 是精確的符號翻轉值，`t95` 寬度是 0，報告要寫明（#166）。
+- **gate**：`gate_passed` = Holm 校正後 p < `alpha`，而且平均差達到 `minimum_difference`（如果有設）。
+  - 次要分析（`secondary`）沒有 `gate_passed`，填 null。
+  - 同一個 family 不能混用 gate 和次要分析，免得次要分析稀釋 gate 的 Holm 校正。

@@ -52,6 +52,12 @@ class V2Actor:
         self.policy = policy
 
     def reset(self, batch: int, device: torch.device) -> None:
+        # A policy mid-training keeps an incrementally refreshed rest state; evaluate from the
+        # full one so results do not depend on the training history (#168, #170 review).
+        refresh = getattr(self.policy, "refresh_rest_state", None)
+        if refresh is not None:
+            with torch.no_grad():
+                refresh(full=True)
         self.sensory = self.policy.initial_sensory_state(batch, device)
         self.central = self.policy.initial_central_state(batch, device)
 
@@ -145,7 +151,8 @@ def rotate_wind(degrees: float, antenna_angle_deg: float):
 class EpisodeResult:
     values: dict[str, list]  # EPISODE_KEYS -> one value per row
     # #161 A3, per row: n, slope (commanded m/s per m of the distance seen before acting),
-    # mean_speed_m_s, mean_distance_m
+    # mean_speed_m_s, mean_distance_m. Commanded: the actor's action, before the world clips it
+    # to the acceleration limit; the record's mean_speed_m_s is the applied speed.
     speed_distance: dict[str, list[float]]
     # #161 E1, per row: tracking fraction and steps in each occlusion phase (OCCLUSION_PHASES)
     occlusion_phases: dict[str, list[float]]

@@ -174,3 +174,24 @@ def test_rotate_wind_reports_the_rotated_direction(theta, delta):
     obs = {"odor": torch.zeros(1, 2), "wind": _wind(theta)}
     ObservationAblation(echo, rotate_wind(delta, 45.0)).act(obs, None)
     torch.testing.assert_close(echo.seen["wind"], _wind(theta + delta))
+
+
+def test_v2_actor_refreshes_the_full_rest_state_before_evaluating():
+    from flytrack_v2.eval.runner import V2Actor
+
+    class _Policy:
+        def __init__(self):
+            self.calls = []
+
+        def refresh_rest_state(self, full=False):
+            self.calls.append(full)
+
+        def initial_sensory_state(self, batch, device):
+            return None
+
+        def initial_central_state(self, batch, device):
+            return None
+
+    policy = _Policy()
+    V2Actor(policy).reset(2, torch.device("cpu"))
+    assert policy.calls == [True]

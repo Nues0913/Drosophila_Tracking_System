@@ -11,6 +11,7 @@ batch 256 and 1024, within 2e-6 of v1. Column j of the state is environment j //
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import torch
@@ -26,6 +27,26 @@ def _update(voltage, recurrent, current, ratio, bias, columns):
 
 
 _fused_update = torch.compile(_update, dynamic=False)
+# Why the fused update is unavailable on this host, once it has failed (#158 review: the
+# Triton backend needs a C compiler, which 4070's WSL lacks). None until a failure.
+_FUSED_FAILURE: str | None = None
+
+
+def _run_update(fused: bool, *args):
+    """The fused update, or the eager one after warning once that compilation failed."""
+    global _FUSED_FAILURE
+    if fused and _FUSED_FAILURE is None:
+        try:
+            return _fused_update(*args)
+        except Exception as error:  # noqa: BLE001 - any compiler failure falls back
+            _FUSED_FAILURE = f"{type(error).__name__}: {error}"[:300]
+            warnings.warn(
+                "Fused frontend update unavailable, falling back to eager (about half the "
+                f"speed): {_FUSED_FAILURE}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+    return _update(*args)
 
 
 class NodeMajorFlyvis(nn.Module):
@@ -51,6 +72,11 @@ class NodeMajorFlyvis(nn.Module):
         ratio = self.frozen.neural_dt / self.frozen.tau.clamp_min(self.frozen.neural_dt)
         self.register_buffer("ratio", ratio.unsqueeze(1), persistent=False)
 
+    def update_path(self, device: torch.device | str) -> str:
+        """fused or eager: which update this front end runs on device (log it per run)."""
+        wants = torch.device(device).type == "cuda" if self.fused is None else self.fused
+        return "fused" if wants and _FUSED_FAILURE is None else "eager"
+
     def initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.frozen.bias.to(device).unsqueeze(1).expand(-1, 2 * batch_size).clone()
 
@@ -75,11 +101,13 @@ class NodeMajorFlyvis(nn.Module):
         current.index_add_(0, frozen.input_node, image[:, frozen.input_ommatidium].T)
         columns = available.reshape(1, batch * 2)
         bias = frozen.bias.unsqueeze(1)
-        update = _fused_update if (state.is_cuda if self.fused is None else self.fused) else _update
+        fused = state.is_cuda if self.fused is None else self.fused
         voltage, rates = state, torch.relu(state)
         for _ in range(self.substeps):
             recurrent = torch.sparse.mm(frozen.weight, rates)
-            voltage, rates = update(voltage, recurrent, current, self.ratio, bias, columns)
+            voltage, rates = _run_update(
+                fused, voltage, recurrent, current, self.ratio, bias, columns
+            )
         features = torch.sparse.mm(frozen.pooling, rates).T
         features = torch.where(available, features, 0.0)
         return features.reshape(batch, 2, -1), voltage

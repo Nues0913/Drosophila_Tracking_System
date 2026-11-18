@@ -58,3 +58,28 @@ def test_reset_restarts_only_the_masked_environments(contract):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the fused update runs on CUDA")
 def test_fused_update_matches_v1_on_cuda(contract):
     _run(contract, "cuda", fused=True)
+
+
+def test_compile_failure_falls_back_to_eager_with_one_warning(contract, monkeypatch):
+    import flytrack_v2.frontend as module
+
+    def broken(*args):
+        raise RuntimeError("no C compiler")
+
+    monkeypatch.setattr(module, "_fused_update", broken)
+    monkeypatch.setattr(module, "_FUSED_FAILURE", None)
+    fused = NodeMajorFlyvis(EXPORT, contract, 9, fused=True)
+    eager = NodeMajorFlyvis(EXPORT, contract, 9, fused=False)
+    assert fused.update_path("cpu") == "fused"
+    vision = torch.rand(2, 2, contract.n_ommatidia, generator=torch.Generator().manual_seed(1))
+    valid = torch.ones(2, 2)
+    with pytest.warns(RuntimeWarning, match="no C compiler"):
+        out, state = fused(vision, fused.initial_state(2, "cpu"), valid)
+    reference, _ = eager(vision, eager.initial_state(2, "cpu"), valid)
+    torch.testing.assert_close(out, reference)
+    assert fused.update_path("cpu") == "eager"
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the second call stays quiet
+        fused(vision, state, valid)

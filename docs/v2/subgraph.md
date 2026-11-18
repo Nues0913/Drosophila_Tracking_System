@@ -5,6 +5,8 @@
 ## 規則與可重現性
 
 - `edge_rule` 預設 `single_edge`，沿用 `min_synapses`；`type_sum` 的預設 `type_min_synapses=50`、`edge_min_synapses=10`。先按單邊門檻篩選，再對全腦所有有 type 的神經元累加 pre-type → post-type；型別總和不限 superclass、NT 或排除清單。合格邊同時用於 reach、誘導子圖、度數修剪與補救。
+  - **型別總和只算單條邊 ≥ T_edge 的邊**：先濾掉小於 T_edge 的邊，再加總型別對的突觸。這比計劃書 3.5 的「型別總和 ≥ T_type 且單邊 ≥ T_edge」更嚴：一個型別對如果大多是小於 T_edge 的邊，就算原始總和超過 T_type，也不會保留。
+  - **T_edge 用 10，不是計劃書 3.5 的候選值 3–5**：可行性探針（還沒排除 KC、沒做號誌和度數修剪，數字偏大）裡，T_edge = 5 時試過的 hop 組合，邊都超過 200,000（例如 T_type 50、up／down 2／2 約 46 萬條），T_edge ≥ 10 才壓得進預算。T_edge = 10 時，LC9→DNp09 仍保留 1,977 個突觸中的 1,760 個（89%），拿掉的是 36 條各 3–9 個突觸的邊。
 - 主萃取維持 bounded reach 交集、全腦型別 NT 多數決、NT drop、固定點修剪。`wind_downstream_hops` 預設跟隨 `downstream_hops`；風 seed 強制取 publisher `rootSide`，不明側別排除；`GROUP_WIND=32` 同時用於 group/input mask。
 - `coverage_repair` 預設 false；`coverage_min=0.40`、`repair_max_hops=downstream_hops+2`。必要 DN 按 bodyId 排序；候選按突觸數降序、bodyId 升序；多源 BFS 的 seed 與鄰居按 bodyId 排序。候選、路徑全程受 anatomical/type/NT/no-KC/side 排除限制。到門檻立即停止；新增節點 protected，固定點修剪後仍須位於 seed→DN 路徑。
 - 分支群體沿用各自的 bounded hop；僅實際補救路徑可額外標記來源分支，並在 manifest 記錄完整 bodyId 路徑。沒有將整個弱連通分量都標成各模態。

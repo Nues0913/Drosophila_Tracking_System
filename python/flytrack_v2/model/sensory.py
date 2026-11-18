@@ -163,6 +163,10 @@ class InputNorm(nn.Module):
             persistent=False,
         )
 
+    def neutral_code(self) -> Tensor:
+        """Return one raw code with zero normalized features and all channels valid."""
+        return torch.cat((self.mean, self.mean.new_ones(len(VALID_CHANNELS)))).unsqueeze(0)
+
     def forward(self, code: Tensor, enabled: Tensor | None = None) -> Tensor:
         if code.ndim != 2 or code.shape[1] != self.layout.code_size:
             raise ValueError(f"Expected sensory codes with shape [B, {self.layout.code_size}]")

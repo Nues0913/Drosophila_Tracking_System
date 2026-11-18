@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,6 +42,15 @@ class _PolicyV2(nn.Module):
         self.input_norm = input_norm
         self.code_size = encoder.layout.code_size
         self.log_std = nn.Parameter(torch.full((2,), float(config.log_std_init)))
+        self._rest_cache: tuple[tuple, Tensor] | None = None
+        self.register_load_state_dict_post_hook(self._clear_rest_cache_after_load)
+
+    def _clear_rest_cache_after_load(self, _module, _incompatible_keys) -> None:
+        self._rest_cache = None
+
+    def _apply(self, fn, recurse=True):
+        self._rest_cache = None
+        return super()._apply(fn, recurse=recurse)
 
     def initial_sensory_state(self, batch_size: int, device: torch.device | str) -> SensoryState:
         return self.encoder.initial_state(batch_size, device)
@@ -57,6 +66,66 @@ class _PolicyV2(nn.Module):
 
     def _distribution(self, mean: Tensor) -> ActionDistribution:
         return ActionDistribution(mean, self.log_std, self.contract.v_max, self.contract.omega_max)
+
+    def rest_state(self) -> Tensor:
+        """Evolve a batch of one from the bias state with neutral sensory input."""
+        return self._evolve_rest_state(self.config.rest_settle_s)
+
+    @torch.inference_mode(False)
+    @torch.no_grad()
+    def _evolve_rest_state(self, seconds: float, state: Tensor | None = None) -> Tensor:
+        if state is None:
+            state = self._bias_state(1, self.log_std.device)
+        code = self.input_norm.neutral_code()
+        steps = round(seconds / self.contract.control_dt)
+        with torch.autocast(device_type=state.device.type, enabled=False):
+            for _ in range(steps):
+                state = self.forward_code(code, state).central_state
+        return state.detach()
+
+    def _rest_cache_key(self) -> tuple:
+        # Tensor metadata checks avoid device work on cache hits.
+        return tuple(
+            (parameter._version, parameter.data_ptr(), parameter.device, parameter.dtype)
+            for parameter in self._dynamics_parameters()
+        )
+
+    def _refresh_rest_cache(self, key: tuple, full: bool = False) -> Tensor:
+        cached = self._rest_cache
+        if full or cached is None:
+            state = self.rest_state()
+        else:
+            state = self._evolve_rest_state(self.config.rest_refresh_s, cached[1])
+        self._rest_cache = (key, state)
+        return state
+
+    def refresh_rest_state(self, full: bool = False) -> Tensor:
+        """Refresh the cached rest state and return a detached copy.
+
+        Continue from the previous cached state for ``rest_refresh_s`` when available.
+        Use ``full=True`` before evaluation and export to evolve from the bias state
+        for ``rest_settle_s`` independently of the training history.
+        """
+        return self._refresh_rest_cache(self._rest_cache_key(), full=full).clone()
+
+    def _cached_rest_state(self) -> Tensor:
+        key = self._rest_cache_key()
+        cached = self._rest_cache
+        if cached is None or cached[0] != key:
+            return self._refresh_rest_cache(key)
+        return cached[1]
+
+    def initial_central_state(self, batch_size: int, device: torch.device | str) -> Tensor:
+        if self.config.initial_state == "bias":
+            return self._bias_state(batch_size, device)
+        return self._cached_rest_state().to(device).expand(batch_size, -1).clone()
+
+    @torch.no_grad()
+    def _calibrate_readout(self, speed_bias: Tensor, turn_bias: Tensor) -> None:
+        if self.config.initial_state == "rest":
+            mean = self._readout_mean(self._cached_rest_state())
+            speed_bias.add_(initial_speed_latent(self.config, self.contract) - mean[0, 0])
+            turn_bias.sub_(mean[0, 1])
 
     def describe(self) -> dict:
         return {
@@ -74,6 +143,7 @@ class _PolicyV2(nn.Module):
 
 
 class ConnectomePolicyV2(_PolicyV2):
+    @torch.inference_mode(False)
     def __init__(
         self,
         variant: str,
@@ -88,9 +158,18 @@ class ConnectomePolicyV2(_PolicyV2):
         self.core = ConnectomeCoreV2(graph, config, self.contract)
         self.projection = SeedProjection(graph, encoder.layout, enable_vision=variant != "O2")
         self.readout = DNReadoutV2(graph, config, self.contract)
+        self._calibrate_readout(self.readout.speed_bias, self.readout.turn_bias)
 
-    def initial_central_state(self, batch_size: int, device: torch.device | str) -> Tensor:
+    def _bias_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.core.initial_state(batch_size, device)
+
+    def _dynamics_parameters(self) -> Iterable[Tensor]:
+        yield from self.core.parameters()
+        yield from self.projection.parameters()
+
+    def _readout_mean(self, state: Tensor) -> Tensor:
+        rates = self.core.rates(state).index_select(1, self.readout.node_indices)
+        return self.readout(rates)
 
     def forward_code(self, code: Tensor, central_state: Tensor) -> PolicyStep:
         normalized = self.input_norm(code, self.encoder.enabled)
@@ -109,6 +188,8 @@ class ConnectomePolicyV2(_PolicyV2):
             **super().describe(),
             "steer_types": list(self.readout.steer_types),
             "speed_types": list(self.readout.speed_types),
+            "steer_body_ids": self.readout.steer_body_ids,
+            "speed_body_ids": self.readout.speed_body_ids,
             "graph": {
                 "nodes": self.graph.n_nodes,
                 "edges": self.graph.n_edges,
@@ -119,6 +200,7 @@ class ConnectomePolicyV2(_PolicyV2):
 
 
 class GRUPolicyV2(_PolicyV2):
+    @torch.inference_mode(False)
     def __init__(self, config: ModelConfigV2, encoder: SensoryEncoderV2, input_norm: InputNorm):
         super().__init__("GRU2", config, encoder, input_norm)
         if config.budget_target is None:
@@ -135,13 +217,20 @@ class GRUPolicyV2(_PolicyV2):
             self.readout.bias.copy_(
                 torch.tensor([initial_speed_latent(config, self.contract), 0.0])
             )
+            self._calibrate_readout(self.readout.bias[0], self.readout.bias[1])
 
-    def initial_central_state(self, batch_size: int, device: torch.device | str) -> Tensor:
+    def _bias_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.log_std.new_zeros((batch_size, self.central_state_size), device=device)
+
+    def _dynamics_parameters(self) -> Iterable[Tensor]:
+        return self.gru.parameters()
+
+    def _readout_mean(self, state: Tensor) -> Tensor:
+        return self.readout(state)
 
     def forward_code(self, code: Tensor, central_state: Tensor) -> PolicyStep:
         central_state = self.gru(self.input_norm(code), central_state)
-        return PolicyStep(self._distribution(self.readout(central_state)), central_state, {})
+        return PolicyStep(self._distribution(self._readout_mean(central_state)), central_state, {})
 
 
 def _gru_hidden_size(code_size: int, target: int) -> int:
@@ -202,7 +291,9 @@ def build_policy(
     elif variant == "ER2":
         graph = erdos_renyi_er2(graph, config.structure_seed)
     elif variant == "GRU2":
-        reference = ConnectomePolicyV2("VO2", config, encoder, input_norm, graph)
+        reference = ConnectomePolicyV2(
+            "VO2", replace(config, initial_state="bias"), encoder, input_norm, graph
+        )
         config = replace(config, budget_target=parameter_table(reference)["total"])
         return GRUPolicyV2(config, encoder, input_norm)
     return ConnectomePolicyV2(variant, config, encoder, input_norm, graph)

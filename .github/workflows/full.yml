@@ -32,4 +32,4 @@ jobs:
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv/bin/python --require-hashes -r requirements/ml-cpu-py312.lock
       - run: uv pip install --python .venv/bin/python --no-deps -e .
-      - run: .venv/bin/python -m pytest -m "not gpu and not ros" -n auto -q --durations=25
+      - run: .venv/bin/python -m pytest -m "not gpu and not ros and not bench" -n auto -q --durations=25

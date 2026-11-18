@@ -56,6 +56,7 @@ def synchronize(device: torch.device) -> None:
 
 @torch.no_grad()
 def inference(policy, args, device, generator):
+    policy.refresh_rest_state(full=True)
     sensory = policy.initial_sensory_state(args.batch, device)
     central = policy.initial_central_state(args.batch, device)
     obs = random_obs(policy, args.batch, device, generator)

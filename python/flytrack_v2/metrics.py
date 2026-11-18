@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 
 from flytrack_v2.artifacts import VARIANTS
-from flytrack_v2.contracts import MOTIONS, SCENARIOS, WORLDS
+from flytrack_v2.contracts import MOTIONS, SCENARIOS, SUCCESS_RULE, WORLDS
 
 EPISODE_FIELDS: dict[str, tuple[type, ...]] = {
     "run_id": (str,),
@@ -60,3 +60,25 @@ def validate_episode_record(record: Mapping) -> None:
             raise ValueError(f"{name} must be in [0, 1]")
     if (record["noise_scale"] is None) != (record["scenario"] != "noise"):
         raise ValueError("noise_scale is set exactly for the noise scenario")
+    # Cross-field consistency (#161 C5): the record must agree with SUCCESS_RULE and itself.
+    if record["steps"] < 1:
+        raise ValueError("steps must be at least 1")
+    if record["tracking_fraction"] > record["within_distance_fraction"] + 1e-12:
+        raise ValueError("tracking_fraction cannot exceed within_distance_fraction")
+    reaches = record["tracking_fraction"] >= SUCCESS_RULE.fraction - 1e-12
+    expected = reaches and not (SUCCESS_RULE.collision_invalidates and record["collision"])
+    if record["success"] != expected:
+        raise ValueError("success disagrees with tracking_fraction, collision and SUCCESS_RULE")
+    if record["scenario"] != "occlusion" and any(
+        record[name] is not None
+        for name in (
+            "occlusion_tracking_fraction",
+            "reacquisition_time_s",
+            "reacquisition_censored",
+        )
+    ):
+        raise ValueError("occlusion fields are null outside the occlusion scenario")
+    if record["reacquisition_censored"] and record["reacquisition_time_s"] is not None:
+        raise ValueError("a censored reacquisition has no time")
+    if record["reacquisition_time_s"] is not None and record["reacquisition_censored"] is not False:
+        raise ValueError("a reacquisition time needs reacquisition_censored = false")

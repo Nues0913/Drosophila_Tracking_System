@@ -173,6 +173,24 @@ def test_equal_differences_use_the_exact_sign_flip_value():
     assert tie.degenerate and tie.p_value == 1.0
 
 
+def test_equal_differences_with_float_residue_are_still_degenerate():
+    # #166 review: one more success per seed, k/100 against (k-1)/100, leaves residues ~1e-17
+    k = [51, 99, 55, 7, 35]
+    candidate = {seed: k[seed] / 100 for seed in range(5)}
+    reference = {seed: (k[seed] - 1) / 100 for seed in range(5)}
+    assert np.std([candidate[s] - reference[s] for s in range(5)]) > 0  # the residue is there
+    result = paired_comparison("G-B", candidate, reference, "superiority")
+    assert result.degenerate and result.p_value == pytest.approx(1 / 32)
+    at_margin = paired_comparison(
+        "G-C",
+        {seed: k[seed] / 100 for seed in range(5)},
+        {seed: (k[seed] + 5) / 100 for seed in range(5)},
+        "noninferiority",
+        margin=0.05,
+    )
+    assert at_margin.degenerate and at_margin.p_value == 1.0  # exactly -margin is not above it
+
+
 def test_superiority_refuses_a_margin():
     with pytest.raises(ValueError, match="gate_passes"):
         paired_comparison("G-B", {0: 0.6, 1: 0.7}, {0: 0.4, 1: 0.5}, "superiority", 0.10)

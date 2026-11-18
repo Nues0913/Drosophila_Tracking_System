@@ -80,9 +80,14 @@ class Comparison:
     p_value: float  # one-sided paired t test, H0: difference <= threshold
     p_holm: float | None = None
     passed: bool | None = None  # Holm-adjusted p < alpha, set by holm()
-    # All seed differences equal (standard error 0): p is the exact sign-flip value instead of
-    # a t value, and reports must say so (#155 review).
+    # All seed differences equal (within DEGENERATE_TOLERANCE): p is the exact sign-flip value
+    # instead of a t value and the t interval has zero width; reports must say so (#155, #166).
     degenerate: bool = False
+
+
+# Seed differences closer than this count as equal. Success rates step by 1/episodes (0.01),
+# while k/100 - (k-1)/100 leaves float residues near 1e-17 (#166 review: 70% of such cases).
+DEGENERATE_TOLERANCE = 1e-9
 
 
 def comparison_rng(protocol_seed: int, name: str) -> np.random.Generator:
@@ -121,11 +126,12 @@ def paired_comparison(
     threshold = 0.0 if kind == "superiority" else -float(margin)
     n, mean = len(differences), float(differences.mean())
     se = float(differences.std(ddof=1)) / math.sqrt(n)
-    degenerate = se == 0
+    degenerate = float(np.ptp(differences)) <= DEGENERATE_TOLERANCE
     if degenerate:
         # Exact one-sided sign-flip test: n equal differences above the threshold reach
         # p = 1 / 2^n (1/32 for five seeds), not 0.
-        p_value, low, high = (0.5**n if mean > threshold else 1.0), mean, mean
+        above = mean - threshold > DEGENERATE_TOLERANCE
+        p_value, low, high = (0.5**n if above else 1.0), mean, mean
     else:
         p_value = float(scipy_stats.t.sf((mean - threshold) / se, n - 1))
         half = float(scipy_stats.t.ppf(1 - (1 - confidence) / 2, n - 1)) * se

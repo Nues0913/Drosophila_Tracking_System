@@ -16,6 +16,7 @@ from flytrack_core.contracts import SensorContract
 from flytrack_sim.env import FlyTrackEnv
 from flytrack_v2.contracts import PRIVILEGED_KEYS, SensorContractV2, validate_obs
 from flytrack_v2.interfaces import EPISODE_INFO_KEYS, STEP_INFO_KEYS
+from flytrack_v2.world.teacher import PrivilegedTeacher
 from flytrack_v2.world.v1compat import V1CompatWorld, track_v2_reward
 from flytrack_v2.world.vision import BatchedRetina
 
@@ -67,6 +68,8 @@ def _compare(contracts, motion, steps, options, scenario_configs, teacher=True, 
         occlusion_view="blackout",  # v1's black image during occlusion (#161 C2)
     )
     world.reset(episode_seeds=torch.tensor(seeds))
+    teacher = PrivilegedTeacher(c1, options.get("following_distance_m", 1.0))
+    state = teacher.initial_state(len(SCENARIOS), "cpu")
     infos = [env.reset(seed=seed)[1] for env, seed in zip(envs, seeds, strict=True)]
     rng = np.random.default_rng(5)
     alive = np.ones(len(envs), bool)
@@ -82,6 +85,7 @@ def _compare(contracts, motion, steps, options, scenario_configs, teacher=True, 
             action = np.c_[rng.uniform(0, 0.5, 4), rng.uniform(-1.5, 1.5, 4)].astype(np.float32)
         result = world.step(torch.as_tensor(action))
         obs, privileged = result.final_obs, result.final_privileged
+        label, _ = teacher.act(privileged, obs, privileged["agent_velocity"], state)
         for j, env in enumerate(envs):
             if not alive[j]:
                 continue
@@ -91,6 +95,7 @@ def _compare(contracts, motion, steps, options, scenario_configs, teacher=True, 
             worst["flips"] += int((error > VISION_TOLERANCE).sum())
             worst["values"] += error.size
             record("odor", np.abs(obs["odor"][j].numpy() - o1["odor"]).max())
+            record("teacher", np.abs(label[j].numpy() - infos[j]["teacher_action"]).max())
             record("valid", np.abs(obs["valid"][j, :3].numpy() - o1["valid"]).max())
             record("reward", abs(float(result.reward[j]) - reward))
             record(
@@ -137,7 +142,7 @@ def _compare(contracts, motion, steps, options, scenario_configs, teacher=True, 
 def _assert_parity(worst):
     assert worst["vision"] <= SUBRAY_SHARE
     assert worst["flips"] <= 1e-5 * worst["values"]
-    for name in ("odor", "valid", "pose", "target", "flags"):
+    for name in ("odor", "valid", "pose", "target", "flags", "teacher"):
         assert worst[name] <= TOLERANCE, (name, worst[name])
     assert worst["reward"] <= 1e-6  # the interface returns float32 rewards
     for name in ("success", "tracking", "steps"):

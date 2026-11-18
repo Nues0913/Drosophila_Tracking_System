@@ -137,8 +137,8 @@ def test_world_launch_passes_motion_to_both_world_nodes(monkeypatch, tmp_path):
     simulator = next(a for a in actions if isinstance(a, OpaqueFunction))
     gz_args = next(a for a in actions if a.args and a.args[0] == "gz_args").kwargs["default_value"]
 
-    def run(check, args=gz_args):
-        values = {"gz_args": args, "contact_check": check}
+    def run(check, args=gz_args, demo="false"):
+        values = {"gz_args": args, "contact_check": check, "demo_camera": demo}
         context = SimpleNamespace(perform_substitution=lambda config: values[config.name])
         return simulator.kwargs["function"](context, *simulator.kwargs["args"])
 
@@ -149,6 +149,17 @@ def test_world_launch_passes_motion_to_both_world_nodes(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(ROOT / "ros2_ws/src/flytrack_world"))
     with pytest.raises(RuntimeError):
         run("true", "-r -s other.sdf")
+    # #123: demo_camera defaults to false (above), cannot combine with contact_check, and needs
+    # the formal world.
+    demo = next(a for a in actions if a.args and a.args[0] == "demo_camera")
+    assert demo.kwargs["default_value"] == "false"
+    for check, args, value in (
+        ("false", gz_args, "maybe"),
+        ("true", gz_args, "true"),
+        ("false", "-r -s other.sdf", "true"),
+    ):
+        with pytest.raises(RuntimeError):
+            run(check, args, value)
 
 
 def test_compose_passes_target_motion_with_curved_default():

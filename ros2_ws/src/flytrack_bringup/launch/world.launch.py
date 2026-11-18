@@ -11,13 +11,66 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 CONTACT_WORLD = Path("/tmp/flytrack_contact/tracking_contact.sdf")
+DEMO_WORLD = Path("/tmp/flytrack_demo/tracking_demo.sdf")
+
+
+def demo_actions(context, share, gz_args):
+    """With demo_camera:=true, the derived world with two demo cameras and their recorder (#123)."""
+    from flytrack_world.demo_world import CAMERAS, camera_topic, write_demo_world
+
+    world = share / "worlds/tracking.sdf"
+    if str(world) not in gz_args:
+        raise RuntimeError("demo_camera needs gz_args that load the formal tracking.sdf")
+    camera = {
+        "width": int(context.perform_substitution(LaunchConfiguration("demo_camera_width"))),
+        "height": int(context.perform_substitution(LaunchConfiguration("demo_camera_height"))),
+        "rate": float(context.perform_substitution(LaunchConfiguration("demo_camera_rate"))),
+    }
+    derived = write_demo_world(
+        world,
+        share / "models/agent/model.sdf",
+        share / "models/target/model.sdf",
+        DEMO_WORLD,
+        **camera,
+    )
+    topics = [camera_topic(name) for name in CAMERAS]
+    actions = [
+        Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            name="demo_bridge",
+            arguments=[f"{topic}@sensor_msgs/msg/Image[gz.msgs.Image" for topic in topics],
+            parameters=[{"use_sim_time": True}],
+            output="screen",
+        ),
+        Node(
+            package="flytrack_world",
+            executable="demo_recorder",
+            parameters=[
+                {
+                    "use_sim_time": True,
+                    "topics": topics,
+                    "output_dir": LaunchConfiguration("demo_output_dir"),
+                }
+            ],
+            output="screen",
+        ),
+    ]
+    return gz_args.replace(str(world), str(derived)), actions
 
 
 def simulator(context, share, gz_share):
     """Gazebo itself; with contact_check:=true, the derived world and its contact nodes (#116)."""
     gz_args = context.perform_substitution(LaunchConfiguration("gz_args"))
     enabled = context.perform_substitution(LaunchConfiguration("contact_check")).lower()
+    demo = context.perform_substitution(LaunchConfiguration("demo_camera")).lower()
     actions = []
+    if demo == "true":
+        if enabled == "true":
+            raise RuntimeError("demo_camera and contact_check cannot both be true")
+        gz_args, actions = demo_actions(context, share, gz_args)
+    elif demo != "false":
+        raise RuntimeError("demo_camera must be true or false")
     if enabled == "true":
         import xml.etree.ElementTree as ET
 
@@ -110,6 +163,13 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "contact_check", default_value="false", choices=["true", "false"]
             ),
+            # #123 V2: two demo cameras (follow, overview) and their recorder, off by default
+            # (formal world unchanged; the policy cameras do not render the demo-only visuals).
+            DeclareLaunchArgument("demo_camera", default_value="false", choices=["true", "false"]),
+            DeclareLaunchArgument("demo_camera_width", default_value="640"),
+            DeclareLaunchArgument("demo_camera_height", default_value="360"),
+            DeclareLaunchArgument("demo_camera_rate", default_value="15"),
+            DeclareLaunchArgument("demo_output_dir", default_value="/workspace/runs/demo_frames"),
             OpaqueFunction(function=simulator, args=[share, gz_share]),
             Node(
                 package="ros_gz_bridge",

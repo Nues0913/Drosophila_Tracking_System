@@ -1,0 +1,47 @@
+# colcon build and test in the real ROS image (plan 4.1, #131). Not a required check: it runs
+# only when the ROS side, the containers or the Python packages the nodes import change.
+name: ros
+
+on:
+  pull_request:
+    branches: [v2, main]
+    paths:
+      - "ros2_ws/**"
+      - "docker/**"
+      - "compose*.yaml"
+      - "python/flytrack_core/**"
+      - "python/flytrack_v2/**"
+      - "pyproject.toml"
+      - ".github/workflows/ros.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ros-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  colcon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space for the ROS desktop image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ros.Dockerfile
+          tags: flytrack-ros:ci
+          load: true
+          cache-from: type=gha,scope=ros
+          cache-to: type=gha,mode=max,scope=ros
+      - name: colcon test
+        run: >-
+          docker run --rm --entrypoint bash flytrack-ros:ci -c
+          '. /opt/ros/lyrical/setup.sh && cd ros2_ws && . install/setup.sh &&
+          python /usr/bin/colcon test --event-handlers console_direct+ &&
+          python /usr/bin/colcon test-result --verbose'

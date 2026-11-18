@@ -5,6 +5,13 @@ per update, so the hot loop never synchronises (plan 0.2). A tracked value that 
 or a watched value above its threshold for too many consecutive updates, calls the trainer's
 on_failure hook (save the batch and a checkpoint there) and raises EngineeringFailure, whose
 exit code 3 marks an engineering failure for the experiment runner.
+
+Two duties stay with the trainer (#150 review):
+- check that the gradient norm is finite before optimizer.step() and skip the step if it is
+  not; the monitor sees the update afterwards, so on_failure must save the last good
+  checkpoint, never the parameters a non-finite step just wrote;
+- on resume, pass the checkpoint's env step count as start_env_steps. Watch streaks are not
+  checkpointed and restart from 0 after a resume.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ class RunMonitor:
         finite_keys: tuple[str, ...] = ("loss", "grad_norm"),
         on_failure: Callable[[str, dict], None] | None = None,
         tensorboard: bool = True,
+        start_env_steps: int = 0,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +64,9 @@ class RunMonitor:
         self._counts: dict[str, Tensor] = {}
         self._watches: dict[str, _Watch] = {}
         self._start = self._last_time = time.perf_counter()
-        self._last_steps = 0
+        # A resumed run starts counting from its checkpoint, or the first throughput would
+        # divide every step so far by the seconds since this restart.
+        self._last_steps = int(start_env_steps)
 
     def accumulate(self, **values: Tensor) -> None:
         """Add per-step values of any shape; log_update() reports their mean. No host sync."""

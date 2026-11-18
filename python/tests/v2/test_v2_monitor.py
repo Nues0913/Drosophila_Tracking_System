@@ -53,3 +53,14 @@ def test_watch_rejects_bad_settings(tmp_path):
     with pytest.raises(ValueError):
         monitor.watch("approx_kl", threshold=0.1, patience=0)
     monitor.close()
+
+
+def test_resumed_run_measures_throughput_from_its_checkpoint(tmp_path, monkeypatch):
+    import flytrack_v2.monitor as module
+
+    clock = iter([100.0, 102.0])  # construction, then the first update two seconds later
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(clock))
+    monitor = RunMonitor(tmp_path, tensorboard=False, start_env_steps=1_000_000)
+    record = monitor.log_update(31, 1_000_512)
+    monitor.close()
+    assert record["env_steps_per_s"] == pytest.approx(256.0)  # 512 new steps in 2 s

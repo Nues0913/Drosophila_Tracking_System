@@ -20,7 +20,7 @@ v1's numpy streams for parity tests. Either way it depends on the episode seed o
 from __future__ import annotations
 
 import math
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Any
 
 import torch
@@ -35,7 +35,9 @@ from flytrack_v2.interfaces import StepResult
 from flytrack_v2.world import kernels, rng
 from flytrack_v2.world.draws import HashDraws, LayoutRanges, V1Draws
 from flytrack_v2.world.vision import BatchedRetina, CameraGeometry
+from flytrack_v2.world.wind import WindConfig, antenna
 
+WIND_STREAM, WIND_SENSE_STREAM, WIND_EPISODE_STREAM = 9, 10, 11  # hash streams (wind world)
 MAX_SUBSTEPS = 7  # check_substeps verifies it; v1's schedule uses at most 6
 MAX_TICKS = 6  # plume ticks (integration_dt 0.01) per 0.05 s control step, with float slack
 MAX_WANDER_STEPS = 7  # wander path points added per control step
@@ -96,6 +98,9 @@ class V1CompatWorld:
     - occlusion_view (#161 C2): "hide_target" renders the scene without the target while the
       scenario occludes it; "blackout" is v1's black image (parity tests, and v1 actors that
       were trained on it). valid stays 1 either way: 0 only means a lost reading.
+    - wind: None for ``v1compat`` (v1's fixed 0.15 m/s plume drift, no wind sense), or a
+      WindConfig for the ``wind`` world (#133, wind.py): a meandering wind, a filament plume
+      advected by it, and the antenna sense in ``wind`` and ``valid[:, 3]``.
     - fused, graph: on CUDA with hash draws, the hot loops run as fused kernels (kernels.py)
       and each step replays two CUDA graphs (physics, then the automatic reset when a row
       ended; one host sync decides). fused=False keeps the eager torch reference on CUDA.
@@ -117,6 +122,7 @@ class V1CompatWorld:
         fused: bool | None = None,
         reward: str = "track_v2",
         occlusion_view: str = "hide_target",
+        wind: WindConfig | dict | None = None,
     ):
         if reward not in ("track_v2", "v1"):
             raise ValueError("reward must be track_v2 or v1")
@@ -185,6 +191,23 @@ class V1CompatWorld:
             }
         )
         self.plume = make_plume(reference.plume_model, reference.plume_config, 0).config
+        self.wind = WindConfig.from_dict(wind) if isinstance(wind, dict) else wind
+        if self.wind is not None:
+            if draws != "hash":
+                raise ValueError("the wind world has no v1 counterpart: use hash draws")
+            if contract.wind_hz != contract.odor_hz:
+                raise ValueError(
+                    "the wind world samples wind on the odor clock (wind_hz = odor_hz)"
+                )
+            w = self.wind
+            self.plume = replace(
+                self.plume, emission_hz=w.emission_hz, lifetime_s=w.lifetime_s,
+                initial_sigma_m=w.initial_sigma_m, diffusion_m2_s=w.diffusion_m2_s,
+                turbulent_diffusion_m2_s=w.turbulent_diffusion_m2_s, puff_mass=w.puff_mass,
+                # PlumeConfig needs a finite decay; exp(-age / 1e30) is exactly 1 in float64.
+                decay_tau_s=w.decay_tau_s if math.isfinite(w.decay_tau_s) else 1e30,
+                wind_x=0.0, wind_y=0.0,
+            )  # fmt: skip
         self.layout = reference.layout
         ranges = LayoutRanges(
             self.layout,
@@ -214,12 +237,15 @@ class V1CompatWorld:
         # Puff slots: lifetime x emission rate per source, plus margin.
         sources = 2 if "conflict" in names else 1
         self.puff_capacity = sources * (int(self.plume.lifetime_s * self.plume.emission_hz) + 3)
+        if self.wind is not None:
+            # At most `capacity` filaments per environment; the ring drops the oldest.
+            self.puff_capacity = min(self.puff_capacity, self.wind.capacity)
         self.sources = sources
         self.env_index = torch.arange(self.num_envs, device=self.device)
         self._path_slots = torch.arange(PATH_SLOTS, device=self.device)
         self._puff_slots = torch.arange(self.puff_capacity, device=self.device)
         self._event_slots = torch.arange(max(VISION_SLOTS, ODOR_SLOTS), device=self.device)
-        self._wind = torch.tensor(
+        self._plume_wind = torch.tensor(
             [self.plume.wind_x, self.plume.wind_y], dtype=torch.float64, device=self.device
         )
         self._substeps = torch.arange(MAX_SUBSTEPS, device=self.device)
@@ -412,14 +438,17 @@ class V1CompatWorld:
         """One PuffPlume tick for rows in ``tick``; ``target_xy`` is the target at the tick time.
 
         v1's order: age, advect, turbulence (for every held puff), drop puffs past their
-        lifetime, then emit at the sources (the target, then the decoy in conflict).
+        lifetime, then emit at the sources (the target, then the decoy in conflict). In the
+        wind world the wind direction first takes its OU step for this tick.
         """
         p = self.plume
         s["tick"] = torch.where(tick, s["tick"] + 1, s["tick"])
+        if self.wind is not None:
+            self._wind_tick(s, tick)
         if self.fused:
             x, y, ages, s["puff_seq"] = kernels.plume_tick(
                 s["puff_xy"][..., 0], s["puff_xy"][..., 1], s["puff_age"], s["puff_seq"],
-                tick, s["seed"], s["tick"], p,
+                tick, s["seed"], s["tick"], s["wind"], p,
             )  # fmt: skip
             centers = torch.stack((x, y), -1)
             self._emit(s, tick, target_xy, centers, ages)
@@ -427,7 +456,7 @@ class V1CompatWorld:
         held = tick[:, None] & (s["puff_seq"] >= 0)
         ages = torch.where(held, s["puff_age"] + p.integration_dt, s["puff_age"])
         centers = torch.where(
-            held[..., None], s["puff_xy"] + self._wind * p.integration_dt, s["puff_xy"]
+            held[..., None], s["puff_xy"] + s["wind"][:, None] * p.integration_dt, s["puff_xy"]
         )
         if p.turbulent_diffusion_m2_s:
             sequence = torch.where(held, s["puff_seq"], -1)
@@ -437,6 +466,19 @@ class V1CompatWorld:
         dead = held & (ages > p.lifetime_s)
         s["puff_seq"] = torch.where(dead, -1, s["puff_seq"])
         self._emit(s, tick, target_xy, centers, ages)
+
+    def _wind_tick(self, s: dict[str, Tensor], tick: Tensor) -> None:
+        """The wind direction's OU step for rows in ``tick`` (wind world)."""
+        w, dt = self.wind, self.plume.integration_dt
+        decay = math.exp(-dt / w.direction_tau_s)
+        sigma = math.radians(w.direction_std_deg) * math.sqrt(1 - decay**2)
+        z = rng.draw(s["seed"], WIND_STREAM, s["tick"][:, None], 0, True)[:, 0]
+        s["wind_eta"] = torch.where(tick, decay * s["wind_eta"] + sigma * z, s["wind_eta"])
+        s["wind"] = self._wind_vector(s)
+
+    def _wind_vector(self, s: dict[str, Tensor]) -> Tensor:
+        angle = s["wind_dir"] + s["wind_eta"]
+        return self.wind.speed_m_s * torch.stack((torch.cos(angle), torch.sin(angle)), -1)
 
     def _emit(self, s, tick: Tensor, target_xy: Tensor, centers: Tensor, ages: Tensor) -> None:
         """PuffPlume emission at the tick: one puff per source once the credit reaches 1."""
@@ -549,6 +591,35 @@ class V1CompatWorld:
         s["odor"] = torch.where(chosen[:, None], value, s["odor"])
         s["stamps"][:, 2] = torch.where(chosen, time, s["stamps"][:, 2])
 
+    def _wind_events(self, s, has: Tensor, times: Tensor, poses: Tensor, ticks: Tensor):
+        """The antenna samples of this step, [B,E] in time order, on the odor clock: draw,
+        and return the last valid one (whether any, time, heading, plume tick, noise).
+
+        Dropout is the noise scenario's odor dropout; the antenna noise is always on."""
+        events = s["wind_events"][:, None] + self._event_slots[: has.shape[1]]
+        p = self.noise["odor_dropout"][:, None]
+        dropped = has & (p > 0) & (rng.draw(s["seed"], WIND_SENSE_STREAM, events, 0, False) < p)
+        sub = 1 + torch.arange(2, device=self.device)
+        z = rng.draw(s["seed"], WIND_SENSE_STREAM, events[..., None], sub, True)
+        keep = has & ~dropped
+        last = (keep.long() * (self._event_slots[: has.shape[1]] + 1)).max(1).values - 1
+        k = last.clamp(min=0)
+        s["wind_events"] = s["wind_events"] + has.sum(1)
+        return (
+            last >= 0,
+            times.gather(1, k[:, None])[:, 0],
+            poses.gather(1, k[:, None, None].expand(-1, 1, 3))[:, 0, 2],
+            ticks.gather(1, k[:, None])[:, 0],
+            z.gather(1, k[:, None, None].expand(-1, 1, 2))[:, 0],
+        )
+
+    def _apply_wind(self, s, chosen, time, heading, tick, z, wind: Tensor) -> None:
+        c = self.contract
+        reading = antenna(wind, heading, c.antenna_angle_deg, c.wind_reference_m_s)
+        reading = (reading + self.wind.antenna_noise_std * z).to(torch.float32)
+        s["wind_obs"] = torch.where(chosen[:, None], reading, s["wind_obs"])
+        s["stamps"][:, 3] = torch.where(chosen, time, s["stamps"][:, 3])
+
     def _render_vision(self, s: dict[str, Tensor], rows: Tensor | None = None) -> None:
         """Render the recorded samples (``rows``: an index subset, or all rows)."""
         index = rows if rows is not None else self.env_index
@@ -599,12 +670,11 @@ class V1CompatWorld:
 
     def _observation(self, s: dict[str, Tensor]) -> dict[str, Tensor]:
         valid = (s["time"][:, None] - s["stamps"] <= self.contract.watchdog_s).to(torch.float32)
-        zeros = torch.zeros(self.num_envs, 1, dtype=torch.float32, device=self.device)
         return {
             "vision": s["vision"] * valid[:, :2, None],
             "odor": s["odor"] * valid[:, 2:3],
-            "wind": torch.zeros(self.num_envs, 2, dtype=torch.float32, device=self.device),
-            "valid": torch.cat((valid, zeros), 1),
+            "wind": s["wind_obs"] * valid[:, 3:4],  # never sampled in v1compat: valid is 0
+            "valid": valid,
         }
 
     # ----------------------------------------------------------------------------------
@@ -647,11 +717,16 @@ class V1CompatWorld:
             "puff_seq": z(b, c, dtype=torch.int64) - 1,
             "vision": z(b, 2, n, dtype=torch.float32),
             "odor": z(b, 2, dtype=torch.float32),
-            "stamps": z(b, 3) - math.inf,
+            "stamps": z(b, 4) - math.inf,
+            "wind": z(b, 2),  # world wind velocity (v1compat: the plume's fixed drift)
+            "wind_dir": z(b),
+            "wind_eta": z(b),
+            "wind_obs": z(b, 2, dtype=torch.float32),
             "next_vision": z(b),
             "next_odor": z(b),
             "vision_events": z(b, dtype=torch.int64),
             "odor_events": z(b, dtype=torch.int64),
+            "wind_events": z(b, dtype=torch.int64),
             "eye_pose": z(b, 2, 3),
             "eye_target": z(b, 2, 2),
             "eye_blackout": z(b, 2, dtype=torch.bool),
@@ -694,6 +769,8 @@ class V1CompatWorld:
             seeds = rng.episode_seed(self.seed, self.env_index, self.episode_index)
         else:
             seeds = episode_seeds.to(self.device, torch.int64)
+            if bool(((seeds < 0) | (seeds >= 1 << rng.SEED_BITS)).any()):
+                raise ValueError("episode seeds must be in [0, 2**52)")
         fresh = self._new_state()
         for name, value in fresh.items():
             shape = (self.num_envs,) + (1,) * (value.ndim - 1)
@@ -748,6 +825,15 @@ class V1CompatWorld:
         s["previous_occluded"] = torch.where(
             mask, self._occluded(s["time"]), s["previous_occluded"]
         )
+        if self.wind is None:  # v1's plume drifts with a fixed wind
+            s["wind"] = torch.where(mask[:, None], self._plume_wind, s["wind"])
+        else:  # a direction per episode, plus its stationary OU meander
+            u = rng.draw(s["seed"], WIND_EPISODE_STREAM, self._event_slots[None, :2], 0, False)
+            z = rng.draw(s["seed"], WIND_EPISODE_STREAM, self._event_slots[None, :1], 1, True)
+            s["wind_dir"] = torch.where(mask, (2 * u[:, 0] - 1) * math.pi, s["wind_dir"])
+            eta = math.radians(self.wind.direction_std_deg) * z[:, 0]
+            s["wind_eta"] = torch.where(mask, eta, s["wind_eta"])
+            s["wind"] = torch.where(mask[:, None], self._wind_vector(s), s["wind"])
         # Sensors at t = 0 (FlyTrackEnv.reset); the plume is still empty.
         one = mask[:, None]
         self._vision_events(
@@ -760,6 +846,11 @@ class V1CompatWorld:
             s, one, s["time"][:, None], s["pose"][:, None], s["tick"][:, None]
         )
         self._apply_odor(s, chosen, time, self._concentration(s, points), z)
+        if self.wind is not None:
+            sample = self._wind_events(
+                s, one, s["time"][:, None], s["pose"][:, None], s["tick"][:, None]
+            )
+            self._apply_wind(s, *sample, s["wind"])
         s["next_odor"] = torch.where(
             mask, s["next_odor"] + 1 / self.contract.odor_hz, s["next_odor"]
         )
@@ -798,7 +889,11 @@ class V1CompatWorld:
             "target_velocity": s["target_velocity"].to(f, copy=True),
             "occluded": occluded,
             "target_visible": in_view & ~occluded,
-            "wind_velocity": torch.zeros(self.num_envs, 2, dtype=f, device=self.device),
+            "wind_velocity": (
+                s["wind"].to(f, copy=True)
+                if self.wind is not None
+                else torch.zeros(self.num_envs, 2, dtype=f, device=self.device)
+            ),
             "decoy_active": self.is_conflict.clone(),
             "decoy_position": torch.where(self.is_conflict[:, None], self.decoy, 0.0).to(f),
             "time_s": s["time"].to(f, copy=True),
@@ -890,7 +985,7 @@ class V1CompatWorld:
         s = self._state
         dt_control = self.contract.control_dt
         applied = self._clip(action, s["action"])
-        stale = ~(self._observation(s)["valid"][:, :3] > 0).any(-1)
+        stale = ~(self._observation(s)["valid"] > 0).any(-1)  # all four channels lost
         applied = torch.where(stale[:, None], 0.0, applied)
         # v1 unpacks float32 scalars, so v / omega is a float32 division.
         straight = applied[:, 1].abs() < 1e-8
@@ -975,6 +1070,13 @@ class V1CompatWorld:
             s, has, times.gather(1, slot), poses.gather(1, slot[..., None].expand(-1, -1, 3)),
             desired.gather(1, slot),
         )  # fmt: skip
+        if self.wind is not None:  # the antennae share the odor clock (wind_hz = odor_hz)
+            wind_sample = self._wind_events(
+                s, has, times.gather(1, slot), poses.gather(1, slot[..., None].expand(-1, -1, 3)),
+                desired.gather(1, slot),
+            )  # fmt: skip
+            wind_tick = wind_sample[3]
+            wind_at = s["wind"]  # replaced below once the plume reaches wind_tick
         concentration = torch.zeros(self.num_envs, 2, dtype=torch.float32, device=self.device)
         read = chosen & (odor_tick == s["tick"])
         concentration = torch.where(read[:, None], self._concentration(s, points), concentration)
@@ -991,7 +1093,13 @@ class V1CompatWorld:
             concentration = torch.where(
                 read[:, None], self._concentration(s, points), concentration
             )
+            if self.wind is not None:
+                wind_at = torch.where(
+                    (tick & (wind_tick == s["tick"]))[:, None], s["wind"], wind_at
+                )
         self._apply_odor(s, chosen, odor_time, concentration, odor_z)
+        if self.wind is not None:
+            self._apply_wind(s, *wind_sample, wind_at)
         # Vision: the step's samples in order; the last valid one per eye is rendered.
         has, slot = self._event_slots_of(v_due, VISION_SLOTS)
         self._vision_events(

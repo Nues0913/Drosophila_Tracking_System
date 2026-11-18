@@ -1,4 +1,4 @@
-"""World audit of v1compat for every scenario and target motion (#132; plan 3.3).
+"""World audit for every world, scenario and target motion (#132, #133; plan 3.3).
 
 ``python scripts/v2/audit_world.py --host-label 4070`` runs flytrack_v2.world.audit for the
 four scenarios and both motions (100 episodes each by default) and writes one JSON to
@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "python"))
 
 from flytrack_v2.contracts import SCENARIOS, SensorContractV2  # noqa: E402
 from flytrack_v2.world.audit import audit_world  # noqa: E402
+from flytrack_v2.world.wind import WindConfig  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--worlds", default="v1compat,wind")
+    parser.add_argument("--wind-speed", type=float, default=WindConfig().speed_m_s)
     args = parser.parse_args(argv)
     contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
     configs = {
@@ -37,25 +40,33 @@ def main(argv: list[str] | None = None) -> int:
         for name in SCENARIOS
     }
     cells = []
-    for motion in ("curved", "wander"):
-        for scenario in SCENARIOS:
-            report = audit_world(
-                contract,
-                scenario,
-                {"episode_seconds": 60, "target_motion": motion},
-                episodes=args.episodes,
-                device=args.device,
-                scenario_configs=configs,
-            )
-            report["target_motion"] = motion
-            best = max(report["blind_policies"].items(), key=lambda kv: kv[1]["success_rate"])
-            print(
-                f"{motion:7s} {scenario:9s} passed={report['passed']} "
-                f"teacher={report['teacher']['success_rate']:.2f} "
-                f"best blind {best[0]}={best[1]['success_rate']:.2f}",
-                flush=True,
-            )
-            cells.append(report)
+    for world_kind in args.worlds.split(","):
+        for motion in ("curved", "wander"):
+            for scenario in SCENARIOS:
+                wind = WindConfig(speed_m_s=args.wind_speed) if world_kind == "wind" else None
+                report = audit_world(
+                    contract,
+                    scenario,
+                    {"episode_seconds": 60, "target_motion": motion},
+                    episodes=args.episodes,
+                    device=args.device,
+                    scenario_configs=configs,
+                    wind=wind,
+                )
+                report["target_motion"] = motion
+                report["world"] = world_kind
+                if wind is not None:
+                    report["wind"] = vars(wind)
+                best = max(report["blind_policies"].items(), key=lambda kv: kv[1]["success_rate"])
+                odor = report.get("occlusion_teachers", {})
+                extra = "".join(f" {k}={v['success_rate']:.2f}" for k, v in odor.items())
+                print(
+                    f"{world_kind:8s} {motion:7s} {scenario:9s} passed={report['passed']} "
+                    f"teacher={report['teacher']['success_rate']:.2f} "
+                    f"best blind {best[0]}={best[1]['success_rate']:.2f}{extra}",
+                    flush=True,
+                )
+                cells.append(report)
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True
     ).stdout.strip()

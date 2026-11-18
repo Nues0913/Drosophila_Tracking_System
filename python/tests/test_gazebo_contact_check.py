@@ -54,7 +54,7 @@ def test_contact_world_only_inlines_the_agent_and_adds_sensors_and_the_system():
     # The inlined agent is the formal model plus contact sensors, nothing else.
     assert canonical(strip_contact(models[0])) == canonical(agent)
     links = {name: collisions for name, collisions in world_mod.contact_links(agent)}
-    assert set(links) == {"base_link", "left_wheel", "right_wheel", "caster"}
+    assert set(links) == {"base_link", "left_wheel", "right_wheel", "caster", "front_caster"}
     for link in models[0].findall("link"):
         sensors = [s for s in link.findall("sensor") if s.get("type") == "contact"]
         assert [s.findtext("contact/collision") for s in sensors] == links[link.get("name")]

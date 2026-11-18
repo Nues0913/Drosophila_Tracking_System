@@ -2,6 +2,11 @@
 
 v1 cards carry no spec_version; validate_model_card refuses them, so v1 weights cannot be
 loaded onto a v2 graph or readout (and the v2 loaders refuse to mix the two).
+
+An artifact must rebuild its policy without the training config (#161 C4): model_config holds
+the fully resolved model settings (readout type lists, gain parameterization, structure seed,
+input mapping), and graph.npz is the graph the policy actually ran on. For RW2 and ER2 that is
+the rewired graph, so a loader never rewires again.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ _REQUIRED = {
     "neural_dt": float,
     "n_ommatidia": int,
     "action_limits": dict,  # v_max, omega_max
+    "model_config": dict,  # fully resolved model settings; rebuilds the policy with graph.npz
     "provenance": dict,  # git_sha, dirty, config_sha256, stages
 }
 _NESTED = {
@@ -60,6 +66,11 @@ def validate_model_card(card: Mapping) -> None:
             raise ValueError(f"Model card {key} is missing {missing}")
     if card["variant"] not in VARIANTS:
         raise ValueError(f"Unknown v2 variant {card['variant']}; choose {VARIANTS}")
+    config = card["model_config"]
+    if config.get("variant") != card["variant"]:
+        raise ValueError("model_config.variant must equal the card's variant")
+    if card["variant"] in ("RW2", "ER2") and not isinstance(config.get("structure_seed"), int):
+        raise ValueError(f"{card['variant']} model_config needs the integer structure_seed")
     expected = set(required_files(card["variant"])) - {"model_card.json", "SHA256SUMS"}
     if set(card["files"]) != expected:
         raise ValueError(f"Model card files must list exactly {sorted(expected)}")

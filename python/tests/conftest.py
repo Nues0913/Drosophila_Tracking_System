@@ -17,5 +17,6 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="needs CUDA (gpu marker)")
     for item in items:
-        if "gpu" in item.keywords:
+        # The marker only: keywords also hold test names and parametrize ids such as "gpu".
+        if item.get_closest_marker("gpu"):
             item.add_marker(skip)

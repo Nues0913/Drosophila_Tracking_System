@@ -312,3 +312,12 @@ def test_float64_gradcheck():
         return functional_call(core, dict(zip(params, weights, strict=True)), (voltage, drive))
 
     assert torch.autograd.gradcheck(fn, (state, external, *params.values()))
+
+
+def test_er2_keeps_the_signed_edge_counts_of_the_original_graph():
+    """#161 B2: random endpoints made the excitatory-source edge share follow the node signs."""
+    for graph in (small_graph(), GraphV2.load(ROOT / "data/subgraphs/v2_main/graph.npz")):
+        random = erdos_renyi_er2(graph, 0)
+        assert int((random.sign[random.pre] > 0).sum()) == int((graph.sign[graph.pre] > 0).sum())
+        _check_unique_edges(random)
+        assert not np.any(random.pre == random.post)

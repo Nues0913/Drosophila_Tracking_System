@@ -154,6 +154,14 @@
   - 從最新的 `main` 開 `fix/<issue>-<主題>` 或 `feat/<issue>-<主題>`。
   - 探索用 `exp/<issue>-<主題>`。
   - 合併後刪除自己建立的分支。
+- **版本（2026-11-18 起，[#127](https://github.com/Nues0913/Drosophila_Tracking_System/issues/127)）**：
+  - **v1**：交付時的狀態是 tag `v1-final`（main `4304571`），tag 不移動；之後的 v1 修正（例如 #126）只在 `release/v1` 和 `main`。正式矩陣的凍結點仍是 tag `formal-v1`（`35432c3`）。
+  - **v2 的工作**：從 `v2` 開 `feat/v2-<issue>-<主題>`、`fix/v2-<issue>-<主題>`、`exp/v2-<issue>-<主題>`，PR 的 base 設成 `v2`，不直接進 `main`。審查規則和其他 PR 相同。
+  - **v1 的修正**：v2 合回 `main` 之前照舊進 `main`，PM 再把 `release/v1` fast-forward 到 `main`；v2 合回 `main` 之後，改成 PR 進 `release/v1`。
+  - **同步**：PM 定期把 `main` 合進 `v2`，用 merge，不 rebase、不 force push；反方向不合。v2 通過事先登記的門檻後，才整條合回 `main`，並打 tag `formal-v2`。
+  - **產物**：v2 的 release 叫 `research-v2-*`，正式結果叫 `formal-v2`；issue 和 PR 用 label `version:v1`／`version:v2` 區分。v2 的設定放 `configs/v2/`、文件放 `docs/v2/`，model card 用 `spec_version` 區分版本（v2 的第一個實作 PR 加上）。
+  - **Docker 映像**：v2 的 compose 用 `flytrack-ml:v2`、`flytrack-ros:v2`（可用 `FLYTRACK_IMAGE_TAG` 覆寫），v1 維持 `:0.1`，兩邊在同一台主機上建置不會互相覆蓋。證據包的 `ENVIRONMENT.txt` 要記錄實際用的映像 ID。
+  - `main`、`release/v1`、`v2` 和所有 tag 都不刪除、不 force push。
 - **PR 的建立**：由實際執行者建立 PR，有 Issue 就要連結：部分處理寫 `Refs #N`，完全解決才寫 `Closes #N`。
 - **只 add 需要的檔案**，先看 `git status`，不要用 `git add -A`。以下不進 Git：
   - `runs/`

@@ -170,7 +170,10 @@ def test_frame_records_round_trip(tmp_path, monkeypatch):
         "flytrack_world.common": types.ModuleType("flytrack_world.common"),
     }
     stubs["rclpy.node"].Node = object
-    stubs["rclpy.qos"].qos_profile_sensor_data = None
+    qos = stubs["rclpy.qos"]
+    qos.QoSProfile = lambda **kwargs: kwargs
+    qos.QoSHistoryPolicy = types.SimpleNamespace(KEEP_LAST="keep_last")
+    qos.QoSReliabilityPolicy = types.SimpleNamespace(RELIABLE="reliable")
     stubs["flytrack_world.common"].EVENT_QOS = None
     stubs["flytrack_world.common"].spin_main = None
     for name, module in stubs.items():
@@ -186,6 +189,8 @@ def test_frame_records_round_trip(tmp_path, monkeypatch):
     path.write_bytes(head)
     with pytest.raises(ValueError):
         list(recorder.read_frames(path))
+    # Best effort lost about one demo frame in five in the #123 trial; reliable keep-last did not.
+    assert recorder.IMAGE_QOS["reliability"] == "reliable"
     assert recorder.file_name("/demo/camera/follow/image") == "demo_camera_follow_image.frames"
 
     class Message:

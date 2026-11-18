@@ -7,8 +7,8 @@ The demo cameras are not used by the policy or the evaluator. This node writes, 
   (little-endian; the stamp is the image header stamp, simulation clock);
 - ``scenario_events.jsonl``: every /world/scenario event (header stamp, phase, occluded,
   episode start, episode).
-Subscriptions are best effort (sensor data), so the recorder never applies back-pressure on the
-bridge. ``read_frames`` reads a ``.frames`` file back.
+Image subscriptions are reliable keep-last (``IMAGE_QOS``). ``read_frames`` reads a
+``.frames`` file back.
 """
 
 from __future__ import annotations
@@ -19,11 +19,16 @@ import zlib
 from pathlib import Path
 
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 from flytrack_world.common import EVENT_QOS, spin_main
 
 HEADER = struct.Struct("<qIII")
+# Reliable with a deep keep-last queue: with best effort about one demo frame in five was lost
+# (#123 trial). Keep-last never blocks the publisher; it only overwrites the oldest frame.
+IMAGE_QOS = QoSProfile(
+    depth=60, history=QoSHistoryPolicy.KEEP_LAST, reliability=QoSReliabilityPolicy.RELIABLE
+)
 
 
 def file_name(topic: str) -> str:
@@ -84,7 +89,7 @@ class DemoRecorderNode(Node):
                 Image,
                 topic,
                 lambda message, topic=topic: self._image(topic, message),
-                qos_profile_sensor_data,
+                IMAGE_QOS,
             )
         self.events = open(out / "scenario_events.jsonl", "a", encoding="utf-8")
         self.create_subscription(ScenarioEvent, "/world/scenario", self._event, EVENT_QOS)

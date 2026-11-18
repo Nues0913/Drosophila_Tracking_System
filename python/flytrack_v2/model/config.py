@@ -25,8 +25,11 @@ class ModelConfigV2:
     activation_checkpoint: bool = False
     readout_init_weight: float = 1.0
     initial_speed_m_s: float = 0.2
+    rest_settle_s: float = 8.0
+    rest_refresh_s: float = 1.0
+    initial_state: str = "rest"
     steer_types: tuple[str, ...] | None = None
-    speed_types: tuple[str, ...] | None = None
+    speed_types: tuple[str, ...] | str | None = None
     log_std_init: float = -0.5
     odor_K: tuple[float, ...] = (0.3,)
     odor_hill_n: float = 2.0
@@ -56,12 +59,15 @@ class ModelConfigV2:
             value = getattr(self, key)
             if value is None and key in ("steer_types", "speed_types"):
                 continue
+            if key == "speed_types" and isinstance(value, str) and value == "bilateral":
+                continue
             if not isinstance(value, (tuple, list)):
-                raise ValueError(f"{key} must be a list or tuple")
+                options = " or 'bilateral'" if key == "speed_types" else ""
+                raise ValueError(f"{key} must be a list or tuple{options}")
             object.__setattr__(self, key, tuple(value))
         for key in ("steer_types", "speed_types"):
             value = getattr(self, key)
-            if value is not None and (
+            if isinstance(value, tuple) and (
                 any(not isinstance(name, str) or not name for name in value)
                 or len(set(value)) != len(value)
             ):
@@ -80,6 +86,15 @@ class ModelConfigV2:
             value = getattr(self, key)
             if not _is_finite_number(value) or value <= 0:
                 raise ValueError(f"{key} must be positive and finite")
+        if not _is_finite_number(self.rest_settle_s) or self.rest_settle_s <= 0:
+            raise ValueError("rest_settle_s must be positive and finite")
+        if (
+            not _is_finite_number(self.rest_refresh_s)
+            or not 0 < self.rest_refresh_s <= self.rest_settle_s
+        ):
+            raise ValueError("rest_refresh_s must be positive, finite, and at most rest_settle_s")
+        if self.initial_state not in ("rest", "bias"):
+            raise ValueError("initial_state must be rest or bias")
         if (
             len(self.tau_init_range_s) != 2
             or not all(map(_is_finite_number, self.tau_init_range_s))

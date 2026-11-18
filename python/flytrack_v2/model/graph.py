@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 from dataclasses import InitVar, dataclass, field, replace
 from pathlib import Path
 
@@ -39,6 +41,7 @@ class GraphV2:
     edge_type_pairs: InitVar[np.ndarray | None] = None
     successful_swaps: int | None = None
     changed_edge_fraction: float | None = None
+    source_sha256: str | None = field(default=None, repr=False)
     fan_in: np.ndarray = field(init=False, repr=False)
     edge_label: np.ndarray = field(init=False, repr=False)
     label_pairs: np.ndarray = field(init=False, repr=False)
@@ -98,9 +101,11 @@ class GraphV2:
 
     @classmethod
     def load(cls, path: str | Path) -> GraphV2:
-        with np.load(path, allow_pickle=False) as archive:
+        data = Path(path).read_bytes()
+        with np.load(io.BytesIO(data), allow_pickle=False) as archive:
             return cls(
-                **{key: archive[key] for key in (*_NODE_ARRAYS, *_EDGE_ARRAYS, "type_names")}
+                **{key: archive[key] for key in (*_NODE_ARRAYS, *_EDGE_ARRAYS, "type_names")},
+                source_sha256=hashlib.sha256(data).hexdigest(),
             )
 
 

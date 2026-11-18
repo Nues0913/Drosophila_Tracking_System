@@ -1,0 +1,15 @@
+{
+  "artifact": "artifacts/input_norm_v2/input_norm.npz",
+  "sha256": "db5889d2cf848c25239da1b09a5f5512a3c28c0aed1523bac81a4c4c52297436",
+  "commit": "df86110a52d5a15d5ebbed38aecb377ba4f8e239",
+  "world": "v1compat (hide_target)",
+  "episodes": 100,
+  "samples": 120000,
+  "unfitted_columns": 2,
+  "unfitted_column_index": [
+    290,
+    291
+  ],
+  "std_below_floor": 0,
+  "note": "wind channels are never valid in v1compat; refit on both worlds after #133"
+}

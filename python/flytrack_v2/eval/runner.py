@@ -102,10 +102,59 @@ class SpeedClamp:
         return action
 
 
+class ObservationAblation:
+    """Show the actor a transformed observation; the world and its episodes are unchanged.
+
+    #161 E1 attributes G-B within one VO2 checkpoint on the same episode seeds: swap_odor
+    exchanges left and right odor (the total stays), rotate_wind turns the wind the antennae
+    report. The trajectory then differs, as the actor acts on what it was shown.
+    """
+
+    def __init__(self, actor: Actor, transform):
+        self.actor, self.transform = actor, transform
+
+    def reset(self, batch: int, device: torch.device) -> None:
+        self.actor.reset(batch, device)
+
+    def act(self, obs: dict[str, Tensor], reset_mask: Tensor | None) -> Tensor:
+        return self.actor.act(self.transform(obs), reset_mask)
+
+
+def swap_odor(obs: dict[str, Tensor]) -> dict[str, Tensor]:
+    return {**obs, "odor": obs["odor"].flip(-1)}
+
+
+def rotate_wind(degrees: float, antenna_angle_deg: float):
+    """Report wind from theta + degrees: left = a cos(theta - alpha), right = a cos(theta + alpha)
+    give a cos(theta) = (left + right) / (2 cos alpha), a sin(theta) = (left - right) /
+    (2 sin alpha). Linear, so sensor noise turns with it; 180 degrees reverses the wind."""
+    delta, alpha = math.radians(degrees), math.radians(antenna_angle_deg)
+    cos_d, sin_d, cos_a, sin_a = math.cos(delta), math.sin(delta), math.cos(alpha), math.sin(alpha)
+
+    def transform(obs: dict[str, Tensor]) -> dict[str, Tensor]:
+        left, right = obs["wind"].unbind(-1)
+        c, s = (left + right) / (2 * cos_a), (left - right) / (2 * sin_a)
+        c, s = c * cos_d - s * sin_d, s * cos_d + c * sin_d
+        wind = torch.stack((c * cos_a + s * sin_a, c * cos_a - s * sin_a), dim=-1)
+        return {**obs, "wind": wind}
+
+    return transform
+
+
 @dataclass
 class EpisodeResult:
     values: dict[str, list]  # EPISODE_KEYS -> one value per row
-    speed_distance: dict[str, list[float]]  # per row: n, slope (m/s per m), mean_v, mean_d
+    # #161 A3, per row: n, slope (commanded m/s per m of the distance seen before acting),
+    # mean_speed_m_s, mean_distance_m
+    speed_distance: dict[str, list[float]]
+    # #161 E1, per row: tracking fraction and steps in each occlusion phase (OCCLUSION_PHASES)
+    occlusion_phases: dict[str, list[float]]
+
+
+# before the occlusion; during it; after it ends until |bearing| < 15 deg (the world's
+# reacquisition rule); after reacquisition
+OCCLUSION_PHASES = ("before", "during", "gap", "after")
+REACQUIRE_RAD = math.radians(15)
 
 
 def run_episodes(
@@ -123,29 +172,57 @@ def run_episodes(
         raise ValueError("give one episode seed per world row")
     obs = world.reset(None, seeds)
     actor.reset(batch, device)
-    done = torch.zeros(batch, dtype=torch.bool, device=device)
-    saved = {key: torch.zeros(batch, dtype=torch.float64, device=device) for key in EPISODE_KEYS}
-    sums = {
-        k: torch.zeros(batch, dtype=torch.float64, device=device)
-        for k in ("n", "d", "v", "dv", "dd", "vv")
-    }
+
+    def zeros(dtype=torch.float64):
+        return torch.zeros(batch, dtype=dtype, device=device)
+
+    done = zeros(torch.bool)
+    saved = {key: zeros() for key in EPISODE_KEYS}
+    sums = {k: zeros() for k in ("n", "d", "v", "dv", "dd", "vv")}
+    phase_steps = {k: zeros() for k in OCCLUSION_PHASES}
+    phase_tracked = {k: zeros() for k in OCCLUSION_PHASES}
+    seen_before = torch.full((batch,), math.nan, dtype=torch.float64, device=device)
+    occluded_before, ended_occlusion, reacquired = (
+        zeros(torch.bool),
+        zeros(torch.bool),
+        zeros(torch.bool),
+    )
     reset_mask = None
     for step in range(max_steps):
         action = actor.act(obs, reset_mask)
         result = world.step(action)
         live = ~done
-        distance = result.info["distance_m"].to(torch.float64)
+        # The speed responds to the distance the actor saw; the distance after this step
+        # already moved with this step's speed and would bias the slope downwards.
         speed = action[:, 0].to(torch.float64)
-        weight = live.to(torch.float64)
+        weight = (live & seen_before.isfinite()).to(torch.float64)
+        d = torch.nan_to_num(seen_before)
         sums["n"] += weight
-        sums["d"] += weight * distance
+        sums["d"] += weight * d
         sums["v"] += weight * speed
-        sums["dv"] += weight * distance * speed
-        sums["dd"] += weight * distance * distance
+        sums["dv"] += weight * d * speed
+        sums["dd"] += weight * d * d
         sums["vv"] += weight * speed * speed
+        info = result.info
+        seen_before = info["distance_m"].to(torch.float64)
+        occluded = info["occluded"]
+        ended_occlusion |= occluded_before & ~occluded
+        reacquired |= ended_occlusion & (info["bearing_rad"].abs() < REACQUIRE_RAD)
+        occluded_before = occluded
+        phases = {
+            "during": occluded,
+            "gap": ended_occlusion & ~reacquired & ~occluded,
+            "after": reacquired & ~occluded,
+        }
+        phases["before"] = ~(phases["during"] | phases["gap"] | phases["after"])
+        tracked = info["tracked"].to(torch.float64)
+        for name, mask in phases.items():
+            w = (mask & live).to(torch.float64)
+            phase_steps[name] += w
+            phase_tracked[name] += w * tracked
         ended = (result.terminated | result.truncated) & live
         for key in EPISODE_KEYS:
-            saved[key] = torch.where(ended, result.info[key].to(torch.float64), saved[key])
+            saved[key] = torch.where(ended, info[key].to(torch.float64), saved[key])
         done |= ended
         reset_mask = result.terminated | result.truncated
         obs = result.obs
@@ -155,19 +232,34 @@ def run_episodes(
         raise RuntimeError(f"{int((~done).sum())} rows did not finish within {max_steps} steps")
     host = {key: value.cpu().tolist() for key, value in saved.items()}
     s = {key: value.cpu().tolist() for key, value in sums.items()}
-    slopes = []
+    slopes, mean_v, mean_d = [], [], []
     for i in range(batch):
         n = s["n"][i]
+        if n < 2:
+            slopes.append(math.nan)
+            mean_v.append(math.nan)
+            mean_d.append(math.nan)
+            continue
         cov = s["dv"][i] / n - (s["d"][i] / n) * (s["v"][i] / n)
         var = s["dd"][i] / n - (s["d"][i] / n) ** 2
         slopes.append(cov / var if var > 1e-12 else math.nan)
+        mean_v.append(s["v"][i] / n)
+        mean_d.append(s["d"][i] / n)
     speed_distance = {
         "n": s["n"],
         "slope_m_s_per_m": slopes,
-        "mean_speed_m_s": [s["v"][i] / s["n"][i] for i in range(batch)],
-        "mean_distance_m": [s["d"][i] / s["n"][i] for i in range(batch)],
+        "mean_speed_m_s": mean_v,
+        "mean_distance_m": mean_d,
     }
-    return EpisodeResult(host, speed_distance)
+    occlusion_phases = {}
+    for name in OCCLUSION_PHASES:
+        steps = phase_steps[name].cpu().tolist()
+        hits = phase_tracked[name].cpu().tolist()
+        occlusion_phases[f"{name}_steps"] = steps
+        occlusion_phases[f"{name}_tracking_fraction"] = [
+            h / n if n > 0 else math.nan for h, n in zip(hits, steps, strict=True)
+        ]
+    return EpisodeResult(host, speed_distance, occlusion_phases)
 
 
 def to_records(
@@ -187,8 +279,12 @@ def to_records(
     for i, row in enumerate(rows):
         value = {key: result.values[key][i] for key in EPISODE_KEYS}
         occluded = row["scenario"] == "occlusion"
-        censored = bool(value["episode_reacquisition_censored"]) if occluded else None
         time_s = value["episode_reacquisition_time_s"]
+        censored = bool(value["episode_reacquisition_censored"]) if occluded else None
+        if censored is False and not math.isfinite(time_s):
+            # The occlusion never ended (the episode ended first, e.g. by collision): no
+            # reacquisition to time or censor; #161 E3 reports these episodes separately.
+            censored = None
         occlusion_fraction = value["episode_occlusion_tracking_fraction"]
         records.append(
             {

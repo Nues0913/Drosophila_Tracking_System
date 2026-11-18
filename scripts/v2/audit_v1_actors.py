@@ -2,9 +2,10 @@
 
 The protocol's v1_actor_consistency audit: every formal-v1 actor runs the four scenarios on the
 batched v1compat world with v1's own evaluation settings (configs/train/evaluate*.yaml env,
-blackout occlusion as in its training, v1 reward), 100 episodes per scenario. Its seed-level
-success is then compared, seed by seed, with the formal-v1 seed means. The worlds use hash
-draws, so episodes are not v1's episodes: agreement is judged on seed means and intervals,
+blackout occlusion as in its training, v1 reward), 100 episodes per scenario. Per episode it
+also writes the #161 A3 speed-distance slope and the E1 occlusion phases (secondary.jsonl). Its
+seed-level success is then compared, seed by seed, with the formal-v1 seed means. The worlds use
+hash draws, so episodes are not v1's episodes: agreement is judged on seed means and intervals,
 never episode by episode.
 
 Usage: python scripts/v2/audit_v1_actors.py --actors DIR [DIR ...] --formal-seed-means FILE
@@ -24,6 +25,7 @@ import yaml
 from flytrack_core.model import load_policy_artifact
 from flytrack_v2.contracts import SensorContractV2
 from flytrack_v2.eval.runner import V1Actor, run_episodes, to_records
+from flytrack_v2.metrics import validate_episode_record
 from flytrack_v2.world.v1compat import V1CompatWorld
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +83,9 @@ def main() -> None:
     }
     actors = sorted(p for root in args.actors for p in root.glob("*/seed_*/actor"))
     comparison = []
-    with (args.output / "episodes.jsonl").open("w", encoding="utf-8") as stream:
+    invalid = []
+    secondary = (args.output / "secondary.jsonl").open("w", encoding="utf-8")
+    with (args.output / "episodes.jsonl").open("w", encoding="utf-8") as stream, secondary:
         for path in actors:
             variant, seed = path.parent.parent.name, int(path.parent.name.split("_")[1])
             started = time.perf_counter()
@@ -100,8 +104,23 @@ def main() -> None:
                 artifact_sha256=artifact,
                 commit=commit,
             )
-            for record in records:
+            for i, record in enumerate(records):
+                try:
+                    validate_episode_record(record)
+                except ValueError as error:  # keep the night's run going; report at the end
+                    invalid.append(
+                        {"variant": variant, "seed": seed, "row": i, "error": str(error)}
+                    )
                 stream.write(json.dumps(record) + "\n")
+                extra = {key: values[i] for key, values in result.speed_distance.items()}
+                extra.update({key: values[i] for key, values in result.occlusion_phases.items()})
+                extra.update(
+                    variant=variant,
+                    seed=seed,
+                    scenario=record["scenario"],
+                    episode_seed=record["episode_seed"],
+                )
+                secondary.write(json.dumps(extra) + "\n")
             for scenario in SCENARIOS:
                 ours = float(np.mean([r["success"] for r in records if r["scenario"] == scenario]))
                 comparison.append(
@@ -124,6 +143,8 @@ def main() -> None:
     (args.output / "comparison.json").write_text(
         json.dumps(comparison, indent=1) + "\n", encoding="utf-8"
     )
+    (args.output / "invalid_records.json").write_text(json.dumps(invalid, indent=1) + "\n")
+    print(f"{len(invalid)} records failed validate_episode_record", flush=True)
 
 
 if __name__ == "__main__":

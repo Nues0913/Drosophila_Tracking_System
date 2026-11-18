@@ -108,7 +108,7 @@ def test_rw2_preserves_structure_and_is_seeded():
     assert _edge_set(rewired) != _edge_set(rewire_rw2(graph, 5))
 
 
-def test_er2_preserves_nodes_and_samples_empirical_edge_attributes():
+def test_er2_preserves_nodes_and_permutes_empirical_edge_attributes():
     graph = small_graph()
     random = erdos_renyi_er2(graph, 31)
     _assert_same_nodes(graph, random)
@@ -119,6 +119,9 @@ def test_er2_preserves_nodes_and_samples_empirical_edge_attributes():
     np.testing.assert_array_equal(random.post, rerun.post)
     np.testing.assert_array_equal(random.synapse_count, rerun.synapse_count)
     np.testing.assert_array_equal(random.edge_label, rerun.edge_label)
+    np.testing.assert_array_equal(random.label_pairs, graph.label_pairs)
+    np.testing.assert_array_equal(np.sort(random.edge_label), np.sort(graph.edge_label))
+    np.testing.assert_array_equal(np.sort(random.synapse_count), np.sort(graph.synapse_count))
     edge_attributes = dict(
         zip(graph.synapse_count, graph.label_pairs[graph.edge_label], strict=True)
     )

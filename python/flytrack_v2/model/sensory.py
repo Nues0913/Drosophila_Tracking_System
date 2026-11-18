@@ -249,6 +249,7 @@ class SeedProjection(nn.Module):
         super().__init__()
         self.n_nodes = graph.n_nodes
         self.layout = layout
+        self.enable_vision = enable_vision
         modalities = graph.input_mask & (GROUP_VISUAL | GROUP_OLFACTORY | GROUP_WIND)
         nodes = np.flatnonzero(modalities)
         seed_types = graph.type_index[nodes]
@@ -268,7 +269,7 @@ class SeedProjection(nn.Module):
             axis=0,
             return_inverse=True,
         )
-        rf_count = len(rf_pairs) if enable_vision else 0
+        rf_count = len(rf_pairs)
         self.lc_rf = (
             nn.Parameter(
                 inverse_softplus(
@@ -280,12 +281,12 @@ class SeedProjection(nn.Module):
         )
         self.missing_bias = nn.Parameter(torch.zeros(len(np.unique(seed_types))))
 
-        # Sources are [LC groups, left ORNs, right ORNs, midline ORNs, wind L/R/mean, zero].
+        # Sources are [LC groups, left ORNs, right ORNs, midline ORNs, wind L/R/mean].
         c = layout.odor_channels
         _, odor_type_slot = np.unique(seed_types[odor], return_inverse=True)
         side_slot = np.where(sides == 0, 2, eye)
         source = np.empty(len(nodes), dtype=np.int64)
-        source[visual] = rf_slot if enable_vision else rf_count + 3 * c + 3
+        source[visual] = rf_slot
         source[odor] = rf_count + c * side_slot[odor] + odor_type_slot % c
         source[wind] = rf_count + 3 * c + side_slot[wind]
         validity = np.empty(len(nodes), dtype=np.int64)
@@ -295,7 +296,7 @@ class SeedProjection(nn.Module):
             ("seed_types", seed_type_slot),
             ("seed_validity", validity),
             ("source_index", source),
-            ("rf_eye", rf_pairs[:rf_count, 1]),
+            ("rf_eye", rf_pairs[:, 1]),
         ):
             self.register_buffer(name, torch.as_tensor(values), persistent=False)
 
@@ -305,17 +306,15 @@ class SeedProjection(nn.Module):
             (2 * eye_width, 2 * self.layout.odor_channels, 2, 4), dim=1
         )
         odor_midline = odor.reshape(len(code), 2, self.layout.odor_channels).mean(dim=1)
-        sources = [
-            odor,
-            odor_midline,
-            wind,
-            wind.mean(dim=1, keepdim=True),
-            code.new_zeros(len(code), 1),
-        ]
+        sources = [odor, odor_midline, wind, wind.mean(dim=1, keepdim=True)]
         if self.lc_rf is not None:
-            pooled = vision.reshape(len(code), 2, eye_width) @ F.softplus(self.lc_rf).T
-            groups = torch.arange(len(self.rf_eye), device=code.device)
-            sources.insert(0, pooled[:, self.rf_eye, groups])
+            if self.enable_vision:
+                pooled = vision.reshape(len(code), 2, eye_width) @ F.softplus(self.lc_rf).T
+                groups = torch.arange(len(self.rf_eye), device=code.device)
+                visual_drive = pooled[:, self.rf_eye, groups]
+            else:
+                visual_drive = code.new_zeros(len(code), len(self.rf_eye))
+            sources.insert(0, visual_drive)
         missing = valid.index_select(1, self.seed_validity)
         missing = ~((missing > 0.5) & missing.isfinite())
         seed_drive = torch.cat(sources, dim=1).index_select(1, self.source_index)

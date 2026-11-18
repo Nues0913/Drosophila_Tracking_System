@@ -205,7 +205,16 @@ def test_variants_satisfy_policy_and_sensory_masks(variant, frontend):
     if variant == "O2":
         torch.testing.assert_close(code[:, :288], torch.zeros(2, 288))
         torch.testing.assert_close(code[:, -4:], torch.tensor([[0.0, 0, 1, 1]]).expand(2, -1))
-        assert parameter_table(policy)["lc_rf"] == 0
+        table = parameter_table(policy)
+        assert table["lc_rf"] == policy.projection.lc_rf.numel() > 0
+        assert table["output_reachable_total"] == table["total"] - table["lc_rf"]
+        with torch.no_grad():
+            policy.projection.lc_rf.add_(1)
+            code[:, :288] = 1
+            code[:, -4:-2] = 1
+            changed = policy.forward_code(code, state)
+        torch.testing.assert_close(changed.central_state, step.central_state)
+        torch.testing.assert_close(changed.dist.mean, step.dist.mean)
     if variant in ("RW2", "ER2"):
         assert policy.describe()["structure_seed"] == policy.config.structure_seed == 42
     assert not policy.describe()["input_norm"]["fitted"]
@@ -248,22 +257,51 @@ def test_main_graph_parameter_budgets(frontend, main_graph):
         policy = build_policy(variant, graph=main_graph, frontend=frontend, structure_seed=seed)
         table = tables[variant] = parameter_table(policy)
         assert table["total"] == sum(
-            param.numel() for param in policy.parameters() if param.requires_grad
+            param.numel()
+            for group in parameter_groups(policy, lr=1.0)
+            if group["lr"] > 0
+            for param in group["params"]
         )
         if variant != "GRU2":
             assert table["g"] == len(policy.graph.label_pairs)
             assert table["tau"] == len(policy.graph.type_names)
             assert table["readout"] == 8
         else:
+            assert policy.config.budget_target == tables["VO2"]["total"]
             with torch.no_grad():
                 zero_code = torch.zeros(2, policy.code_size)
                 rest = policy.forward_code(zero_code, policy.initial_central_state(2, "cpu"))
             torch.testing.assert_close(
                 rest.dist.mode()[:, 0], torch.full((2,), 0.2), atol=1e-5, rtol=0
             )
-    assert tables["VO2"] == tables["V2"] == tables["RW2"]
-    assert 0 < tables["ER2"]["g"] < tables["VO2"]["g"]
-    assert abs(tables["GRU2"]["total"] / tables["VO2"]["total"] - 1) <= 0.05
+    assert tables["VO2"] == tables["V2"] == tables["RW2"] == tables["ER2"]
+    assert tables["ER2"]["g"] == tables["VO2"]["g"] == 29_134
+    target = tables["VO2"]["total"]
+    assert all(20 * abs(table["total"] - target) <= target for table in tables.values())
+    assert tables["O2"]["total"] == target == 34_557
+    assert tables["O2"]["output_reachable_total"] == target - tables["O2"]["lc_rf"] < target
+
+
+def test_output_reachability_uses_dn_paths_and_shared_parameters(frontend):
+    graph = small_graph()
+    # The relay and left-eye seeds now have no outgoing edges.
+    keep = ~np.isin(graph.pre, (0, 1, 13))
+    pre, post, counts = graph.pre[keep], graph.post[keep], graph.synapse_count[keep]
+    graph = replace(
+        graph,
+        pre=pre,
+        post=post,
+        synapse_count=counts,
+        subgraph_input_synapses=np.bincount(post, weights=counts, minlength=graph.n_nodes),
+    )
+    policy = build_policy("VO2", graph=graph, frontend=frontend)
+    table = parameter_table(policy)
+    # Four gain labels only lead to disconnected nodes. The left-eye LC group cannot reach the
+    # readout, but shares its missing bias with the right-eye LC group that does reach it.
+    assert (
+        table["output_reachable_total"]
+        == table["total"] - 4 - 2 - policy.encoder.layout.features_per_eye
+    )
 
 
 @pytest.mark.parametrize("bias_scale", [0.0, 0.1])
@@ -280,6 +318,8 @@ def test_optimizer_bias_groups(frontend, bias_scale):
         assert groups[1]["lr"] == bias_scale * 0.002
         assert groups[1]["lr_scale"] == bias_scale
     else:
+        assert parameter_table(policy)["bias"] == 0
+        policy.core.bias.requires_grad_(True)
         assert parameter_table(policy)["bias"] == 0
     assert (
         sum(p.numel() for group in groups for p in group["params"])

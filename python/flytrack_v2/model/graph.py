@@ -163,14 +163,17 @@ def rewire_rw2(graph: GraphV2, seed: int, swaps_per_edge: int = 10) -> GraphV2:
 
 
 def erdos_renyi_er2(graph: GraphV2, seed: int) -> GraphV2:
-    """Sample distinct directed pairs and sample the empirical edge attributes with replacement."""
+    """Sample distinct directed pairs and assign each original edge's attributes once.
+
+    The label and synapse-count multisets and the number of g parameters match the original graph.
+    """
     rng = np.random.default_rng(seed)
     n, e = graph.n_nodes, graph.n_edges
     if n == 1:
         return graph
     pre, post = np.divmod(rng.choice(n * (n - 1), size=e, replace=False), n - 1)
     post += post >= pre
-    sample = rng.integers(e, size=e)
+    sample = rng.permutation(e)
     weights = graph.synapse_count[sample]
     return replace(
         graph,

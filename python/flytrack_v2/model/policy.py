@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -208,7 +209,10 @@ def build_policy(
 
 
 def parameter_table(policy: ConnectomePolicyV2 | GRUPolicyV2) -> dict[str, int]:
-    """Count trainable scalars by role. O2 has no LC parameters and frozen bias counts as zero."""
+    """Count scalars with requires_grad and positive learning rates at a unit base LR.
+
+    Also report how many effective scalars can structurally influence the action distribution.
+    """
     counts = dict.fromkeys(_PARAMETER_CATEGORIES, 0)
     roles = {
         "core.gain_theta": "g",
@@ -218,12 +222,55 @@ def parameter_table(policy: ConnectomePolicyV2 | GRUPolicyV2) -> dict[str, int]:
         "projection.missing_bias": "missing_bias",
         "log_std": "log_std",
     }
+    effective = {
+        id(param)
+        for group in parameter_groups(policy, lr=1.0)
+        if group["lr"] > 0
+        for param in group["params"]
+    }
     for name, param in policy.named_parameters():
-        if param.requires_grad:
+        if id(param) in effective:
             category = roles.get(name, name.split(".", 1)[0])
             counts[category] += param.numel()
+    reachable = (
+        _graph_output_parameter_counts(policy) if isinstance(policy, ConnectomePolicyV2) else {}
+    )
+    output_reachable = sum(reachable.get(role, count) for role, count in counts.items() if count)
     counts["total"] = sum(counts.values())
+    counts["output_reachable_total"] = output_reachable
     return counts
+
+
+def _graph_output_parameter_counts(policy: ConnectomePolicyV2) -> dict[str, int]:
+    # Walk back from the DN readout and count shared parameters used at least once on a path.
+    graph, projection = policy.graph, policy.projection
+    row_ptr = policy.core.csr.crow.tolist()
+    predecessors = policy.core.csr.columns.tolist()
+    pending = policy.readout.node_indices.tolist()
+    reachable = np.zeros(graph.n_nodes, dtype=bool)
+    reachable[pending] = True
+    while pending:
+        node = pending.pop()
+        for pre in predecessors[row_ptr[node] : row_ptr[node + 1]]:
+            if not reachable[pre]:
+                reachable[pre] = True
+                pending.append(pre)
+
+    seed_reachable = reachable[projection.seed_indices.tolist()]
+    rf_slots = projection.source_index.cpu().numpy()[seed_reachable]
+    rf_count = len(projection.rf_eye)
+    type_count = np.unique(graph.type_index[reachable]).size
+    return {
+        "g": np.unique(graph.edge_label[reachable[graph.post]]).size,
+        "tau": type_count,
+        "bias": type_count,
+        "lc_rf": (
+            np.unique(rf_slots[rf_slots < rf_count]).size * projection.layout.features_per_eye
+            if projection.enable_vision
+            else 0
+        ),
+        "missing_bias": np.unique(projection.seed_types.cpu().numpy()[seed_reachable]).size,
+    }
 
 
 def parameter_groups(policy: ConnectomePolicyV2 | GRUPolicyV2, lr: float) -> list[dict]:

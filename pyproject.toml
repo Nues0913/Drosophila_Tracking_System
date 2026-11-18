@@ -18,7 +18,7 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 
 [tool.setuptools.packages.find]
 where = ["python"]
-include = ["flytrack_core*", "connectome_extract*", "flytrack_sim*", "flytrack_train*"]
+include = ["flytrack_core*", "connectome_extract*", "flytrack_sim*", "flytrack_train*", "flytrack_v2*"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]

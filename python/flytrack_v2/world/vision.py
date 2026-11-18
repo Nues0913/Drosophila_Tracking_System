@@ -292,15 +292,21 @@ class BatchedRetina:
     ) -> Tensor:
         """``render`` for one disk of fixed height (the world's target): [B,2,N] float32.
 
-        agent_pose and target_xy may be per eye ([B,2,3], [B,2,2]); target_radius and
-        target_intensity are [B]. On CUDA the two-kernel path above; elsewhere ``render``.
+        agent_pose and target_xy may be per eye ([B,2,3], [B,2,2]); target_radius is [B] or per
+        eye [B,2] (a NaN radius hides the target from that eye: every hit test fails);
+        target_intensity is [B]. On CUDA the two-kernel path above; elsewhere ``render``.
         """
         if self.path != "fused":
-            disks = torch.zeros(*target_xy.shape[:-1], 1, 5, dtype=self.dtype, device=self.device)
+            if target_radius.ndim == 2 and target_xy.ndim == 2:
+                target_xy = target_xy[:, None].expand(-1, 2, -1)
+            shape = target_xy.shape[:-1]  # [B] or [B,2]
+            disks = torch.zeros(*shape, 1, 5, dtype=self.dtype, device=self.device)
             disks[..., 0, :2] = target_xy
-            disks[..., 0, 2] = target_radius.reshape(-1, *([1] * (target_xy.ndim - 2)))
+            radius = target_radius
+            disks[..., 0, 2] = radius[:, None].expand(shape) if radius.ndim < len(shape) else radius
             disks[..., 0, 3] = target_height
-            disks[..., 0, 4] = target_intensity.reshape(-1, *([1] * (target_xy.ndim - 2)))
+            intensity = target_intensity.reshape(-1, *([1] * (len(shape) - 1)))
+            disks[..., 0, 4] = intensity.expand(shape)
             return self.render(agent_pose, wall_intensity, disks)
         dtype = self.dtype
         _kernels()
@@ -314,7 +320,8 @@ class BatchedRetina:
             heading = agent_pose[..., 2].to(dtype)[..., None]
         target = target_xy.to(dtype)
         dx, dy = target[..., 0, None] - px, target[..., 1, None] - py
-        radius_sq = target_radius.to(dtype).square()[:, None, None]
+        radius = target_radius.to(dtype)
+        radius_sq = (radius[:, :, None] if radius.ndim == 2 else radius[:, None, None]).square()
         wall_value = wall_intensity.to(dtype)[:, None, None]
         disk_value = target_intensity.to(dtype)[:, None, None]
         xmin, ymin, xmax, ymax = self.walls

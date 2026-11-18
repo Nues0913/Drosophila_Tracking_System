@@ -16,7 +16,8 @@ from flytrack_core.contracts import SensorContract
 from flytrack_sim.env import FlyTrackEnv
 from flytrack_v2.contracts import PRIVILEGED_KEYS, SensorContractV2, validate_obs
 from flytrack_v2.interfaces import EPISODE_INFO_KEYS, STEP_INFO_KEYS
-from flytrack_v2.world.v1compat import V1CompatWorld
+from flytrack_v2.world.v1compat import V1CompatWorld, track_v2_reward
+from flytrack_v2.world.vision import BatchedRetina
 
 ROOT = Path(__file__).resolve().parents[3]
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
@@ -62,6 +63,8 @@ def _compare(contracts, motion, steps, options, scenario_configs, teacher=True, 
         dtype=torch.float64,
         scenario_configs=scenario_configs,
         check_substeps=True,
+        reward="v1",  # FlyTrackEnv's reward (#161 D3)
+        occlusion_view="blackout",  # v1's black image during occlusion (#161 C2)
     )
     world.reset(episode_seeds=torch.tensor(seeds))
     infos = [env.reset(seed=seed)[1] for env, seed in zip(envs, seeds, strict=True)]
@@ -264,3 +267,73 @@ def test_fused_graph_path_matches_the_eager_reference_on_cuda(contracts):
         )
     assert flips <= 1e-5 * values
     assert int(worlds[0].episode_index.min()) >= 3
+
+
+def _pair(contracts, view, seed=21):
+    """An occlusion world (0.5-1.5 s) and a normal world with the same seeds."""
+    configs = _scenario_configs(occlusion_start_s=0.5)
+    return [
+        V1CompatWorld(
+            contracts[0],
+            6,
+            name,
+            {"episode_seconds": 3, "target_motion": "curved"},
+            seed=seed,
+            scenario_configs=configs,
+            occlusion_view=view,
+            dtype=torch.float64,
+        )  # fmt: skip
+        for name in ("occlusion", "normal")
+    ]
+
+
+@pytest.mark.parametrize("view", ["hide_target", "blackout"])
+def test_occlusion_keeps_valid_and_hides_only_the_target(contracts, view):
+    """#161 C2: valid never encodes occlusion; hide_target shows the arena without the target."""
+    occluded_world, normal_world = _pair(contracts, view)
+    for world in (occluded_world, normal_world):
+        world.reset()
+    arena = BatchedRetina(contracts[1], occluded_world.walls, "cpu", torch.float64)
+    occluded_steps = 0
+    for _ in range(40):
+        action = torch.tensor([[0.2, 0.3]]).expand(6, 2)
+        a, b = occluded_world.step(action), normal_world.step(action)
+        assert torch.equal(a.obs["valid"], b.obs["valid"])
+        torch.testing.assert_close(
+            a.final_privileged["agent_pose"], b.final_privileged["agent_pose"]
+        )
+        if bool(a.info["occluded"].all()):
+            occluded_steps += 1
+            s = occluded_world._state
+            if view == "blackout":
+                assert torch.all(a.obs["vision"] == 0)
+            else:
+                empty = torch.zeros(6, 2, 1, 5, dtype=torch.float64)
+                empty[..., 3] = -1.0  # no disk
+                expected = arena.render(s["eye_pose"], s["wall_intensity"], empty)
+                torch.testing.assert_close(a.obs["vision"], expected, rtol=0, atol=1e-6)
+                assert bool((a.obs["vision"] > 0).all(-1).all())  # walls and floor, not black
+            assert not torch.equal(a.obs["vision"], b.obs["vision"])
+    assert occluded_steps >= 15
+
+
+def test_track_v2_reward(contracts):
+    """#161 D3 / plan 3.8: +1 tracked, -0.3 min(|d - 1|, 3), -10 collision, -0.05 |delta a|."""
+    reward = track_v2_reward(
+        torch.tensor([True, False, True, False]),
+        torch.tensor([1.0, 6.0, 0.3, 2.5], dtype=torch.float64),
+        torch.tensor([False, False, True, False]),
+        torch.tensor([[0.0, 0.0], [0.3, 0.4], [0.0, 0.0], [0.0, 0.0]]),
+        1.0,
+    )
+    expected = torch.tensor([1.0, -0.9 - 0.025, 1 - 0.21 - 10, -0.45], dtype=torch.float64)
+    torch.testing.assert_close(reward, expected)
+    world = _world(contracts)
+    assert world.reward_kind == "track_v2" and world.occlusion_view == "hide_target"
+    world.reset()
+    result = world.step(torch.zeros(6, 2))
+    distance = result.info["distance_m"].to(torch.float64)
+    manual = track_v2_reward(
+        result.info["tracked"], distance, result.info["collision"], torch.zeros(6, 2), 1.0
+    )
+    torch.testing.assert_close(result.reward, manual.to(torch.float32))

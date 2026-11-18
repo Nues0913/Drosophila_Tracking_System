@@ -18,6 +18,16 @@
   - 碰撞、reward、成功判定。
 - **參數來源**：建構時用同樣的選項建一個 v1 `FlyTrackEnv`，從它讀取參數。所以解析方式、預設值和 reward 的 survival 上界都直接是 v1 的。
 - **沒有風**：`wind` 觀測和 valid 的風旗標都是 0。風和 filament plume 屬於 WP2b（#133）。
+- **兩個和 v1 不同的預設**（#161 的 Decision）：
+  - `reward="track_v2"`（D3）：計劃書 3.8 的 PPO reward，沒有單獨的速度項。
+    - 追蹤中（2 m 內、45° 內）每步 +1；
+    - −0.3 · min(|d − 1 m|, 3 m)；
+    - 碰撞 −10；
+    - −0.05 · ‖Δa‖（動作變化的歐氏範數）。
+    - `reward="v1"` 是 `FlyTrackEnv` 的 reward，只給 parity 測試用。
+  - `occlusion_view="hide_target"`（C2）：遮蔽時影像照常 render，只是看不到目標。
+    - `occlusion_view="blackout"` 是 v1 的全黑影像，給 parity 測試，以及用全黑遮蔽訓練出來的 v1 actor 用。
+    - 兩種模式下 `valid` 都維持 1：`valid = 0` 只代表感測資料遺失（noise 情境的 dropout），所以模型沒辦法從 valid 讀出「現在是遮蔽」。
 - **v1 有、這裡沒做的選項**：遇到會直接報錯，不會默默忽略。
   - 障礙物；
   - Gaussian plume；
@@ -51,7 +61,7 @@
 ## 4. 和 v1 的比對（parity）
 
 - **方法**（計劃書 3.3、#145）：
-  - 注入 v1 抽出的隨機量（`draws="v1"`），世界用 float64；
+  - 注入 v1 抽出的隨機量（`draws="v1"`），世界用 float64，`reward="v1"`、`occlusion_view="blackout"`；
   - 兩邊收到同一串動作，逐步比對觀測、reward、旗標和回合指標，用容差判定。
 - **涵蓋範圍**：4 種情境 × 2 種目標運動。
   - 快速測試：40 步。遮蔽移到 0.5–1.5 s，讓重新捕捉的邏輯也會跑到。

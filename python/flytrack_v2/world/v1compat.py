@@ -58,6 +58,20 @@ def _v1_contract(contract: SensorContractV2) -> SensorContract:
     return SensorContract(**{k: v for k, v in contract.to_dict().items() if k in names})
 
 
+def track_v2_reward(
+    tracked: Tensor, distance: Tensor, collision: Tensor, change: Tensor, following: float
+) -> Tensor:
+    """Plan 3.8's PPO reward (#161 D3), aligned with the success rule, no speed term:
+    +1 per tracked step, -0.3 min(|d - 1 m|, 3 m), -10 on collision, -0.05 |delta a|."""
+    error = (distance - following).abs().clamp(max=3.0)
+    return (
+        tracked.to(torch.float64)
+        - 0.3 * error
+        - 10.0 * collision.to(torch.float64)
+        - 0.05 * change.to(torch.float64).norm(dim=-1)
+    )
+
+
 def _clone(tree):
     if isinstance(tree, Tensor):
         return tree.clone()
@@ -78,6 +92,10 @@ class V1CompatWorld:
       episode_seconds, target_motion, domain_randomization, scenario_config, plume_config.
       Options v1compat does not reproduce raise.
     - draws: "hash" (default) or "v1" (parity tests: v1's numpy streams; host loops).
+    - reward (#161 D3): "track_v2" (plan 3.8, for PPO) or "v1" (FlyTrackEnv's, for parity).
+    - occlusion_view (#161 C2): "hide_target" renders the scene without the target while the
+      scenario occludes it; "blackout" is v1's black image (parity tests, and v1 actors that
+      were trained on it). valid stays 1 either way: 0 only means a lost reading.
     - fused, graph: on CUDA with hash draws, the hot loops run as fused kernels (kernels.py)
       and each step replays two CUDA graphs (physics, then the automatic reset when a row
       ended; one host sync decides). fused=False keeps the eager torch reference on CUDA.
@@ -97,7 +115,14 @@ class V1CompatWorld:
         check_substeps: bool = False,
         graph: bool = True,
         fused: bool | None = None,
+        reward: str = "track_v2",
+        occlusion_view: str = "hide_target",
     ):
+        if reward not in ("track_v2", "v1"):
+            raise ValueError("reward must be track_v2 or v1")
+        if occlusion_view not in ("hide_target", "blackout"):
+            raise ValueError("occlusion_view must be hide_target or blackout")
+        self.reward_kind, self.occlusion_view = reward, occlusion_view
         options = dict(options or {})
         for name in _UNSUPPORTED:
             if name in options:
@@ -533,11 +558,16 @@ class V1CompatWorld:
         pose = s["eye_pose"][index].to(self.dtype)
         target = s["eye_target"][index]
         k = len(index)
+        hidden = s["eye_blackout"][index]  # [k,2]: the scenario occludes the target
+        radius = (self.target_radius * s["visual_scale"][index])[:, None].expand(k, 2)
+        if self.occlusion_view == "hide_target":
+            # A NaN radius fails every hit test: the eye sees the arena without the target.
+            radius = torch.where(hidden, math.nan, radius)
         raw = self.retina.render_target(
             pose,
             s["wall_intensity"][index],
             target,
-            self.target_radius * s["visual_scale"][index],
+            radius,
             self.target_height,
             s["target_intensity"][index],
         )  # [k,2,N]
@@ -559,7 +589,8 @@ class V1CompatWorld:
                     torch.float32
                 )
             image = image.clamp(0, 1)
-            image = torch.where(s["eye_blackout"][index, eye][:, None], 0.0, image)
+            if self.occlusion_view == "blackout":
+                image = torch.where(hidden[:, eye, None], 0.0, image)
             s["vision"][index, eye] = torch.where(new[:, eye, None], image, s["vision"][index, eye])
         if rows is None:
             s["eye_new"] = torch.zeros_like(s["eye_new"])
@@ -1006,17 +1037,20 @@ class V1CompatWorld:
             penalty = penalty.clamp(max=self.cap)
         collision = s["collision"]
         lost = distance > self.lost_distance
-        reward = (
-            w["progress"] * (s["previous_distance"] - distance)
-            - w["distance"] * penalty
-            - w["smoothness"] * (change * change).sum(-1).to(torch.float64)
-            - w["collision"] * collision.to(torch.float64)
-            - w["lost"] * lost.to(torch.float64)
-        )
-        if self.survival:
-            reward = torch.where(collision, reward, reward + self.survival)
         near = distance <= SUCCESS_RULE.distance_m
         tracked = near & (torch.rad2deg(bearing).abs() <= SUCCESS_RULE.bearing_deg)
+        if self.reward_kind == "v1":
+            reward = (
+                w["progress"] * (s["previous_distance"] - distance)
+                - w["distance"] * penalty
+                - w["smoothness"] * (change * change).sum(-1).to(torch.float64)
+                - w["collision"] * collision.to(torch.float64)
+                - w["lost"] * lost.to(torch.float64)
+            )
+            if self.survival:
+                reward = torch.where(collision, reward, reward + self.survival)
+        else:
+            reward = track_v2_reward(tracked, distance, collision, change, self.following)
         speed = applied[:, 0].to(torch.float64)
         s["distance_sum"] += distance
         s["bearing_sum"] += bearing.abs()

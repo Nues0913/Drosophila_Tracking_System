@@ -112,3 +112,25 @@
 - 預期平均：每一步至少有一列重設的機率是 1 − exp(−B / 1200)。
 - 計劃書 3.3 的目標是「1,024 個環境每步 ≤ 5 ms」。normal 剛好在邊界上，四種混合超過約 1 ms；混合比較慢，主要因為 conflict 情境有兩個氣味源，所有列的 puff 槽都要加倍。
 - 對照 v1：一個 `FlyTrackEnv` 在一個 CPU 執行緒上是每秒 343 步（4070，#139）。
+
+## 6. Teacher 和 world audit（#132 第 3 部分）
+
+- **`PrivilegedTeacher`**（`world/teacher.py`）：v1 `teacher_action` 的整批版本，實作 `interfaces.Teacher`，狀態寬度是 0。
+  - 前進速度 = 0.7 ×（距離 − 1 m），乘上 max(0, cos 方位)，不倒退；轉向 = 2 × 方位。
+  - 目標掉頭衝向 agent 時，照 v1 的規則往側邊閃避。
+  - 可選 `occlusion_odor_gain`（v1 #33 的選項）：遮蔽時改用學生自己收到的原始氣味轉向，不用 plume 的真值。
+  - 標籤照契約的速度和加速度上限，對前一個實際動作做 clip，和 v1 一樣。
+  - 和 v1 比對：
+    - 400 個隨機狀態（含閃避、遮蔽、沒有氣味或氣味失效），開關氣味選項都測，誤差 ≤ 1e-6；
+    - parity 測試裡，每一步的 teacher 標籤也和 v1 env 的 `info["teacher_action"]` 比對。
+- **world audit**（`world/audit.py`、`scripts/v2/audit_world.py`）：v1 `audit.py` 的 v2 版本。
+  - 特權 teacher 的成功率要 ≥ 0.9；blind 策略（8 個固定動作，加上 teacher 實際動作的平均）都要 ≤ 0.1。
+  - 和 v1 的差別：每個情境都檢查（計劃書 3.3），感測是開著的；每個策略的回合在同一批裡跑，所有策略用同一組回合 seed（配對）。
+  - **4070 實測**（commit `5b2f1d5`，dirty = false，每格 100 回合、60 s；JSON 在本機 `runs/audit/world_4070_5b2f1d5.json`）：
+
+| 運動 | 情境 | teacher 成功率 | 碰撞 | 方位誤差 | 最好的 blind 策略 |
+| --- | --- | --- | --- | --- | --- |
+| curved | 四種都一樣 | 1.00 | 0 | 2.23° | `left_0.05` 0.02 |
+| wander | 四種都一樣 | 1.00 | 0 | 2.78° | 0.00 |
+
+  - 四種情境的結果相同。原因是特權 teacher 和 blind 策略都不讀感測，情境只改變感測；noise 情境要三路同時失效才會觸發緊急停車，這 100 回合裡沒有發生。

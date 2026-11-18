@@ -111,7 +111,7 @@
 | D3（#104） | 速度讀出加上校準過、切斷梯度的 DN 列 | 不成立：速度只是整體變快，撞上目標的次數變多 | `d3_forward_rows.tar.gz` |
 
 - formal-v2 沒有觸發。使用者 11-11 同意 PM 的建議，formal-v1 不再做速度讀出的實驗（[#35 6894303266](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6894303266)）；P3／PPO 留在 #35。
-- formal-v1 交付之後的探索（#35，2026-11-16 起：S2、M1、R2、S4 等）都標為未登記，不改這份報告的結論；結果和結論見 [status.md](status.md) 的 2026-11-17、2026-11-16 兩節，證據包在 release `research-35`。
+- formal-v1 交付之後的探索（#35，2026-11-16 起：S2、M1、R2、S4 等）都標為未登記，不改這份報告的結論；結果和結論見 [status.md](status.md) 的 2026-11-18、2026-11-17、2026-11-16 三節，證據包在 release `research-35`。11-18 的 T1（可見度閘門轉向讀出）和 S8（衍生圖加閘門）以 wander 遮蔽為主要終點，照登記的規則判定都不成立。
 
 ## 5. Gazebo（#88）
 ### 5.1 平台的一致性
@@ -203,6 +203,7 @@
 | RS | 0.000 | 50.5 ms | 未達成（延遲也超過） |
 | 事後 GRU（未登記） | 0.250 [0.160, 0.340] | 47.5 ms | 未達成 |
 
+- **formal-v1 之後的延遲重測**（#110，4070，main `e5a166b`）：三項等價加速之後，CPU 版六組合併 p95 是 43.4–44.9 ms，低於 50 ms；GPU 版 52.3–53.1 ms。成功率沒有改善，上表的判定不變。取樣核和 G2 不同（subrays 對 gaussian），所以和上表的差只當參考。
 - **4060 的延遲**（只報告，不用來判定）：sensor→command p50 分成 42.5–59.6 ms 和 107.7–126.6 ms 兩群，另有一格是 79.9 ms。分界是推論時間：每格推論時間的中位數 ≤ 24.3 ms 的都在低的那一群，≥ 25.0 ms 的除了一格都在高的那一群，大約多一個控制週期（50 ms）。
   - VO-late 每格推論時間的中位數是 26.2–31.5 ms，所以在 4060 上每一格都在高的那一群。
   - 有負載的 RS noise、conflict，推論時間是 28.6、27.8 ms，比沒有負載的 RS 格子都高（≤ 25.2 ms），可以歸因於負載把推論時間推過門檻；occlusion（25.1 ms）不能確定。
@@ -227,6 +228,10 @@
   - V1 選的 11 個回合，用同一個 actor 和環境 seed，在 G0d 世界（main `8e19c9b`）重播，含 rosbag、四格圖和 2D 對照。
   - 成功與否和 2D 相同的有 11／11，G0d 之前的世界是 10／11。發現斜角撞牆漏記的那一回合（V occlusion ep2），現在和 2D 一樣在撞牆時結束。碰撞不是每個回合都一致：VO-late occlusion ep3 在 2D 撞牆結束，在 Gazebo 沒有撞牆，但同樣失敗。
   - 這是展示，不是量測；行為數字以 G2 為準。
+- **Gazebo 3D 影片 V2**（#123，PR #124，formal-v1 之後）：release `research-35` 的 `gazebo_v2_demo_4070_highlights.mp4`（88 s 精華）和 `gazebo_v2_demo_4070.tar.gz`（`13ef05de…`）。
+  - 用預設關閉的跟拍和全場相機，在 main `ed71149`（含 G0e、G0g）重播同樣的 11 個回合。
+  - 成功與否和有沒有碰撞，11／11 和 2D 相同。VO-late occlusion ep3 這次和 2D 一樣撞牆，和 G0d 版不同。
+  - 錄影時每格頻率最低 19.970 Hz；相機打開時，policy 的影像和關閉時逐位元相同。
 
 ## 8. 重現
 release [`formal-v1`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1) 的主要檔案：

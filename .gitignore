@@ -34,6 +34,7 @@ data/subgraphs/olfactory_v2_nokc/*
 runs/
 artifacts/*
 !artifacts/frontend/
+!artifacts/frontend_v2/
 !artifacts/data_execution/
 artifacts/data_execution/*
 !artifacts/data_execution/*.json

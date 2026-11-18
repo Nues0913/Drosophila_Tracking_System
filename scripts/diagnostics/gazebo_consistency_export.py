@@ -1,6 +1,6 @@
 """Export a Gazebo rosbag for the 2D/Gazebo input consistency check (#88, formerly #23).
 
-Usage (ROS image, e.g. docker run ... flytrack-ros:0.1):
+Usage (ROS image, e.g. docker run ... flytrack-ros:v2; v1 uses flytrack-ros:0.1):
   python3 scripts/diagnostics/gazebo_consistency_export.py BAG_DIR SENSOR_CONTRACT_JSON OUT.npz \
       [KERNEL]
 KERNEL is the policy node's vision_kernel: "subrays" (default since #111 G0e) or "gaussian"

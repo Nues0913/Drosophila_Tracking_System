@@ -1,0 +1,81 @@
+raw_dir: data/raw
+output: data/subgraphs/v2_sweep_c
+min_synapses: 50
+min_total_synapses: 5
+downstream_hops: 3
+upstream_hops: 2
+convergence_hops: 3
+min_neurons: 1
+max_neurons: null
+nt_confidence_min: 0.5
+unknown_nt_policy: drop
+unknown_type_policy: drop
+allowed_superclasses:
+- cb_intrinsic
+- visual_projection
+- descending_neuron
+- cb_sensory
+excluded_classes:
+- Kenyon_Cell
+excluded_type_patterns:
+- APL
+- DPM
+selection:
+  visual_seed_patterns:
+  - LC9
+  - LC10a
+  - LC11
+  - LC12
+  - LC15
+  - LC17
+  - LPLC2
+  odor_seed_patterns:
+  - ORN_DM1
+  - ORN_VA2
+  unknown_odor_side_policy: drop
+  turn_dn_patterns:
+  - DNa01
+  - DNa02
+  - DNa03
+  - DNb05
+  forward_dn_patterns:
+  - DNp09
+  wind_seed_patterns:
+  - JO-C(?:A[12]|L|M)
+  - JO-E(?:D1|D2_[abc]|V[1-6])
+columns:
+  body: bodyId
+  type: type
+  side: somaSide
+  root_side: rootSide
+  nt_body: body
+  nt_prediction: consensus_nt
+  pre: body_pre
+  post: body_post
+  weight: weight
+odor_downstream_hops: 4
+require_branch_motor_paths:
+- visual
+- olfactory
+- wind
+spec_version: v2
+edge_rule: type_sum
+coverage_repair: true
+coverage_min: 0.4
+required_dn_types:
+- DNa01
+- DNa02
+- DNa03
+- DNp09
+- DNb05
+path_patterns:
+  pn:
+  - .*PN.*
+  lh:
+  - LH.*
+type_min_synapses: 100
+edge_min_synapses: 10
+wind_downstream_hops: 3
+selection_rationale:
+  branch_retry: 'One permitted branch retry: [''olfactory'']; original odor/wind hops=3/3.
+    Other thresholds and upstream/visual hops unchanged.'

@@ -16,6 +16,7 @@ GROUP_OLFACTORY = 2
 GROUP_CONVERGENCE = 4
 GROUP_TURN = 8
 GROUP_FORWARD = 16
+GROUP_WIND = 32
 VARIANTS = ("V", "O", "VO", "VO-late", "GRU", "RS")
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
 

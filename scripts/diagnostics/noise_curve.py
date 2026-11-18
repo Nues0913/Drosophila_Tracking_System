@@ -5,8 +5,8 @@ Each point runs the noise scenario with every corruption parameter of CONFIG's
 scenario_configs.noise multiplied by one SCALES entry (default
 "0,0.25,0.5,1,1.5,2"): image_noise_std, brightness_std, image_dropout,
 odor_noise_std and odor_dropout, dropouts capped at 1, so 0 is a clean world and 1
-is noise.yaml. EPISODES, LANES, WORKERS, FIXED, ENV_OVERRIDES and DETERMINISTIC
-work as in policy_episode_eval.py, with the same environment seeds, so scale 1
+is noise.yaml. EPISODES, LANES, WORKERS, FIXED and ENV_OVERRIDES work as in
+policy_episode_eval.py, with the same environment seeds, so scale 1
 reproduces its noise row. The privileged teacher ignores sensor noise and is not
 a reference curve.
 """
@@ -19,7 +19,6 @@ from pathlib import Path
 
 import torch
 import yaml
-from flytrack_core.model.sparse import enable_deterministic
 from flytrack_core.world import ScenarioSpec
 from flytrack_train.config import contract_from_config
 from flytrack_train.parallel import EnvPool
@@ -58,8 +57,6 @@ def main():
     lanes = min(episodes, int(os.environ.get("LANES", 30)))
     fixed = json.loads(os.environ["FIXED"]) if "FIXED" in os.environ else DEFAULT_FIXED
     contract = contract_from_config(config)
-    if os.environ.get("DETERMINISTIC") == "1":
-        enable_deterministic()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     noise = {scale: scaled_noise(config, scale) for scale in scales}
     pool = EnvPool(

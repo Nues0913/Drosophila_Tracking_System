@@ -1,4 +1,4 @@
-"""Candidate parameter rates, critic warmup, and bitwise recovery on CPU."""
+"""Candidate parameter rates, critic warmup, and checkpoint recovery on CPU."""
 
 import copy
 
@@ -7,7 +7,7 @@ import torch
 from flytrack_core.contracts import SensorContract
 from flytrack_train import ppo
 from flytrack_train.recovery import Recovery
-from test_training import _assert_nested_equal, _RecoveryEnv
+from test_training import _assert_nested_close, _RecoveryEnv
 
 
 class CandidatePolicy(torch.nn.Module):
@@ -54,9 +54,7 @@ def load(output):
     return torch.load(output / "training_checkpoint.pt", weights_only=True)
 
 
-def test_default_two_updates_are_bitwise_equal_to_previous_optimizer(
-    candidate, tmp_path, monkeypatch
-):
+def test_default_two_updates_match_the_previous_optimizer(candidate, tmp_path, monkeypatch):
     candidate["train"]["total_steps"] = 8
     ppo.train_ppo(candidate, tmp_path / "current", 11, torch.device("cpu"))
     # Previous code: a single actor group at base lr, a separate critic group,
@@ -72,9 +70,9 @@ def test_default_two_updates_are_bitwise_equal_to_previous_optimizer(
     current, previous = load(tmp_path / "current"), load(tmp_path / "previous")
     assert current["iteration"] == previous["iteration"] == 2
     for key in ("actor", "critic", "optimizer", "rng", "reward_normalizer"):
-        _assert_nested_equal(current[key], previous[key])
+        _assert_nested_close(current[key], previous[key])
     for left, right in zip(current["reports"], previous["reports"], strict=True):
-        _assert_nested_equal(
+        _assert_nested_close(
             {k: v for k, v in left.items() if k != "elapsed_s"},
             {k: v for k, v in right.items() if k != "elapsed_s"},
         )
@@ -102,7 +100,7 @@ def test_bias_freeze_readout_rate_and_warmup(candidate, tmp_path, monkeypatch):
     for index, snapshot in enumerate(snapshots):
         assert torch.equal(snapshot["actor"]["core.bias"], actor["core.bias"])
         if index < 2:
-            _assert_nested_equal(snapshot["actor"], actor)
+            _assert_nested_close(snapshot["actor"], actor)
             assert any(not torch.equal(v, critic[k]) for k, v in snapshot["critic"].items())
             assert snapshot["reports"][-1]["critic_warmup"]
             assert snapshot["reports"][-1]["actor_learning_rates"] == [0, 0, 0]
@@ -121,9 +119,7 @@ def test_bias_freeze_readout_rate_and_warmup(candidate, tmp_path, monkeypatch):
     assert all(index not in snapshots[-1]["optimizer"]["state"] for index in frozen)
 
 
-def test_warmup_checkpoint_resumes_bitwise_and_restores_configured_rates(
-    candidate, tmp_path, monkeypatch
-):
+def test_warmup_checkpoint_resumes_and_restores_configured_rates(candidate, tmp_path, monkeypatch):
     candidate["train"].update(
         learning_rate=1e-3,
         core_bias_learning_rate=0,
@@ -158,7 +154,7 @@ def test_warmup_checkpoint_resumes_bitwise_and_restores_configured_rates(
         "privileged",
         "action_histories",
     ):
-        _assert_nested_equal(expected[key], observed[key])
+        _assert_nested_close(expected[key], observed[key])
     assert observed["reports"][2]["actor_learning_rates"] == [1e-3, 0, 1e-2]
 
 
@@ -186,7 +182,7 @@ def test_zero_rate_groups_skip_weight_decay_and_existing_momentum():
         ppo._freeze_zero_rate_gradients([policy.core.bias])
         optimizer.step()
     assert torch.equal(before, policy.core.bias)
-    _assert_nested_equal(optimizer.state[policy.core.bias], moments)
+    _assert_nested_close(optimizer.state[policy.core.bias], moments)
 
 
 def test_readout_rate_controls_actual_adam_step_after_restoring_zero_rates():

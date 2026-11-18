@@ -16,7 +16,6 @@ import torch
 from flytrack_core.contracts import file_sha256
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_core.model import load_policy_artifact
-from flytrack_core.model.sparse import enable_deterministic
 
 from .audit import audit_environment
 from .batches import SequenceModel, tensor_observation
@@ -485,8 +484,6 @@ def evaluate(config: dict[str, Any], output: Path, device: torch.device) -> None
     episodes = int(options.get("episodes_per_seed", 100))
     if episodes <= 0:
         raise ValueError("episodes_per_seed must be positive")
-    if options.get("deterministic", False):
-        enable_deterministic()
     output.mkdir(parents=True, exist_ok=True)
     if options.get("recorded_episode_files"):
         summarize_recorded(config, output, variants, scenarios, seeds, episodes)

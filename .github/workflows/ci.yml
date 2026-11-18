@@ -1,0 +1,68 @@
+# Required checks for v2 pull requests (plan 4.1, #131): lint and test-fast.
+name: ci
+
+on:
+  pull_request:
+    branches: [v2, main]
+  push:
+    branches: [v2]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          # Documentation-only changes skip the tests (a skipped job counts as passed).
+          # quotepath=false keeps non-ASCII names such as 後續計畫.md unquoted, so they match.
+          if files=$(git -c core.quotepath=false diff --name-only "$BASE"...HEAD 2>/dev/null) \
+            && [ -n "$files" ] \
+            && ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/)'; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx ruff@0.17.0 check python scripts
+      - run: uvx ruff@0.17.0 format --check python scripts
+
+  test-fast:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements/ml-cpu-py312.lock
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python --require-hashes -r requirements/ml-cpu-py312.lock
+      - run: uv pip install --python .venv/bin/python --no-deps -e .
+      - run: .venv/bin/python -m pytest -m "not slow and not gpu and not ros and not legacy" -n auto -q

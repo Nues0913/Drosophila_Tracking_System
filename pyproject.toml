@@ -23,6 +23,14 @@ include = ["flytrack_core*", "connectome_extract*", "flytrack_sim*", "flytrack_t
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 pythonpath = ["python"]
+addopts = "--strict-markers"
+markers = [
+  "slow: 5 s or more on the 2060 host; the full workflow runs it, test-fast skips it",
+  "gpu: needs CUDA; run locally with pytest -m gpu and attach the log to the PR",
+  "ros: needs ROS 2; the ros workflow runs it through colcon",
+  "legacy: v1 legacy-flag compatibility; the full workflow runs it, test-fast skips it",
+  "bench: performance measurement; manual only",
+]
 
 [tool.ruff]
 target-version = "py312"

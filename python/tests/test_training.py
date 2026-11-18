@@ -930,6 +930,7 @@ def test_ppo_bc_anchor_excludes_frozen_parameters_through_warmup(
     assert rows[-1]["bc_anchor_distance"] > 0
 
 
+@pytest.mark.slow
 def test_ppo_bc_anchor_metrics_distance_and_strong_anchor(bc_anchor_config, tmp_path, monkeypatch):
     from flytrack_core.model import load_policy_artifact
     from flytrack_train import ppo
@@ -1200,6 +1201,7 @@ def test_es_rejects_nonzero_readout_bias_rate(tmp_path, monkeypatch, readout_rat
         )
 
 
+@pytest.mark.slow
 def test_environment_audit_flags_the_blind_circling_world():
     from flytrack_core.contracts import SensorContract
     from flytrack_train.audit import audit_environment
@@ -1243,6 +1245,7 @@ def test_scenario_parameters_have_one_source():
     env.close()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("algorithm", ["ppo", "es"])
 def test_zero_core_bias_rate_freezes_biases_after_bc(tmp_path, algorithm):
     """#4: a bias freeze set for pretraining and BC must hold in the final stage too."""

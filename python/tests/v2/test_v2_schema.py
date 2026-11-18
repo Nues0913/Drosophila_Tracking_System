@@ -24,6 +24,7 @@ def _card(variant="VO2"):
         "neural_dt": 0.01,
         "n_ommatidia": 721,
         "action_limits": {"v_max": 0.5, "omega_max": 1.5},
+        "model_config": {"variant": variant, "speed_types": ["DNp09"]},
         "provenance": {"git_sha": "abc", "dirty": False, "config_sha256": "0", "stages": []},
     }
 
@@ -43,6 +44,9 @@ def test_valid_cards_pass_for_graph_and_graph_free_variants():
         (lambda c: c["state"].pop("code_size"), "missing"),
         (lambda c: c["files"].pop("input_norm.npz"), "files must list"),
         (lambda c: c.update(n_ommatidia=True), "n_ommatidia"),
+        (lambda c: c.pop("model_config"), "model_config"),
+        (lambda c: c.update(model_config={}), "model_config.variant"),
+        (lambda c: c["model_config"].update(variant="RW2"), "model_config.variant"),
     ],
 )
 def test_invalid_cards_are_refused(change, message):
@@ -90,7 +94,15 @@ def test_episode_records_validate_and_accept_v1_actors():
             reacquisition_censored=None,
         )
     )
-    validate_episode_record(_record(scenario="noise", noise_scale=0.75))
+    validate_episode_record(
+        _record(
+            scenario="noise",
+            noise_scale=0.75,
+            occlusion_tracking_fraction=None,
+            reacquisition_time_s=None,
+            reacquisition_censored=None,
+        )
+    )
     assert set(_record()) == set(EPISODE_FIELDS)
 
 
@@ -106,8 +118,35 @@ def test_episode_records_validate_and_accept_v1_actors():
         ({"within_distance_fraction": -0.1}, "within_distance_fraction"),
         ({"noise_scale": 0.75}, "noise_scale"),
         ({"scenario": "noise"}, "noise_scale"),
+        ({"collision": True}, "success disagrees"),
+        ({"tracking_fraction": 0.5, "within_distance_fraction": 0.6}, "success disagrees"),
+        ({"steps": 0}, "steps"),
+        ({"tracking_fraction": 0.96}, "cannot exceed"),
+        ({"reacquisition_censored": True}, "censored"),
+        ({"reacquisition_censored": None}, "reacquisition_censored = false"),
     ],
 )
 def test_bad_episode_records_are_refused(override, message):
     with pytest.raises(ValueError, match=message):
         validate_episode_record(_record(**override))
+
+
+def test_rewired_variants_need_their_structure_seed():
+    card = _card("RW2")
+    with pytest.raises(ValueError, match="structure_seed"):
+        validate_model_card(card)
+    card["model_config"]["structure_seed"] = 3
+    validate_model_card(card)
+
+
+def test_occlusion_fields_must_be_null_outside_occlusion():
+    with pytest.raises(ValueError, match="outside the occlusion scenario"):
+        validate_episode_record(_record(scenario="normal"))
+    validate_episode_record(
+        _record(
+            scenario="normal",
+            occlusion_tracking_fraction=None,
+            reacquisition_time_s=None,
+            reacquisition_censored=None,
+        )
+    )

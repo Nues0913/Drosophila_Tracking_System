@@ -11,4 +11,4 @@ parallel=()
 if "$PY" -c 'import xdist' 2>/dev/null; then
   parallel=(-n auto)
 fi
-"$PY" -m pytest -m "not slow and not gpu and not ros and not legacy" -q "${parallel[@]}" "$@"
+"$PY" -m pytest -m "not slow and not gpu and not ros and not legacy and not bench" -q "${parallel[@]}" "$@"

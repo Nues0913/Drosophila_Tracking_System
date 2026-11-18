@@ -7,6 +7,10 @@ node-major between steps (the policy owns its sensory state, docs/v2/interfaces.
 and on CUDA the per-substep update runs as one fused kernel (torch.compile). Together: 1.9x at
 batch 256 and 1024, within 2e-6 of v1. Column j of the state is environment j // 2, eye j % 2
 (left 0, right 1), the same order as v1's reshape(batch * 2, ...).
+
+torch.compile(dynamic=False) compiles once per batch size and caches 8 sizes; past that it
+falls back to eager (one warning, about half the speed). Batched evaluation therefore keeps a
+fixed batch size, padding the last batch instead of shrinking it (#151 review).
 """
 
 from __future__ import annotations

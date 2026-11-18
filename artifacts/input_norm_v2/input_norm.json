@@ -1,7 +1,7 @@
 {
   "artifact": "artifacts/input_norm_v2/input_norm.npz",
-  "sha256": "db5889d2cf848c25239da1b09a5f5512a3c28c0aed1523bac81a4c4c52297436",
-  "commit": "df86110a52d5a15d5ebbed38aecb377ba4f8e239",
+  "sha256": "47f8396616806bbda23c8677bf9d09e486237cc6f5dc94e8a8408f10c768c9c1",
+  "commit": "b26d6ea01e2836f772b120072347108dc611586a",
   "world": "v1compat (hide_target)",
   "episodes": 100,
   "samples": 120000,
@@ -11,5 +11,6 @@
     291
   ],
   "std_below_floor": 0,
-  "note": "wind channels are never valid in v1compat; refit on both worlds after #133"
+  "note": "wind channels are never valid in v1compat; refit on both worlds after #133",
+  "fit": "flytrack_v2.model.sensory.fit_input_norm"
 }

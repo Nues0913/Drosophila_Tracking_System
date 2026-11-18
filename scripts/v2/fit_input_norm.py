@@ -3,8 +3,9 @@
 The teacher drives; the policy only senses, so the code statistics describe the states a good
 tracker visits. Rows split evenly over the four scenarios and the two target motions, and every
 row contributes its first 60 s episode. Each code column is averaged only over steps where its
-channel is valid, as InputNorm normalizes only valid channels. Columns that are never valid
-(the wind channels in v1compat) keep mean 0 and std 1 and are listed as unfitted.
+channel is valid (flytrack_v2.model.sensory.fit_input_norm, the model's own fit). Columns that
+are never valid (the wind channels in v1compat) keep mean 0 and std 1 and are listed as
+unfitted.
 
 Usage: python scripts/v2/fit_input_norm.py --episodes 100 \
            --output artifacts/input_norm_v2/input_norm.npz
@@ -23,9 +24,10 @@ import torch
 import yaml
 from flytrack_v2.contracts import SensorContractV2
 from flytrack_v2.model import ModelConfigV2, build_policy
-from flytrack_v2.model.sensory import InputNorm
+from flytrack_v2.model.sensory import fit_input_norm
 from flytrack_v2.world.teacher import PrivilegedTeacher
 from flytrack_v2.world.v1compat import V1CompatWorld
+from torch import Tensor
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS = ("normal", "occlusion", "noise", "conflict")
@@ -33,7 +35,8 @@ EPISODE_SEED_BASE = 1_900_000_000  # disjoint from training, v1 evaluation and t
 
 
 @torch.no_grad()
-def accumulate(motion: str, rows: int, policy, contract, device, seed_offset: int):
+def collect(motion: str, rows: int, policy, contract, device, seed_offset: int) -> Tensor:
+    """Sensory codes [T, code_size] of every step of each row's first episode."""
     config = yaml.safe_load((ROOT / "configs/train/bc.yaml").read_text(encoding="utf-8"))
     scenario_configs = {
         name: yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
@@ -54,24 +57,11 @@ def accumulate(motion: str, rows: int, policy, contract, device, seed_offset: in
     obs = world.reset(None, seeds)
     sensory = policy.initial_sensory_state(rows, device)
     teacher_state = teacher.initial_state(rows, device)
-    layout = policy.input_norm.layout
-    width = sum(layout.widths)
-    index = policy.input_norm.validity_index.to(device)
-    total = torch.zeros(width, dtype=torch.float64, device=device)
-    squares = torch.zeros(width, dtype=torch.float64, device=device)
-    count = torch.zeros(width, dtype=torch.float64, device=device)
     live = torch.ones(rows, dtype=torch.bool, device=device)
-    samples = 0
-    steps = int(np.ceil(60 / contract.control_dt))
-    for _ in range(steps):
+    codes = []
+    for _ in range(int(np.ceil(60 / contract.control_dt))):
         code, sensory = policy.sense(obs, sensory)
-        raw, flags = code.split((width, code.shape[1] - width), dim=1)
-        valid = (flags > 0.5).index_select(1, index) & live[:, None]
-        x = torch.where(valid, raw, 0.0).to(torch.float64)
-        total += x.sum(0)
-        squares += (x * x).sum(0)
-        count += valid.sum(0)
-        samples += int(live.sum())
+        codes.append(code[live].cpu())
         privileged = world.privileged()
         action, teacher_state = teacher.act(
             privileged, obs, privileged["agent_velocity"], teacher_state
@@ -79,7 +69,7 @@ def accumulate(motion: str, rows: int, policy, contract, device, seed_offset: in
         result = world.step(action)
         live &= ~(result.terminated | result.truncated)
         obs = result.obs
-    return total, squares, count, samples
+    return torch.cat(codes)
 
 
 def main() -> None:
@@ -91,25 +81,20 @@ def main() -> None:
     device = torch.device(args.device)
     contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
     policy = build_policy("VO2", ModelConfigV2()).to(device).eval()
-    parts = [
-        accumulate(motion, args.episodes // 2, policy, contract, device, offset)
-        for offset, motion in ((0, "curved"), (args.episodes // 2, "wander"))
-    ]
-    total = sum(p[0] for p in parts)
-    squares = sum(p[1] for p in parts)
-    count = sum(p[2] for p in parts)
-    samples = sum(p[3] for p in parts)
-    fitted = count > 0
-    mean = torch.where(fitted, total / count.clamp_min(1), 0.0)
-    var = torch.where(fitted, squares / count.clamp_min(1) - mean * mean, 1.0).clamp_min(0)
-    norm = InputNorm(
-        policy.input_norm.layout,
-        policy.input_norm.std_floor,
-        mean=mean.float().cpu(),
-        std=var.sqrt().float().cpu(),
-        fitted=True,
-        n_samples=samples,
+    codes = torch.cat(
+        [
+            collect(motion, args.episodes // 2, policy, contract, device, offset)
+            for offset, motion in ((0, "curved"), (args.episodes // 2, "wander"))
+        ]
     )
+    # The model's own fit (#137 review): each channel's valid rows only; a channel that is
+    # never valid keeps mean 0 and std 1.
+    norm = fit_input_norm(codes, policy.input_norm.layout, policy.input_norm.std_floor)
+    width = sum(norm.layout.widths)
+    flags = codes[:, width:]
+    valid = (flags > 0.5).index_select(1, norm.validity_index)
+    fitted = valid.any(0)
+    samples = len(codes)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     norm.save(args.output)
     commit = subprocess.run(
@@ -124,7 +109,7 @@ def main() -> None:
         "samples": samples,
         "unfitted_columns": int((~fitted).sum()),
         "unfitted_column_index": torch.nonzero(~fitted).flatten().cpu().tolist(),
-        "std_below_floor": int(((var.sqrt() < policy.input_norm.std_floor) & fitted).sum()),
+        "std_below_floor": int(((norm.std < norm.std_floor) & fitted).sum()),
         "note": "wind channels are never valid in v1compat; refit on both worlds after #133",
     }
     args.output.with_suffix(".json").write_text(json.dumps(report, indent=2) + "\n")

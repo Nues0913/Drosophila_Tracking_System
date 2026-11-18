@@ -1,0 +1,25 @@
+graph_path: data/subgraphs/v2_main/graph.npz
+frontend_path: artifacts/frontend_v2/frontend.npz
+visual_bins: 9
+activation_beta: 10.0
+tau_min_s: 0.01
+tau_max_s: 10.0
+tau_init_range_s: [0.02, 2.0]
+gain_parameterization: softplus
+gain_init: 0.9
+gain_max: 0.97
+bias_lr_scale: 0.1
+activation_checkpoint: false
+readout_init_weight: 1.0
+initial_speed_m_s: 0.2
+steer_types: null
+speed_types: null
+log_std_init: -0.5
+odor_K: [0.3]
+odor_hill_n: 2.0
+odor_adaptation_tau_s: 2.0
+odor_shared_adaptation: true
+norm_std_floor: 0.001
+init_seed: 0
+structure_seed: null
+budget_target: null

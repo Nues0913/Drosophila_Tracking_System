@@ -166,6 +166,8 @@ VO2、V2、O2、RW2、ER2、GRU2 共用這個介面。
 **檔案**
 - 所有變體都有：`weights.pt`、`frontend.npz`、`input_norm.npz`、`sensor_contract.json`、`model_card.json`、`SHA256SUMS`。
 - graph 變體另外有 `graph.npz`；GRU2 沒有。
+- `graph.npz` 存的是 policy **實際用的圖**。RW2、ER2 存接線之後的圖，載入時不重新接線（#161 C4）。
+- 匯出後再載入，要和原本的 policy 在同一段觀測上逐步給出相同的動作和隱狀態（容差比對）。六個變體都要有這個往返測試（WP3c、WP6）。
 
 **`model_card.json` 的必要欄位**
 
@@ -179,6 +181,7 @@ VO2、V2、O2、RW2、ER2、GRU2 共用這個介面。
 | `state` | `central_state_size`、`code_size`；感覺狀態是 policy 內部的物件，不列 |
 | `control_dt`、`neural_dt`、`n_ommatidia` | 時序與小眼數 |
 | `action_limits` | `v_max`、`omega_max` |
+| `model_config` | 完整解析後的模型設定：讀出的型別清單、g 的參數化、`structure_seed`、輸入對應等。和 `graph.npz` 一起，不需要訓練設定就能重建 policy（#161 C4） |
 | `provenance` | `git_sha`、`dirty`、`config_sha256`、`stages` |
 
 `validate_model_card` 會拒絕 v1 的 card，因為 v1 的 card 沒有 `spec_version`，避免 v1 和 v2 混用。

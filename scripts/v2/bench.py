@@ -55,10 +55,18 @@ def environment(host_label: str, device: str) -> dict:
 
 
 def bench_env(steps: int = 300) -> dict:
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        return _bench_env(steps)
+    finally:
+        torch.set_num_threads(threads)  # the policy bench on --device cpu keeps its threads
+
+
+def _bench_env(steps: int) -> dict:
     from flytrack_core.contracts import SensorContract
     from flytrack_sim.env import FlyTrackEnv
 
-    torch.set_num_threads(1)
     contract = SensorContract.from_json(ROOT / "configs/sensor_contract.json")
     env = FlyTrackEnv(
         contract,
@@ -136,11 +144,15 @@ def _time_ppo(updates: int, device: str, workdir: Path) -> tuple[int, float]:
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
     command = [sys.executable, "-m", "flytrack_train", "ppo", "--config", str(path)]
     start = time.perf_counter()
-    subprocess.run([*command, "--device", device], cwd=ROOT, check=True, capture_output=True)
+    done = subprocess.run([*command, "--device", device], cwd=ROOT, capture_output=True, text=True)
+    if done.returncode:
+        tail = "\n".join(done.stderr.splitlines()[-20:])
+        raise RuntimeError(f"v1 PPO exited with {done.returncode}:\n{tail}")
     return config["train"]["total_steps"], time.perf_counter() - start
 
 
 def bench_ppo(device: str, short: int = 2, long: int = 6) -> dict:
+    (ROOT / "runs").mkdir(exist_ok=True)  # runs/ is not in git; a fresh clone has none
     with tempfile.TemporaryDirectory(prefix="bench_ppo_", dir=ROOT / "runs") as workdir:
         steps_short, seconds_short = _time_ppo(short, device, Path(workdir))
         steps_long, seconds_long = _time_ppo(long, device, Path(workdir))

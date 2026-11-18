@@ -42,7 +42,6 @@ evaluation:
   require_equal_budget: true
   environment_seed: 1700000000
   bootstrap_draws: 10000
-  deterministic: false
   success_distance_m: 2.0
   success_time_fraction: 0.8
   success_bearing_deg: 45.0

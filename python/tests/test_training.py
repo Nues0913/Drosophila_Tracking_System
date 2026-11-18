@@ -517,17 +517,21 @@ class _RecoveryPolicy(torch.nn.Module):
         return action, hidden, hidden
 
 
-def _assert_nested_equal(left, right):
+def _assert_nested_close(left, right):
+    """Tolerance comparison (#131: no bitwise reruns); integer tensors such as RNG states
+    and non-float values still compare exactly."""
     if isinstance(left, torch.Tensor):
-        assert torch.equal(left, right)
+        torch.testing.assert_close(left, right, rtol=1e-6, atol=1e-7)
     elif isinstance(left, dict):
         assert left.keys() == right.keys()
         for key in left:
-            _assert_nested_equal(left[key], right[key])
+            _assert_nested_close(left[key], right[key])
     elif isinstance(left, (list, tuple)):
         assert len(left) == len(right)
         for a, b in zip(left, right, strict=True):
-            _assert_nested_equal(a, b)
+            _assert_nested_close(a, b)
+    elif isinstance(left, float) and isinstance(right, float):
+        assert math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-9) or left == right
     else:
         assert left == right
 
@@ -722,11 +726,11 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
     expected = torch.load(full / "training_checkpoint.pt", weights_only=True)
     observed = torch.load(interrupted / "training_checkpoint.pt", weights_only=True)
     for key in ("actor", "optimizer", "rng", "environment_steps"):
-        _assert_nested_equal(expected[key], observed[key])
+        _assert_nested_close(expected[key], observed[key])
     if algorithm == "ppo":
         if anchored:
             assert expected["bc_anchor_sha256"] == observed["bc_anchor_sha256"]
-            _assert_nested_equal(
+            _assert_nested_close(
                 [{k: v for k, v in row.items() if k != "elapsed_s"} for row in expected["reports"]],
                 [{k: v for k, v in row.items() if k != "elapsed_s"} for row in observed["reports"]],
             )
@@ -740,13 +744,13 @@ def test_interrupted_training_matches_uninterrupted_weights_optimizer_and_rng(
             "env_seeds",
             "action_histories",
         ):
-            _assert_nested_equal(expected[key], observed[key])
+            _assert_nested_close(expected[key], observed[key])
     elif algorithm == "es":
-        _assert_nested_equal(expected["perturbation_generator"], observed["perturbation_generator"])
+        _assert_nested_close(expected["perturbation_generator"], observed["perturbation_generator"])
     else:
         assert expected["dataset_count"] == observed["dataset_count"]
         if algorithm == "pretrain":
-            _assert_nested_equal(expected["decoder"], observed["decoder"])
+            _assert_nested_close(expected["decoder"], observed["decoder"])
             if scaled:
                 research = torch.load(interrupted / "pretraining_checkpoint.pt", weights_only=True)
                 for key in ("input_rms", "input_convergence", "input_initialized"):
@@ -803,7 +807,7 @@ def test_bc_anchor_loss_matches_analytic_gradients(coef, perturbation):
 
 
 @pytest.mark.parametrize("coef", [None, 0])
-def test_ppo_bc_anchor_disabled_matches_default_bitwise(tmp_path, monkeypatch, coef):
+def test_ppo_bc_anchor_disabled_matches_default(tmp_path, monkeypatch, coef):
     from flytrack_core.contracts import SensorContract
     from flytrack_train import ppo
 
@@ -835,19 +839,19 @@ def test_ppo_bc_anchor_disabled_matches_default_bitwise(tmp_path, monkeypatch, c
         for name in ("default", "explicit")
     ]
     for key in ("actor", "critic", "optimizer", "rng"):
-        _assert_nested_equal(default[key], explicit[key])
+        _assert_nested_close(default[key], explicit[key])
     weights = [
         torch.load(tmp_path / name / "actor/weights.pt", weights_only=True)
         for name in ("default", "explicit")
     ]
-    _assert_nested_equal(*weights)
+    _assert_nested_close(*weights)
     metrics = []
     for name, checkpoint in (("default", default), ("explicit", explicit)):
         assert "bc_anchor_sha256" not in checkpoint
         rows = json.loads((tmp_path / name / "training_metrics.json").read_text())
         assert all("bc_anchor_loss" not in row and "bc_anchor_distance" not in row for row in rows)
         metrics.append([{k: v for k, v in row.items() if k != "elapsed_s"} for row in rows])
-    _assert_nested_equal(*metrics)
+    _assert_nested_close(*metrics)
 
 
 @pytest.fixture
@@ -999,7 +1003,7 @@ def test_ppo_bc_anchor_reference_includes_warm_start_migration(
     observed = []
 
     def check_reference(parameters, reference, coef):
-        _assert_nested_equal(reference, expected)
+        _assert_nested_close(reference, expected)
         assert all(not p.requires_grad for p in reference)
         assert all(
             p.data_ptr() != ref.data_ptr() for p, ref in zip(parameters, reference, strict=True)
@@ -1396,7 +1400,7 @@ def test_pretrain_decoder_scale_rejects_invalid_options(tmp_path, monkeypatch, v
         pretrain.train_pretrain(config, tmp_path, 0, torch.device("cpu"))
 
 
-def test_pretrain_explicit_none_matches_default_bitwise(tmp_path, monkeypatch):
+def test_pretrain_explicit_none_matches_default(tmp_path, monkeypatch):
     pretrain, config = _patch_small_pretrain(monkeypatch)
     pretrain.train_pretrain(config, tmp_path / "default", 17, torch.device("cpu"))
     config["train"]["decoder_input_scale"] = "none"
@@ -1404,7 +1408,7 @@ def test_pretrain_explicit_none_matches_default_bitwise(tmp_path, monkeypatch):
     default = torch.load(tmp_path / "default/training_checkpoint.pt", weights_only=True)
     explicit = torch.load(tmp_path / "none/training_checkpoint.pt", weights_only=True)
     for key in ("actor", "decoder", "optimizer", "rng", "fit_state"):
-        _assert_nested_equal(default[key], explicit[key])
+        _assert_nested_close(default[key], explicit[key])
     assert set(default["decoder"]) == {"weight", "bias"}
 
 
@@ -1555,3 +1559,10 @@ def test_decoder_population_rms_floor_and_nonfinite_inputs(value):
         with pytest.raises(ValueError, match="finite"):
             initialize_decoder_inputs(*args)
         assert not bool(decoder.input_initialized)
+
+
+def test_evaluate_rejects_the_removed_deterministic_option(tmp_path):
+    from flytrack_train.evaluation import evaluate
+
+    with pytest.raises(ValueError, match="deterministic was removed"):
+        evaluate({"evaluation": {"deterministic": False}}, tmp_path, torch.device("cpu"))

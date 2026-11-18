@@ -1,6 +1,7 @@
 name: flytrack
 x-ml: &ml
-  image: flytrack-ml:0.1
+  # v2 images carry their own tag so building them never replaces the v1 images (:0.1) on a host (#127).
+  image: flytrack-ml:${FLYTRACK_IMAGE_TAG:-v2}
   build:
     context: .
     dockerfile: docker/ml.Dockerfile
@@ -13,7 +14,7 @@ x-ml: &ml
     - ./artifacts:/workspace/artifacts
     - ./configs:/workspace/configs:ro
 x-ros: &ros
-  image: flytrack-ros:0.1
+  image: flytrack-ros:${FLYTRACK_IMAGE_TAG:-v2}
   build:
     context: .
     dockerfile: docker/ros.Dockerfile

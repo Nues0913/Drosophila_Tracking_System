@@ -396,3 +396,27 @@ def test_invalid_v2_options_fail_before_large_scan(tmp_path, key, value):
     config[key] = value
     with pytest.raises(ValueError):
         extract(config)
+
+
+def test_lc10a_relay_must_be_the_same_cell_that_reaches_dna02():
+    """#161 B1: LC10a -> AOTU019 A and AOTU019 B -> both DNa02, with no A-B edge, has no path."""
+    import pandas as pd
+
+    nodes = pd.DataFrame(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "type": ["LC10a", "AOTU019", "AOTU019", "DNa02", "DNa02"],
+            "side": [-1, -1, -1, -1, 1],
+        }
+    )
+    config = {
+        "selection": {
+            "turn_dn_patterns": ["DNa02"],
+            "forward_dn_patterns": [],
+            "odor_seed_patterns": [],
+        }
+    }
+    split = pd.DataFrame({"pre": [1, 3, 3], "post": [2, 4, 5], "synapse_count": [20, 20, 20]})
+    assert not required_paths(nodes, split, config)["checks"]["lc10a_aotu_to_each_dna02"]
+    joined = pd.DataFrame({"pre": [1, 2, 2], "post": [2, 4, 5], "synapse_count": [20, 20, 20]})
+    assert required_paths(nodes, joined, config)["checks"]["lc10a_aotu_to_each_dna02"]

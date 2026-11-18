@@ -165,15 +165,30 @@ def rewire_rw2(graph: GraphV2, seed: int, swaps_per_edge: int = 10) -> GraphV2:
 def erdos_renyi_er2(graph: GraphV2, seed: int) -> GraphV2:
     """Sample distinct directed pairs and assign each original edge's attributes once.
 
-    The label and synapse-count multisets and the number of g parameters match the original graph.
+    Presynaptic ends are drawn per sign (#161 B2): excitatory and inhibitory nodes send exactly
+    as many edges as in the original graph, so the signed-edge ratio matches, not only the node
+    signs. Attributes are permuted within each sign, so the label and synapse-count multisets
+    and the number of g parameters also match the original graph.
     """
     rng = np.random.default_rng(seed)
-    n, e = graph.n_nodes, graph.n_edges
+    n = graph.n_nodes
     if n == 1:
         return graph
-    pre, post = np.divmod(rng.choice(n * (n - 1), size=e, replace=False), n - 1)
-    post += post >= pre
-    sample = rng.permutation(e)
+    excitatory = graph.sign[graph.pre] > 0
+    pre_parts, post_parts, sample_parts = [], [], []
+    for positive in (True, False):
+        sources = np.flatnonzero((graph.sign > 0) == positive)
+        edges = np.flatnonzero(excitatory == positive)
+        if not len(edges):
+            continue
+        index = rng.choice(len(sources) * (n - 1), size=len(edges), replace=False)
+        local, offset = np.divmod(index, n - 1)
+        pre = sources[local]
+        pre_parts.append(pre)
+        post_parts.append(offset + (offset >= pre))
+        sample_parts.append(rng.permutation(edges))
+    pre, post = np.concatenate(pre_parts), np.concatenate(post_parts)
+    sample = np.concatenate(sample_parts)
     weights = graph.synapse_count[sample]
     return replace(
         graph,

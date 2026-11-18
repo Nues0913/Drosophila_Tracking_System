@@ -197,8 +197,10 @@ def required_paths(nodes, edges, config):
     upstream = reach(motors, reverse)
     dnp09, dna02 = matched(["DNp09"]), matched(["DNa02"])
     lc9 = matched(["LC9"])
-    relay_types = {
-        labels[p]
+    # The same relay cell must receive LC10a and reach DNa02: matching relay type names let
+    # an LC10a -> AOTU019 cell A and an unrelated AOTU019 cell B -> DNa02 pass (#161 B1).
+    relay_cells = {
+        p
         for source in matched(["LC10a"])
         for p in adjacency[source]
         if labels[p] in ("AOTU019", "AOTU025")
@@ -212,7 +214,7 @@ def required_paths(nodes, edges, config):
         ),
         "lc9_to_each_dnp09": bool(dnp09) and all(lc9 & set(reverse[m]) for m in dnp09),
         "lc10a_aotu_to_each_dna02": bool(dna02)
-        and all(any(labels[p] in relay_types for p in reverse[m]) for m in dna02),
+        and all(relay_cells & set(reverse[m]) for m in dna02),
         "lc11_to_required_dn": bool(matched(["LC11"]) & upstream),
         "lc12_to_required_dn": bool(matched(["LC12"]) & upstream),
         "no_kc_apl_dpm": not any(

@@ -66,9 +66,12 @@ def normal(k: Tensor, dtype: torch.dtype = torch.float64) -> Tensor:
     return (radius * torch.cos(2 * math.pi * u2)).to(dtype)
 
 
+SEED_BITS = 52  # episode seeds are exact in float64, so a fused kernel takes one double
+
+
 def episode_seed(seed: int, env_index: Tensor, episode_index: Tensor) -> Tensor:
-    """Nonnegative int64 seed of episode k of environment i (interfaces.md)."""
-    return key(seed, env_index, episode_index) & ((1 << 62) - 1)
+    """Nonnegative seed of episode k of environment i (interfaces.md), below 2**52."""
+    return key(seed, env_index, episode_index) & ((1 << SEED_BITS) - 1)
 
 
 def draw(

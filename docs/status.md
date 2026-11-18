@@ -1,6 +1,86 @@
 # 目前進度與已知問題
 
-最後更新：2026-11-17（formal-v1 之後的探索都標為未登記、不改 formal-v1 的結論，見下方 2026-11-17、2026-11-16 兩節。以下是 formal-v1 的狀態：正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）和 R1（BC 配方，#4）都判定無效；formal 配方原樣重訓（R0）顯示基準在重訓下穩定。D2 的探索到此結束，formal-v2 不觸發；使用者 11-10 要求再試速度讀出，探索實驗 D3（#104，切斷梯度的 DN 列）也判定不成立。Gazebo 的 wander 接線已合併（PR #94），G1 試跑發現 policy 跟不上 20 Hz、因果計時大多沒有對上，已由 G0b（PR #99）修正；2060 和 4070 的 G1 範圍，valid、頻率與計時都通過（行為因明暗相反沒有意義）；G2 派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，G2 暫停；修正 G0c 已合併（PR #102），2060、4070、4060 用新世界的 G1 範圍，行為都和 2D 一致，G2 在 4070、4060 上跑完並通過收件（#88）：已登記比較的判讀和 2D 完全相同，只用 4070 的 seed、漏記撞牆的保守重算都沒有改變判讀；G3 在 Gazebo 也未達成（curved normal 最高 0.450，4070 上 VO-late 的延遲 p95 51.5 ms）。G2 期間 PM 在 G2 的世界量到兩個和 2D 的差異：斜角撞牆記不到碰撞、轉向比指令快 12%，處理方式在資料出來之前登記；修正 G0d 已在 G2 結束後合併（PR #107）。2D 展示素材 V1 已交付並驗收（#97）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準，總追蹤是 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，逐項檢查清單見 [後續計畫.md](../後續計畫.md)，驗證證據見 [execution_log.md](execution_log.md)。
+最後更新：2026-11-18（formal-v1 之後的研究和工程都不改 formal-v1 的結論，見下方 2026-11-18、2026-11-17、2026-11-16 三節。以下是 formal-v1 的狀態：正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）和 R1（BC 配方，#4）都判定無效；formal 配方原樣重訓（R0）顯示基準在重訓下穩定。D2 的探索到此結束，formal-v2 不觸發；使用者 11-10 要求再試速度讀出，探索實驗 D3（#104，切斷梯度的 DN 列）也判定不成立。Gazebo 的 wander 接線已合併（PR #94），G1 試跑發現 policy 跟不上 20 Hz、因果計時大多沒有對上，已由 G0b（PR #99）修正；2060 和 4070 的 G1 範圍，valid、頻率與計時都通過（行為因明暗相反沒有意義）；G2 派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，G2 暫停；修正 G0c 已合併（PR #102），2060、4070、4060 用新世界的 G1 範圍，行為都和 2D 一致，G2 在 4070、4060 上跑完並通過收件（#88）：已登記比較的判讀和 2D 完全相同，只用 4070 的 seed、漏記撞牆的保守重算都沒有改變判讀；G3 在 Gazebo 也未達成（curved normal 最高 0.450，4070 上 VO-late 的延遲 p95 51.5 ms）。G2 期間 PM 在 G2 的世界量到兩個和 2D 的差異：斜角撞牆記不到碰撞、轉向比指令快 12%，處理方式在資料出來之前登記；修正 G0d 已在 G2 結束後合併（PR #107）。2D 展示素材 V1 已交付並驗收（#97）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準。formal-v1 的總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28) 已關閉，之後的研究在 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)，未解決的問題和擱置的研究列在 [後續計畫.md](../後續計畫.md)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，驗證證據見 [execution_log.md](execution_log.md)。
+
+## 2026-11-18 T1／S8 結果、G3 延遲重測、G0g 與 Gazebo 3D 展示（#35、#110、#121、#123）
+
+接續下面 2026-11-17 一節。都在 formal-v1 之後，formal-v1 的結論不變。證據包在 release `research-35`。
+
+### 使用者的決定（11-17）
+2026-11-17 一節列出四項變動。使用者決定照 3 → 2 → 1 的順序做，第 4 項（plume 衰減）不做：
+- 3：後續研究的主要終點改成 2D wander 遮蔽的成功率，curved 照樣報告。
+- 2：T1，加可見度閘門的轉向讀出。
+- 1：S8，衍生圖（補回 LC9→DNp09）加上同一個閘門。
+
+做法和判讀規則都在看資料之前登記（[#35 6948106054](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6948106054)）。
+
+### T1／S8：都不成立（[#35 6972415415](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6972415415)）
+- **做法**
+  - **T1**
+    - 正式 VO-late actor 不動。轉向改成 ω = (1 − p)·ω_formal + p·h_odor，速度用 actor 自己的。
+    - h_odor 是正式 6 個轉向特徵上的 ridge 回歸，只用遮蔽時的步數，標籤是 R1 的氣味 teacher 轉向。
+    - p 是 134 型雙側 DN 群體上的邏輯回歸，學的是「現在是否遮蔽」。
+    - 在 wander 上做 4 輪 DAgger。
+    - 讀出放在 artifact 外，所以這是探針層級的閉環評估。
+  - **S8**：S6 的衍生圖，移植正式 BC actor；核心凍結，只擬合 DNp09 的速度讀出（S7 的做法），再加上 T1 的閘門。
+- **判讀**
+  - VO-late 的 5 個正式 seed，每個 seed 100 回合，評估區段是 1,990,000,000 + i，和正式 actor（base）照環境 seed 配對。
+  - 四項規則都要過：
+    1. 遮蔽成功率 ≥ base + 0.10，而且 bootstrap 95% CI 的下限 > 0；
+    2. normal 成功率 ≥ base − 0.05；
+    3. normal 方位誤差 ≤ base + 5°；
+    4. normal 碰撞率 ≤ base + 0.05。
+
+| 候選 | wander 遮蔽成功率 vs base | 差 [95% CI] | normal 成功率差 | normal 方位誤差差 | normal 碰撞差 | 規則 1／2／3／4 |
+| --- | --- | --- | --- | --- | --- | --- |
+| T1 | 0.034 vs 0.014 | +0.020 [+0.002, +0.038] | +0.002 | +2.8° | −0.036 | ✗／✓／✓／✓ |
+| S8 | 0.000 vs 0.014 | −0.014 [−0.026, −0.004] | −0.122 | +29.0° | −0.054 | ✗／✗／✗／✓ |
+| S8 自己的轉向 | 0.000 vs 0.014 | −0.014 [−0.026, −0.004] | −0.122 | +28.9° | −0.060 | ✗／✗／✗／✓ |
+
+- **T1**
+  - 閘門能分辨遮蔽與否：wander 遮蔽情境的閘門正確率是 0.987。氣味轉向頭的擬合 R²（遮蔽時）是 0.55–0.76。
+  - 遮蔽成功率只多了 0.02，遠低於登記的 +0.10。normal 不受影響；遮蔽時的碰撞率從 0.508 降到 0.366。
+  - 瓶頸不在偵測遮蔽，而在遮蔽時只靠氣味轉向追不回目標。
+  - 11-17 的零訓練探針（感覺碼直接讀轉向，加上 teacher 的速度）遮蔽可以到 0.70，T1 只有 0.034。兩者的差別在轉向特徵的來源和速度，這次沒有分開檢驗。
+- **S8**
+  - 移植之後，seed 1–4 的 normal 成功率掉了 0.13–0.29，只有 seed 0 變好（+0.20）。
+  - S8 比 T1 的遮蔽成功率低 0.034，normal 成功率低 0.124。這次的移植方式不可行。
+- **偏離登記**
+  - 登記之後、評估之前，S8 的閘門 DN 池改成直接建，因為 S8 actor 已經帶有 DNp09 的 forward rows。T1 的池和修正前逐位元相同。
+  - curved 原本要跑 5 個 seed。使用者要求直接下結論，所以停在 seed 0–2（seed 2 只跑了一部分）。curved 不是判讀終點，不影響結論。
+- **curved（探索性，沒有登記）**
+  - T1 的遮蔽成功率是 0.128 vs 0.034（3 個 seed 方向一致），normal 和 base 相同；S8 的遮蔽成功率是 0。
+  - 只有 3 個 seed，也沒有登記，只能當假說。
+- 證據包：`research_t1_s8_2060.tar.gz`（`67eebeb2…`），不含權重。
+- 閘門不做進 artifact，formal-v1 的 artifact 不變。
+
+### G3 延遲重測（#110，4070，main `e5a166b`）
+- 在三項等價加速（#109、#115、#117）之後，cweiting 在 4070 上照 G2 的規則重測。
+  - CPU 版六組合併 p95 是 43.4–44.9 ms，低於 50 ms；VO-late 是 44.9 ms，G2 時是 51.5 ms。
+  - GPU 版 52.3–53.1 ms，只當參考。
+  - PM 從 control traces 獨立重算，數字相符（[#110 6957460972](https://github.com/Nues0913/Drosophila_Tracking_System/issues/110#issuecomment-6957460972)）。
+- **formal-v1 的 G3 判定照舊（未達成）**：成功率那一半沒有改善。另外這次用新的取樣核（subrays），G2 用的是 gaussian，所以和 G2 的差只當參考，不算同條件的配對差。
+
+### G0g（#121，PR #122，main `daa6e5f`）
+- 目標的 collision 圓柱從 0.15 m 縮到 0.145 m，視覺外形不變。兩個中心最近可以到 0.325 m，比判定距離 0.33 m 小。
+- 用 contact sensor 核對：12 個回合都有旗標，旗標減第一次 contact 是 −0.022 到 +0.020 s；G1 範圍 48/48 和 2D 相同（[#121 6958797577](https://github.com/Nues0913/Drosophila_Tracking_System/issues/121#issuecomment-6958797577)）。
+- 揭露第 11 點已經更新，G2 不重跑。
+
+### Gazebo 3D 展示 V2（#123，PR #124，main `ed71149`）
+- 加了預設關閉的展示相機（跟拍和全場），在目前的 main 上重播 V1 的 11 個回合；main 已經包含 G0e 和 G0g。
+  - 成功與否和有沒有碰撞，11／11 和 2D 相同；方位誤差最多差 0.40°。
+  - 和 G0d 版不同的只有 VO-late occlusion ep3：這次和 2D 一樣在約 40.8 s 撞牆，G0d 版沒有撞。三個版本都是失敗，原因（G0e 或 G0g）不追。
+  - 錄影時每格頻率最低 19.970 Hz，計時比例 1.0000。
+  - 相機打開時，policy 的影像和關閉時逐位元相同。
+- 檔案：`gazebo_v2_demo_4070_highlights.mp4`（88 s 精華）、`gazebo_v2_demo_4070.tar.gz`（`13ef05de…`，11 支影片、對照表和證據）、`gazebo_v2_demo_4070_frames.tar.gz`（原始影格）。驗收在 [#123 6967114350](https://github.com/Nues0913/Drosophila_Tracking_System/issues/123#issuecomment-6967114350)。
+
+### G2 感官方位解碼：更正驗收對照表
+- [requirements_traceability.md](requirements_traceability.md) 原本寫「正式預算的解碼與門檻確認未完成」，這是 11-10 之後沒有更新。
+- 實際上正式 pretrain 的每條鏈都做了 validate-pretrain，全部通過：
+  - 視覺 25 個 actor 的方位 MAE 是 0.78–6.98°（門檻 15°）；
+  - 嗅覺 25 個是 1.99–4.28°（門檻 30°）；
+  - presence 正確率 ≥ 0.9915。
+- 檔案在 release `formal-v1` 的 F1／F2 包，路徑是 `runs/pretrain/*/seed_*/{vision,odor}/validation/metrics.json`。對照表已改成「達成」。
 
 ## 2026-11-17 formal-v1 之後的研究：結果與結論（#35）
 
@@ -16,7 +96,7 @@
    - formal-v1 已評估 F3 curved 和 F4 wander 的四個情境，包含遮蔽；wander 是已登記的次要運動（[#84 驗收](https://github.com/Nues0913/Drosophila_Tracking_System/issues/84#issuecomment-6541430822)）。R1 才只在 curved 評估。formal-v1 的融合主張仍依原協定判讀。
    - 感覺碼裡的氣味差和原始的左右濃度對比相關 0.999。從感覺碼直接讀出轉向、再用視覺碼學可見度閘門，wander 遮蔽 0.70、normal 1.00（20 回合）。**這個探針繞過連接體核心，且全程用 teacher 的特權速度**；只能支持閘門的可行性。切換不足可能是 R1 的限制之一，還不能認定是唯一原因或視為正式 VO-late 的結果。
 4. **Gazebo 的兩個平台差異都找到原因**：目標對比偏低是相機取樣核（G0e，已修正，揭露第 26 點）；撞目標的旗標會晚，是物理外形的半徑和剛好等於判定距離（G0f，修正排在 G0g／#121，揭露第 11 點）。**RS 退化的原因只找到一部分**：保留度數的隨機重接打亂了左右對應（2026-11-16 一節），但保留左右側的隨機接線（R2）訓練之後也完全退化（成功率 0），所以左右對應不是唯一的原因。
-5. G3 仍未達成。延遲的部分三個等價的加速（#109、#115、#117）都已合併，4070 上的正式重測（#110，main `e5a166b`）還沒做。
+5. G3 仍未達成。延遲的部分三個等價的加速（#109、#115、#117）都已合併，4070 上的正式重測（#110，main `e5a166b`）還沒做。（11-18：重測已完成，CPU 版 p95 低於 50 ms，G3 判定不變，見上方 2026-11-18 一節。）
 
 ### 訓練實驗（都用 S2 的五項規則；VO-late seed 0、1，每格 100 回合）
 | 實驗 | 做法 | normal 成功率（基準 → 候選，seed 0／1） | 速度回合內標準差／和 teacher 的相關 | 判讀 |
@@ -42,7 +122,7 @@
   - 標籤改成相加的形式、只擬合正式的 6 個特徵：遮蔽 0.05／0.00 → 0.40／0.45，normal 0.95／0.35 → 0.55／0.55。速度改用 actor 自己的（固定 0.17 m/s）：遮蔽 0.00 → 0.15／0.20。
 - 證據：`research_20261117_probes.tar.gz`、`research_20261117_probes2.tar.gz`（[6925466534](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6925466534)、[6940738752](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6940738752)）。
 
-### 需要使用者決定的變動（都還沒有做）
+### 需要使用者決定的變動（11-17 時都還沒有做；使用者的決定和 T1／S8 的結果見上方 2026-11-18 一節）
 1. **子圖抽取**：門檻改成對「細胞型到 DN 的突觸總和」套用，把 LC9 整群和它到 DNp09 的邊補回正式子圖（4,502 → 4,613 節點）。S6、S7 顯示光補圖還不夠，要配合速度讀出的訓練方式。
 2. **讀出加可見度閘門**（轉向在看不到目標時切到氣味支路）。
 3. **後續研究是否把 wander 遮蔽列為主要終點**（curved 仍報告）。formal-v1 已有 wander 次要評估，不更動既有終點和判讀。
@@ -590,7 +670,14 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 8. **輸入映射**：沒有真實 RF 座標，LC 輸入採型別／側別的空間池化；ORN Hill 閾值是模擬設定，不是特定氣味的實測受體曲線。
 9. **變體口徑**：V／O 是同一張圖的輸入消融。VO-late 共享型別參數但隔離活性；RS 保留原邊參數槽的共享標籤。這些都寫進 model_card。
 10. **2D 世界**：2.5D 光線投射，Gymnasium 向量環境是 CPU 上的平行子行程。2D 有大小／亮度的領域隨機化，Gazebo 用固定的幾何和材質，兩者的感測分布還沒證明一致（#23）。
-11. **ROS 碰撞**用場地、半徑與障礙幾何判斷，沒有接 Gazebo contact sensor。G0f（#116，PR #120，formal-v1 之後）用預設關閉的 contact sensor 核對：撞牆的判定和實際接觸只差取樣延遲（≤ 1 個 pose 週期再加 20 Hz 的 tick）；**撞目標時旗標晚 5.7–57 s、9 次裡 2 次沒有觸發**，原因是 agent 和目標的外形半徑和（0.18＋0.15 m）剛好等於判定距離 0.33 m。G2 的保守重算已經把「2D 撞到、Gazebo 沒記到又算成功」的回合都改成失敗（不分撞牆或撞目標），判讀不變；只在 Gazebo 撞目標、而且沒記到的回合，G2 沒有逐步距離，量不出來。修正是 G0g（#121），不回頭改 G2。
+11. **ROS 碰撞**用場地、半徑與障礙幾何判斷，沒有接 Gazebo contact sensor。
+    - G0f（#116，PR #120，formal-v1 之後）用預設關閉的 contact sensor 核對：撞牆的判定和實際接觸只差取樣延遲（≤ 1 個 pose 週期再加 20 Hz 的 tick）。
+    - **撞目標共 9 次**：
+      - 追目標時撞上 8 次，其中 **6 次旗標晚 5.7–57 s，2 次完全沒有觸發**；
+      - 另 1 次是撞牆途中正面撞到目標，旗標只晚 0.04 s（拆法依 #119 的 review）。
+    - 原因是 agent 和目標的外形半徑和（0.18＋0.15 m）剛好等於判定距離 0.33 m，物理把兩個中心擋在判定線附近。
+    - G2 的保守重算已經把「2D 撞到、Gazebo 沒記到又算成功」的回合都改成失敗（不分撞牆或撞目標），判讀不變。只有「Gazebo 撞目標、而且沒記到」的回合，G2 沒有逐步距離，量不出來。
+    - **修正是 G0g**（#121，PR #122，main `daa6e5f`）：目標的 collision 外形縮到 0.145 m，視覺外形不變。12 回合的旗標都在第一次 contact 的 ±0.022 s 內，G1 範圍 48/48 和 2D 相同。G2 不重跑。
 12. **時鐘與延遲**：行為指標用模擬時鐘，推論耗時用 wall time。sensor-to-command 的因果計時**已有契約與實作**：`SensorTiming.msg`／`ControlTrace.msg` 定義同一台主機上 `CLOCK_MONOTONIC` 的 source → ingress → forward → received → control → published 時間線，`flytrack_eval.latency.CausalLatency` 檢查時鐘域、因果順序和覆蓋率，有 `test_latency.py` 測試。2026-10-19 的 CPU／GPU 實測均未達 50 ms，詳見第 9 點與 [ros_execution.md](ros_execution.md)。端到端 p95 必須由各筆命令最舊的有效 contributing sample 至命令發布的完整差值計算；各階段 p95、不同 sensor 的階段最大值不可拼成一條因果路徑。
 13. **續訓**：同一階段中斷後可以完整接續（權重、optimizer、RNG、環境重播）；跨階段以 `init_artifact` 暖啟動，recovery 綁定上游 actor 的內容（#14）。改了程式碼或設定之後，舊的 checkpoint 不能接續；#36 合併後，舊的 pretrain／BC artifact 都要重跑。
 14. **號誌與 NT 信心**（#27）：
@@ -603,6 +690,7 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
     - 4060 的延遲只報告，不用來判定。sensor→command p50 分成 42.5–59.6 ms 和 107.7–126.6 ms 兩群，另有一格是 79.9 ms；分界是推論時間：每格推論時間的中位數 ≤ 24.3 ms 的都在低的那一群，≥ 25.0 ms 的除了一格（curved RS seed 3 noise，79.9 ms）都在高的那一群，大約多一個控制週期（50 ms）。VO-late 每格推論時間的中位數是 26.2–31.5 ms，所以在 4060 上每一格都在高的那一群。
     - 4060 的 wander seed 2，最後三格 RS 和主機上一段無關的 GPU 負載重疊（11-10 15:31–16:18Z，平均 34%、最高 64%）。noise、conflict 的推論時間是 28.6、27.8 ms，比沒有負載的 RS 格子都高（≤ 25.2 ms），延遲變高可以歸因於負載把推論時間推過門檻；occlusion（25.1 ms）不能確定。不重跑（#88 Decision 6806858753；這一點修正了那則 Decision「拆不出來」的說法，決定不變）。
     - 4070 沒有分群：每格推論時間是 12.8–19.9 ms，p50 是 33.0–42.6 ms，連續分布。
+    - **formal-v1 之後的延遲重測**（#110，4070，main `e5a166b`）：已含三項等價加速 #109、#115、#117，取樣核是 subrays。CPU 版六組合併 p95 是 43.4–44.9 ms，低於 50 ms；GPU 版是 52.3–53.1 ms。這是工程結果，成功率沒有改善，所以 G3 判定不變。
 18. **前進速度是常數**（#90）：VO 和 VO-late 的速度只由 DNp09 讀出，DNp09 在圖上的輸入很少，所以速度固定在 0.168–0.179 m/s，低於目標速度 0.200 m/s。normal 的距離失敗和遮蔽期間直線撞牆都和這一點有關。報告不能把 G3 未達成歸因於訓練預算，也不能把 VO-late 拿掉氣味後的下降說成它用了氣味的方向。formal-v1 之後做了兩個探索實驗：
     - S1（#95）把速度讀出的輸入放大，速度開始會變，但轉向或遮蔽的表現變差；
     - D3（#104）改加切斷梯度的 DN 列，速度只是整體變快，接近目標時沒有減速，撞上目標的次數變多。
@@ -633,8 +721,8 @@ ROS／Gazebo 部署鏈路已在 Gazebo 實跑通過（[#22](https://github.com/N
 3. ~~**協定必交的分析**（A1，#90）~~：已完成並驗收，結果見上方 2026-11-08 一節。之後並行的兩個探索實驗：BC 配方實驗 R1（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)，@MiLong9487，判讀第 3 點已在看到結果前修正為相對基準的配對差）和 BC 預算實驗 B1（[#92](https://github.com/Nues0913/Drosophila_Tracking_System/issues/92)，使用者）。A1 發現速度輸出是常數，所以 B1 先暫緩，後來關閉。改做的速度讀出校準 S1（[#95](https://github.com/Nues0913/Drosophila_Tracking_System/issues/95)）判定無效，見上方 S1 一節。R1 也判定無效，BC 配方路線到此為止；重訓變異 R0 顯示基準穩定，見上方 R1／R0 一節。D2 已結束，formal-v2 不觸發（[#28 Decision 6718154301](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28#issuecomment-6718154301)）。使用者 11-10 要求再試速度讀出，D3（[#104](https://github.com/Nues0913/Drosophila_Tracking_System/issues/104)）判定不成立，見上方 D3 一節。#4 已結案；P3、PPO 和文獻上的候選解法都放在 #35，由使用者決定，不進正式矩陣。
 4. ~~**Gazebo 主要比較（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)）**~~：已完成。G0 的 wander 接線已合併（PR #94，main `c339c0c`，PM 補跑 colcon test 通過）。G1 在 2060 上發現的兩個問題已由 G0b 修正（PR #99，main `4a537af`）；2060 和 4070 的 G1 範圍，valid、頻率和計時都通過（行為因為輸入明暗相反沒有意義）。完整矩陣 G2（curved、wander 各 2,000 回合，加上事後 GRU 各 400 回合）派工後暫停：2D 與 Gazebo 的一致性（原 #23）量測發現，Gazebo 的視覺輸入和 2D 明暗相反。修正 G0c 已合併（PR #102，main `a58b7b2`）；2060、4070、4060 的 G1 範圍，行為都和 2D 一致（GO），G2 已在 4070、4060 上跑完（工具包 v2），交付和收件見上方 2026-11-14 一節。已登記比較的判讀和 2D 完全相同，只用 4070 seed 的敏感度分析和漏記撞牆的保守重算都沒有改變判讀；G3 未達成。斜角撞牆和轉向倍率的修正 G0d 已在 G2 結束後合併（PR #107，main `8e19c9b`）。報告見 [formal_v1_report.md](formal_v1_report.md)。
 5. 並行：#49 的一次短回放已由 #51 報告驗收結案；#52 的 trace 狀態與 reset 清除 pending 可觀測性已由 #53 合併，PM colcon 10 項全過、無 skip；既有發布／reset 行為不變。下一個效能候選是 camera hex-eye 投影的等價優化設計，尚未核准實作或追加回放；2D／Gazebo 一致性（原 #23）已併入 #88，仍由 @cweiting731 處理。#42 已由 #44 結案。
-6. ~~Gazebo 主要比較（#88）→ 報告與展示~~：報告是 [formal_v1_report.md](formal_v1_report.md)。#22 已結案，延遲量測由 #88 接手。2D 的展示素材已由 V1（#97）交付並驗收。Gazebo 的展示和 rosbag：G0d 合併後重錄 11 個回合並交付（release `formal-v1` 的 `gazebo_demo_g0d_2060.tar.gz`（`4c2b74d7…`））。
+6. ~~Gazebo 主要比較（#88）→ 報告與展示~~：報告是 [formal_v1_report.md](formal_v1_report.md)。#22 已結案，延遲量測由 #88 接手。2D 的展示素材已由 V1（#97）交付並驗收。Gazebo 的展示和 rosbag：G0d 合併後重錄 11 個回合並交付（release `formal-v1` 的 `gazebo_demo_g0d_2060.tar.gz`（`4c2b74d7…`））。3D 影片 V2（#123）在 G0e、G0g 之後的 main 上重播同樣的 11 個回合，交付在 release `research-35`（2026-11-18 一節）。
 
-7. **formal-v1 之後的研究（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）**：使用者 11-16 授權 PM 全力推進，結果和結論見上方 2026-11-17、2026-11-16 兩節。速度（S2、S4–S7）和遮蔽記憶（M1）的訓練實驗都不成立；找到的可能原因是 DNp09 的輸入被子圖門檻濾掉（結構上確認），以及氣味需要「看不見目標時切換」而晚期融合的讀出只能相加（零訓練探針支持，還不能認定是唯一原因）。R2（#113）主要判讀名目上成立，但對照組退化。要再往下做需要使用者決定四項變動（見 2026-11-17 一節）。還在進行的有延遲重測（#110，main `e5a166b`），之後是 G0g（#121）；S3（#112）以「未執行」關閉。
+7. **formal-v1 之後的研究（[#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)）**：使用者 11-16 授權 PM 全力推進，結果和結論見上方 2026-11-17、2026-11-16 兩節。速度（S2、S4–S7）和遮蔽記憶（M1）的訓練實驗都不成立；找到的可能原因是 DNp09 的輸入被子圖門檻濾掉（結構上確認），以及氣味需要「看不見目標時切換」而晚期融合的讀出只能相加（零訓練探針支持，還不能認定是唯一原因）。R2（#113）主要判讀名目上成立，但對照組退化。使用者 11-17 決定做其中三項：T1（可見度閘門）和 S8（衍生圖加閘門），都照登記的規則判定不成立，見 2026-11-18 一節。延遲重測（#110）、G0g（#121）和 Gazebo 3D 展示影片 V2（#123）都已完成並驗收。S3（#112）以「未執行」關閉。
 
 舊版的逐日診斷紀錄保留在 [dn/](dn/)、[fixes_2026-10-17.md](fixes_2026-10-17.md) 和 [training_time.md](training_time.md)，這些是歷史紀錄，不代表目前狀態。

@@ -94,7 +94,15 @@ def test_episode_records_validate_and_accept_v1_actors():
             reacquisition_censored=None,
         )
     )
-    validate_episode_record(_record(scenario="noise", noise_scale=0.75))
+    validate_episode_record(
+        _record(
+            scenario="noise",
+            noise_scale=0.75,
+            occlusion_tracking_fraction=None,
+            reacquisition_time_s=None,
+            reacquisition_censored=None,
+        )
+    )
     assert set(_record()) == set(EPISODE_FIELDS)
 
 
@@ -110,6 +118,12 @@ def test_episode_records_validate_and_accept_v1_actors():
         ({"within_distance_fraction": -0.1}, "within_distance_fraction"),
         ({"noise_scale": 0.75}, "noise_scale"),
         ({"scenario": "noise"}, "noise_scale"),
+        ({"collision": True}, "success disagrees"),
+        ({"tracking_fraction": 0.5, "within_distance_fraction": 0.6}, "success disagrees"),
+        ({"steps": 0}, "steps"),
+        ({"tracking_fraction": 0.96}, "cannot exceed"),
+        ({"reacquisition_censored": True}, "censored"),
+        ({"reacquisition_censored": None}, "reacquisition_censored = false"),
     ],
 )
 def test_bad_episode_records_are_refused(override, message):
@@ -123,3 +137,16 @@ def test_rewired_variants_need_their_structure_seed():
         validate_model_card(card)
     card["model_config"]["structure_seed"] = 3
     validate_model_card(card)
+
+
+def test_occlusion_fields_must_be_null_outside_occlusion():
+    with pytest.raises(ValueError, match="outside the occlusion scenario"):
+        validate_episode_record(_record(scenario="normal"))
+    validate_episode_record(
+        _record(
+            scenario="normal",
+            occlusion_tracking_fraction=None,
+            reacquisition_time_s=None,
+            reacquisition_censored=None,
+        )
+    )

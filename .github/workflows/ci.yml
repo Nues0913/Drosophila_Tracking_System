@@ -29,7 +29,9 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: |
           # Documentation-only changes skip the tests (a skipped job counts as passed).
-          if files=$(git diff --name-only "$BASE"...HEAD 2>/dev/null) && [ -n "$files" ] \
+          # quotepath=false keeps non-ASCII names such as 後續計畫.md unquoted, so they match.
+          if files=$(git -c core.quotepath=false diff --name-only "$BASE"...HEAD 2>/dev/null) \
+            && [ -n "$files" ] \
             && ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/)'; then
             echo "code=false" >> "$GITHUB_OUTPUT"
           else

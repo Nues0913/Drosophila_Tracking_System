@@ -66,6 +66,11 @@ def validate_model_card(card: Mapping) -> None:
             raise ValueError(f"Model card {key} is missing {missing}")
     if card["variant"] not in VARIANTS:
         raise ValueError(f"Unknown v2 variant {card['variant']}; choose {VARIANTS}")
+    config = card["model_config"]
+    if config.get("variant") != card["variant"]:
+        raise ValueError("model_config.variant must equal the card's variant")
+    if card["variant"] in ("RW2", "ER2") and not isinstance(config.get("structure_seed"), int):
+        raise ValueError(f"{card['variant']} model_config needs the integer structure_seed")
     expected = set(required_files(card["variant"])) - {"model_card.json", "SHA256SUMS"}
     if set(card["files"]) != expected:
         raise ValueError(f"Model card files must list exactly {sorted(expected)}")

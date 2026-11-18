@@ -18,13 +18,19 @@ EPISODE_FIELDS: dict[str, tuple[type, ...]] = {
     "episode_seed": (int,),
     "success": (bool,),
     "tracking_fraction": (float,),
+    "within_distance_fraction": (float,),  # distance criterion only (v1 metric)
     "collision": (bool,),
     "steps": (int,),
+    # Averaged over the steps before the episode ended: a variant that collides early is
+    # only scored on its first steps, so compare these across variants with care (#145).
     "mean_distance_m": (float,),
     "bearing_error_deg": (float,),
     "mean_speed_m_s": (float,),
     "speed_std_m_s": (float,),
     "occlusion_tracking_fraction": (float, type(None)),
+    "reacquisition_time_s": (float, type(None)),  # null without occlusion or when censored
+    "reacquisition_censored": (bool, type(None)),  # null without occlusion
+    "noise_scale": (float, type(None)),  # protocol noise scale; null outside the noise scenario
     "artifact_sha256": (str,),
     "commit": (str,),
 }
@@ -49,5 +55,8 @@ def validate_episode_record(record: Mapping) -> None:
     for name, allowed in (("world", WORLDS), ("scenario", SCENARIOS), ("motion", MOTIONS)):
         if record[name] not in allowed:
             raise ValueError(f"{name} must be one of {allowed}")
-    if not 0 <= record["tracking_fraction"] <= 1:
-        raise ValueError("tracking_fraction must be in [0, 1]")
+    for name in ("tracking_fraction", "within_distance_fraction"):
+        if not 0 <= record[name] <= 1:
+            raise ValueError(f"{name} must be in [0, 1]")
+    if (record["noise_scale"] is None) != (record["scenario"] != "noise"):
+        raise ValueError("noise_scale is set exactly for the noise scenario")

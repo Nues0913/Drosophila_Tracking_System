@@ -27,7 +27,7 @@ _REQUIRED = {
     "variant": str,
     "sensor_contract_sha256": str,
     "files": dict,  # file name -> sha256, for every required file except the card and sums
-    "state": dict,  # sensory_state_size, central_state_size, code_size
+    "state": dict,  # central_state_size, code_size (the sensory state is internal)
     "control_dt": float,
     "neural_dt": float,
     "n_ommatidia": int,
@@ -35,7 +35,7 @@ _REQUIRED = {
     "provenance": dict,  # git_sha, dirty, config_sha256, stages
 }
 _NESTED = {
-    "state": ("sensory_state_size", "central_state_size", "code_size"),
+    "state": ("central_state_size", "code_size"),
     "action_limits": ("v_max", "omega_max"),
     "provenance": ("git_sha", "dirty", "config_sha256", "stages"),
 }

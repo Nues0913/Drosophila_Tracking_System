@@ -19,7 +19,7 @@ def _card(variant="VO2"):
         "variant": variant,
         "sensor_contract_sha256": "0" * 64,
         "files": files,
-        "state": {"sensory_state_size": 1, "central_state_size": 2, "code_size": 3},
+        "state": {"central_state_size": 2, "code_size": 3},
         "control_dt": 0.05,
         "neural_dt": 0.01,
         "n_ommatidia": 721,
@@ -63,6 +63,7 @@ def _record(**override):
         "episode_seed": 7,
         "success": True,
         "tracking_fraction": 0.9,
+        "within_distance_fraction": 0.95,
         "collision": False,
         "steps": 1200,
         "mean_distance_m": 1.2,
@@ -70,6 +71,9 @@ def _record(**override):
         "mean_speed_m_s": 0.2,
         "speed_std_m_s": 0.05,
         "occlusion_tracking_fraction": 0.7,
+        "reacquisition_time_s": 1.5,
+        "reacquisition_censored": False,
+        "noise_scale": None,
         "artifact_sha256": "0" * 64,
         "commit": "abc",
     }
@@ -78,7 +82,15 @@ def _record(**override):
 
 def test_episode_records_validate_and_accept_v1_actors():
     validate_episode_record(_record())
-    validate_episode_record(_record(variant="v1:VO-late", occlusion_tracking_fraction=None))
+    validate_episode_record(
+        _record(
+            variant="v1:VO-late",
+            occlusion_tracking_fraction=None,
+            reacquisition_time_s=None,
+            reacquisition_censored=None,
+        )
+    )
+    validate_episode_record(_record(scenario="noise", noise_scale=0.75))
     assert set(_record()) == set(EPISODE_FIELDS)
 
 
@@ -91,6 +103,9 @@ def test_episode_records_validate_and_accept_v1_actors():
         ({"tracking_fraction": 1.5}, "tracking_fraction"),
         ({"mean_distance_m": float("nan")}, "finite"),
         ({"variant": "VO"}, "Unknown variant"),
+        ({"within_distance_fraction": -0.1}, "within_distance_fraction"),
+        ({"noise_scale": 0.75}, "noise_scale"),
+        ({"scenario": "noise"}, "noise_scale"),
     ],
 )
 def test_bad_episode_records_are_refused(override, message):

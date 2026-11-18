@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import signal
 import time
-from pathlib import Path
 
 import numpy as np
 import rclpy
-from flytrack_core.contracts import SensorContract
 from flytrack_core.model import load_policy_artifact
 from flytrack_core.sensing.hex_eye import CAMERA_KERNELS, HexEye
 from flytrack_interfaces.msg import NeuralActivity, OdorReading
@@ -23,6 +20,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 from std_srvs.srv import Trigger
 
+from .contract import check_deployment_contract
 from .profiling import PolicyProfiler
 from .runtime import PolicyRuntime
 from .timing import ControlTracer
@@ -105,13 +103,7 @@ class ConnectomePolicyNode(Node):
             )
         device = str(self.get_parameter("device").value)
         policy, contract, self.card = load_policy_artifact(artifact, device=device)
-        expected_path = str(self.get_parameter("sensor_contract_json").value)
-        if expected_path:
-            expected = SensorContract.from_dict(
-                json.loads(Path(expected_path).read_text(encoding="utf-8"))
-            )
-            if expected.sha256() != contract.sha256():
-                raise ValueError("Deployment sensor contract differs from model artifact")
+        check_deployment_contract(str(self.get_parameter("sensor_contract_json").value), contract)
         self.contract = contract
         self.vision_kernel = str(self.get_parameter("vision_kernel").value)
         if self.vision_kernel not in CAMERA_KERNELS:

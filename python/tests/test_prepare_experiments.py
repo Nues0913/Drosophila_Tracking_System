@@ -35,6 +35,7 @@ def _prepare(tmp_path, monkeypatch, *extra):
     return out
 
 
+@pytest.mark.slow
 def test_formal_configs_use_the_spec_and_budget_the_extra_turn_rows(tmp_path, monkeypatch):
     out = _prepare(tmp_path, monkeypatch)
     budget = json.loads((out / "parameter_budget.json").read_text())
@@ -128,6 +129,7 @@ def test_legacy_gru_resolution_exceeds_effective_vo_budget():
         assert_parameter_budget(models, effective_counts=counts)
 
 
+@pytest.mark.slow
 def test_resolved_gru_yaml_and_artifact_round_trip(tmp_path, monkeypatch):
     out = _prepare(tmp_path, monkeypatch, "--device", "cpu")
     budget = json.loads((out / "parameter_budget.json").read_text())
@@ -174,6 +176,7 @@ def test_actor_card_counts_use_the_stage_train_section(tmp_path, stage):
     assert all(row["name"].startswith("readout.") for row in actual["zero_lr_parameters"])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("algorithm", [None, "ppo", "es"])
 def test_formal_chain_ends_at_bc_unless_an_algorithm_is_named(tmp_path, monkeypatch, algorithm):
     out = _prepare(tmp_path, monkeypatch, *(["--algorithm", algorithm] if algorithm else []))

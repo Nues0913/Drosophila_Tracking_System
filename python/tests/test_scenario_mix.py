@@ -83,6 +83,7 @@ def test_children_merge_inline_occlusion_and_share_the_odor_teacher():
     env.close()
 
 
+@pytest.mark.slow
 def test_bc_collects_from_a_mixed_world(tmp_path):
     from flytrack_core.model import load_policy_artifact
     from flytrack_train import imitation

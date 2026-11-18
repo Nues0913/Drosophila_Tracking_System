@@ -1015,6 +1015,7 @@ def test_extra_turn_rows_round_trip_and_warm_start_migration(
         )
 
 
+@pytest.mark.slow
 def test_shared_odor_adaptation_keeps_a_sustained_contrast_and_migrates(
     graph_path, official_frontend, tmp_path
 ):

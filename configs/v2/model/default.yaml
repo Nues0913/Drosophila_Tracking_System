@@ -12,6 +12,9 @@ bias_lr_scale: 0.1
 activation_checkpoint: false
 readout_init_weight: 1.0
 initial_speed_m_s: 0.2
+rest_settle_s: 8.0
+rest_refresh_s: 1.0
+initial_state: rest
 steer_types: null
 speed_types: null
 log_std_init: -0.5

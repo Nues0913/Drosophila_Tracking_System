@@ -65,4 +65,4 @@ jobs:
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv/bin/python --require-hashes -r requirements/ml-cpu-py312.lock
       - run: uv pip install --python .venv/bin/python --no-deps -e .
-      - run: .venv/bin/python -m pytest -m "not slow and not gpu and not ros and not legacy" -n auto -q
+      - run: .venv/bin/python -m pytest -m "not slow and not gpu and not ros and not legacy and not bench" -n auto -q

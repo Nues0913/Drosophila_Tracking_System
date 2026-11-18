@@ -1,5 +1,8 @@
 """Policy contracts, cached rollout parity and model configuration."""
 
+import json
+import subprocess
+import sys
 from dataclasses import replace
 
 import numpy as np
@@ -13,8 +16,10 @@ from flytrack_v2.frontend import NodeMajorFlyvis
 from flytrack_v2.interfaces import ActionDistribution, Policy, policy_step, reset_rows
 from flytrack_v2.model import (
     CodeLayout,
+    ConnectomePolicyV2,
     DNReadoutV2,
     GraphV2,
+    GRUPolicyV2,
     InputNorm,
     ModelConfigV2,
     SeedProjection,
@@ -23,11 +28,13 @@ from flytrack_v2.model import (
     parameter_groups,
     parameter_table,
 )
+from flytrack_v2.model import readout as readout_module
 from test_v2_model_core import ROOT, small_graph
 
 CONTRACT = SensorContractV2()
 CONFIG = ModelConfigV2()
 STEER = ("DNa01", "DNa02", "DNa03", "DNb05", "DNp09")
+BILATERAL_PATH = ROOT / "configs/v2/model/readout_bilateral_dn.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -249,6 +256,269 @@ def test_readout_resting_speed_direction_and_sided_means(frontend, main_graph):
         DNReadoutV2(small_graph(), replace(CONFIG, steer_types=("relay",)), CONTRACT)
 
 
+@pytest.mark.parametrize(
+    ("variant", "speed_types"), [("VO2", None), ("VO2", "bilateral"), ("GRU2", None)]
+)
+@torch.no_grad()
+def test_zero_input_drift(frontend, main_graph, variant, speed_types):
+    layout = CodeLayout()
+    norm = InputNorm(layout, mean=torch.linspace(-1, 1, sum(layout.widths)))
+    policy = build_policy(
+        variant,
+        replace(CONFIG, speed_types=speed_types),
+        graph=main_graph,
+        frontend=frontend,
+        input_norm=norm,
+    )
+    state = policy.initial_central_state(1, "cpu")
+    target = torch.tensor([[0.2, 0.0]])
+    torch.testing.assert_close(
+        policy._distribution(policy._readout_mean(state)).mode(), target, atol=1e-5, rtol=0
+    )
+    code = norm.neutral_code()
+    for _ in range(round(8.0 / CONTRACT.control_dt)):
+        step = policy.forward_code(code, state)
+        torch.testing.assert_close(step.dist.mode(), target, atol=0.01, rtol=0)
+        state = step.central_state
+
+
+@pytest.mark.parametrize("variant", ["VO2", "V2", "O2", "GRU2"])
+@torch.no_grad()
+def test_rest_cache_invalidates_on_dynamics_update(monkeypatch, variant):
+    config = replace(CONFIG, rest_settle_s=0.2, rest_refresh_s=0.05)
+    policy = build_policy(
+        variant, config, graph=small_graph(), budget_target=1808 if variant == "GRU2" else None
+    )
+    evolve = policy._evolve_rest_state
+    durations = []
+
+    def counted_evolution(seconds, state=None):
+        durations.append(seconds)
+        return evolve(seconds, state)
+
+    monkeypatch.setattr(policy, "_evolve_rest_state", counted_evolution)
+    initial = policy.initial_central_state(2, "cpu")
+    assert not initial.requires_grad
+    torch.testing.assert_close(initial[0], initial[1])
+    initial[1].fill_(99)
+    torch.testing.assert_close(policy.initial_central_state(1, "cpu"), initial[:1])
+    assert durations == []
+
+    if variant == "GRU2":
+        parameter = policy.gru.bias_ih
+        learned_bias = policy.readout.bias
+    else:
+        parameter = policy.core.bias if variant == "VO2" else policy.projection.missing_bias
+        learned_bias = policy.readout.speed_bias
+    learned_bias.add_(0.1)
+    saved_bias = learned_bias.clone()
+    torch.testing.assert_close(policy.initial_central_state(1, "cpu"), initial[:1])
+    assert durations == []
+
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    code = policy.input_norm.neutral_code()
+    policy.forward_code(code, initial[:1])
+    assert durations == []
+    actual = policy.initial_central_state(1, "cpu")
+    assert durations == [config.rest_refresh_s] and not torch.allclose(actual, initial[:1])
+    manual = initial[:1]
+    for _ in range(round(config.rest_refresh_s / CONTRACT.control_dt)):
+        manual = policy.forward_code(code, manual).central_state
+    torch.testing.assert_close(actual, manual)
+    torch.testing.assert_close(policy.initial_central_state(1, "cpu"), actual)
+    torch.testing.assert_close(learned_bias, saved_bias)
+    assert durations == [config.rest_refresh_s]
+
+
+@pytest.mark.parametrize("variant", ["VO2", "GRU2"])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.gpu,
+                pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+            ],
+        ),
+    ],
+)
+def test_rest_cache_starts_with_full_evolution(monkeypatch, frontend, variant, device):
+    config = replace(CONFIG, rest_settle_s=0.2, rest_refresh_s=0.05)
+    steps = round(config.rest_settle_s / CONTRACT.control_dt)
+    policy_type = GRUPolicyV2 if variant == "GRU2" else ConnectomePolicyV2
+    forward = policy_type.forward_code
+    calls = 0
+
+    def counted_forward(self, code, state):
+        nonlocal calls
+        calls += 1
+        return forward(self, code, state)
+
+    monkeypatch.setattr(policy_type, "forward_code", counted_forward)
+    policy = build_policy(
+        variant,
+        config,
+        graph=small_graph(),
+        frontend=frontend,
+        budget_target=1808 if variant == "GRU2" else None,
+    )
+    assert calls == steps
+    initial = policy.initial_central_state(1, "cpu")
+    assert calls == steps
+
+    policy.load_state_dict(policy.state_dict())
+    torch.testing.assert_close(policy.initial_central_state(1, "cpu"), initial)
+    assert calls == 2 * steps
+
+    dtype = torch.float64 if device == "cpu" else torch.float32
+    policy.to(device=device, dtype=dtype)
+    moved = policy.initial_central_state(1, device)
+    assert moved.device.type == device and moved.dtype == dtype
+    assert calls == 3 * steps
+    torch.testing.assert_close(moved.cpu().float(), initial)
+
+    refreshed = policy.refresh_rest_state()
+    assert calls == 3 * steps + round(config.rest_refresh_s / CONTRACT.control_dt)
+    torch.testing.assert_close(policy.initial_central_state(1, device), refreshed)
+
+
+@pytest.mark.parametrize("variant", ["VO2", "GRU2"])
+def test_incremental_rest_state_converges(frontend, variant):
+    policy = build_policy(
+        variant,
+        graph=small_graph(),
+        frontend=frontend,
+        budget_target=1808 if variant == "GRU2" else None,
+    )
+    parameter = policy.gru.bias_ih if variant == "GRU2" else policy.core.bias
+    optimizer = torch.optim.SGD([parameter], lr=1e-3)
+    parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    incremental_states = [policy.initial_central_state(1, "cpu")]
+    optimizer.param_groups[0]["lr"] = 0.0
+    for _ in range(7):
+        optimizer.step()
+        incremental_states.append(policy.initial_central_state(1, "cpu"))
+
+    full_state = policy.refresh_rest_state(full=True)
+    errors = [(state - full_state).abs().max().item() for state in incremental_states]
+    print(f"{variant} max absolute differences: {errors}")
+    assert errors == sorted(errors, reverse=True)
+    assert errors[-1] < errors[0]
+    assert errors[-1] <= (5e-7 if variant == "VO2" else 1e-8)
+    torch.testing.assert_close(full_state, policy.rest_state(), atol=0, rtol=0)
+    torch.testing.assert_close(policy.initial_central_state(1, "cpu"), full_state)
+
+
+@pytest.mark.parametrize("variant", ["VO2", "GRU2"])
+@torch.no_grad()
+def test_bias_initial_state_keeps_legacy_state_and_calibration(frontend, variant):
+    config = replace(CONFIG, initial_state="bias")
+    policy = build_policy(
+        variant,
+        config,
+        graph=small_graph(),
+        frontend=frontend,
+        budget_target=1808 if variant == "GRU2" else None,
+    )
+    state = policy.initial_central_state(2, "cpu")
+    torch.testing.assert_close(state, torch.zeros_like(state))
+    torch.testing.assert_close(
+        policy._distribution(policy._readout_mean(state)).mode(),
+        torch.tensor([[0.2, 0.0], [0.2, 0.0]]),
+    )
+    if variant == "VO2":
+        policy.core.bias.fill_(0.5)
+        torch.testing.assert_close(
+            policy.initial_central_state(2, "cpu"), torch.full_like(state, 0.5)
+        )
+
+
+def test_bilateral_list_matches_generator_and_graph(main_graph):
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/v2/bilateral_dn_readout.py"), "--check"],
+        stdin=subprocess.DEVNULL,
+        check=True,
+    )
+    spec = yaml.safe_load(BILATERAL_PATH.read_text())
+    manifest = json.loads((ROOT / CONFIG.graph_path).with_name("manifest.json").read_text())
+    names = main_graph.type_names[main_graph.type_index]
+    types = [row["type"] for row in spec["types"]]
+    assert types == sorted(set(types)) and len(types) == 31
+    for row in spec["types"]:
+        assert row["type"] in manifest["dn_types"]
+        for side, label in ((-1, "left"), (1, "right")):
+            index = np.flatnonzero((names == row["type"]) & (main_graph.side == side)).item()
+            assert main_graph.node_ids[index] == row[f"{label}_body_id"]
+            actual = (
+                float(main_graph.subgraph_input_synapses[index])
+                / main_graph.brain_input_synapses[index].item()
+            )
+            assert actual >= 0.40
+            assert row[f"{label}_coverage"] == pytest.approx(actual, abs=5e-7)
+
+
+def test_bilateral_speed_uses_body_ids_and_preserves_steering(
+    frontend, main_graph, monkeypatch, tmp_path
+):
+    spec = yaml.safe_load(BILATERAL_PATH.read_text())
+    row = spec["types"][0]
+    names = main_graph.type_names[main_graph.type_index]
+    replacement = np.flatnonzero((names != row["type"]) & (main_graph.side == -1))[0]
+    row["left_body_id"] = int(main_graph.node_ids[replacement])
+    spec_path = tmp_path / "bilateral.yaml"
+    spec_path.write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(readout_module, "_BILATERAL_DN_PATH", spec_path)
+    policy = build_policy("VO2", {"speed_types": "bilateral"}, graph=main_graph, frontend=frontend)
+    description = policy.describe()
+    readout = policy.readout
+    speed_indices = readout.node_indices[readout.speed_means[:, 0].nonzero().flatten()]
+    assert set(main_graph.node_ids[speed_indices].tolist()) == {
+        row["left_body_id"],
+        row["right_body_id"],
+    }
+    assert description["speed_body_ids"][row["type"]] == {
+        "left": [row["left_body_id"]],
+        "right": [row["right_body_id"]],
+    }
+    default = DNReadoutV2(main_graph, CONFIG, CONTRACT)
+    assert description["steer_types"] == list(default.steer_types)
+    assert description["steer_body_ids"] == default.steer_body_ids
+    rates = torch.linspace(0, 1, main_graph.n_nodes).unsqueeze(0)
+    torch.testing.assert_close(
+        (rates.index_select(1, readout.node_indices) @ readout.steer_means),
+        (rates.index_select(1, default.node_indices) @ default.steer_means),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("graph_sha256", "0" * 64, "graph_sha256 mismatch"),
+        ("left_body_id", -1, "missing from the graph"),
+        ("left_body_id", "right_body_id", "on the left side"),
+    ],
+)
+def test_bilateral_readout_rejects_mismatched_metadata(
+    main_graph, monkeypatch, tmp_path, field, value, error
+):
+    spec = yaml.safe_load(BILATERAL_PATH.read_text())
+    if field == "graph_sha256":
+        spec["source"][field] = value
+    else:
+        row = spec["types"][0]
+        row[field] = row[value] if isinstance(value, str) else value
+    spec_path = tmp_path / "bilateral.yaml"
+    spec_path.write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(readout_module, "_BILATERAL_DN_PATH", spec_path)
+    with pytest.raises(ValueError, match=error):
+        DNReadoutV2(main_graph, replace(CONFIG, speed_types="bilateral"), CONTRACT)
+
+
 @pytest.mark.slow
 def test_main_graph_parameter_budgets(frontend, main_graph):
     tables = {}
@@ -266,11 +536,16 @@ def test_main_graph_parameter_budgets(frontend, main_graph):
             assert table["g"] == len(policy.graph.label_pairs)
             assert table["tau"] == len(policy.graph.type_names)
             assert table["readout"] == 8
+            if variant in ("RW2", "ER2"):
+                readout = DNReadoutV2(
+                    policy.graph, replace(CONFIG, speed_types="bilateral"), CONTRACT
+                )
+                assert len(readout.speed_types) == 31
         else:
             assert policy.config.budget_target == tables["VO2"]["total"]
             with torch.no_grad():
-                zero_code = torch.zeros(2, policy.code_size)
-                rest = policy.forward_code(zero_code, policy.initial_central_state(2, "cpu"))
+                code = policy.input_norm.neutral_code().expand(2, -1)
+                rest = policy.forward_code(code, policy.initial_central_state(2, "cpu"))
             torch.testing.assert_close(
                 rest.dist.mode()[:, 0], torch.full((2,), 0.2), atol=1e-5, rtol=0
             )
@@ -389,10 +664,22 @@ def test_model_config_matches_yaml_and_rejects_unknown_keys():
         defaults = yaml.safe_load(source)
     assert CONFIG.to_dict() == defaults
     assert CONFIG == ModelConfigV2.from_dict(defaults)
+    defaults.pop("rest_refresh_s")
+    assert CONFIG == ModelConfigV2.from_dict(defaults)
     with pytest.raises(ValueError, match="Unknown"):
         ModelConfigV2.from_dict({"odor_input_gain": 100})
     with pytest.raises(ValueError, match="gain_init"):
         ModelConfigV2(gain_parameterization="bounded", gain_init=1)
+    with pytest.raises(ValueError, match="speed_types"):
+        ModelConfigV2(speed_types="DNp09")
+    with pytest.raises(ValueError, match="initial_state"):
+        ModelConfigV2(initial_state="zero")
+    with pytest.raises(ValueError, match="rest_settle_s"):
+        ModelConfigV2(rest_settle_s=-1)
+    for refresh in (0, -1, float("nan"), float("inf"), CONFIG.rest_settle_s + 1):
+        with pytest.raises(ValueError, match="rest_refresh_s"):
+            ModelConfigV2(rest_refresh_s=refresh)
+    assert ModelConfigV2(rest_refresh_s=CONFIG.rest_settle_s).rest_refresh_s == CONFIG.rest_settle_s
 
 
 @pytest.mark.gpu

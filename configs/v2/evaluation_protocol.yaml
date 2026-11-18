@@ -1,0 +1,69 @@
+# v2 evaluation protocol, schema 4. DRAFT: the values follow docs/v2/大實驗計劃書.md sections
+# 3.9-3.11 and are frozen at M4 (2026-11-23 22:00 UTC+8) by #142. Until then only pilots
+# (seeds 100 and 101) may use it, and pilot results are never formal results.
+schema_version: 4
+spec_version: v2
+status: draft_until_m4
+declared_date: '2026-11-18'
+freeze_issue: 142
+plan: docs/v2/大實驗計劃書.md
+model_variants: [VO2, V2, O2, RW2, ER2, GRU2]
+training_seeds: [0, 1, 2, 3, 4]
+pilot_seeds: [100, 101]
+worlds: [v1compat, wind]
+scenarios:
+  normal: {}
+  occlusion: {occlusion_start_s: 8, occlusion_duration_s: 30}
+  # v1's #20 pilot scale; 0.5 and 1.0 are reported as a sensitivity analysis (plan S11).
+  noise: {scale: 0.75, sensitivity_scales: [0.5, 1.0]}
+  conflict: {decoy_x: -2, decoy_y: 0}
+motions: {primary: curved, secondary: wander}
+episodes_per_cell: 100
+episode_seconds: 60
+# Unchanged from protocol schema 3 so that G3 stays comparable with v1.
+success_rule: {distance_m: 2.0, bearing_deg: 45.0, fraction: 0.8, collision_invalidates: true}
+statistics:
+  unit: training seed; episodes are averaged within a seed first
+  bootstrap: {resamples: 10000, confidence: 0.95, over: training_seeds}
+  pairing: variants share episode seeds
+  multiplicity: Holm over the registered comparisons
+  # No bitwise requirement (plan 0.2).
+  reproducibility: a rerun reproduces when its success rates fall inside the original intervals
+world_audits:
+  privileged_teacher_min_success: 0.9  # every world and scenario
+  blind_fixed_action_max_success: 0.1  # every world and scenario
+  odor_teacher_min_occlusion_success: 0.5  # wind world (#133)
+  v1_actor_consistency: formal-v1 actors in v1compat fall inside the formal-v1 intervals (#139)
+gates:
+  G-A: {name: behaviour, rule: VO2 curved normal success >= 0.80 in v1compat and in wind}
+  G-B: {name: multisensory, rule: wind occlusion VO2 - V2 >= 0.10 with the interval lower bound > 0}
+  G-C:
+    name: structure
+    rule: >-
+      VO2 noninferior to RW2, ER2 and GRU2 with margin 0.05; superiority is reported; a
+      control enters the comparison only if its normal success is >= 0.3
+  G-D:
+    name: versus v1
+    rule: v1compat curved normal VO2 - v1 VO-late >= 0.10 with the interval lower bound > 0
+  G-E: {name: engineering, rule: training throughput >= v1 on the same host; CI green}
+formal_v2_condition: G-A and G-E pass and the user agrees; the other gates are reported regardless
+training:
+  stage1: dagger_v2  # plan 3.8
+  # Plan 3.8: stage 2 replaces stage 1 only if its held-out success does not drop.
+  stage2: ppo_v2
+  stage2_cutline: if PPO-v2 does not beat DAgger-v2 in pilots by 2026-11-22 22:00, stop after stage 1
+tuning:
+  pilots_only: true
+  max_configs_per_sweep: 4
+  selection: highest mean held-out (normal + occlusion) success over the pilot seeds
+  knobs:
+    learning_rate: [3.0e-4, 1.0e-3]
+    sequence_length: [64, 128]
+    bias_lr_ratio: [0.0, 0.1]
+    kickstart_anneal_fraction: [0.3, 0.5]
+    wind_speed_m_s: [0.3, 0.5]
+throughput:
+  hard_floor_vs_v1: 1.0  # end-to-end environment steps/s, same host and batch
+  target_vs_v1: 5.0
+  pr_regression_limit: 0.05
+host_assignment: decided at M4; the six variants of one seed run on one host

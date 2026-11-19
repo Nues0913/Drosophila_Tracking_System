@@ -97,8 +97,8 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
   - 更新時，每個 minibatch 的列從存下的狀態重跑同樣的 32 步，回合結束的列換回 rollout 當時的靜息狀態；
   - minibatch 依環境切分（1,024 / 8 = 128 列），主機的 `micro_batch` 再切成小塊累積梯度。
 - **advantage**：GAE（γ 0.99、λ 0.95），在整批上做正規化。
-  - 碰撞（terminated）結束回報；
-  - 時間截斷，以及第一回合被強制提早結束，都從重設前那個狀態的 value bootstrap；
+  - 碰撞和 60 s 的時間上限都結束回報（terminated）。60 s 是任務本身的終點（評估的回合也是 60 s），critic 又看得到回合時間，所以在有限時域下把它當成終止才是正確的值（#188 review；Pardo et al. 2018, *Time Limits in RL*）；
+  - 只有第一回合被強制提早結束時（任務本身沒有這種結束），才從重設前那個狀態的 value bootstrap；
   - advantage 不跨回合累積。
 - **暖身**（計劃書 3.8，#161 D2）：前 `critic_only_updates` 次只訓練 critic；之後 `actor_ramp_updates` 次 actor 的 lr 從 0 線性升到 3e-4，再線性降到結束。critic 的 lr 從 3e-4 線性下降。
 - **kickstarting**（#161 D1）：loss 加上 λ·KL(π_teacher ‖ π_θ)。
@@ -122,7 +122,8 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
   - actor、critic、兩個 optimizer、更新用的 RNG；
   - 世界、感覺、學生和 teacher 的狀態；
   - 抽樣用的 RNG。
-- 結束時用 `export_policy` 匯出到 `final/`。card 的 `provenance.stages` 是 Stage 1 的 stages 加上 `{"name": "ppo", ...}`，`provenance.train_seed` 是 `--seed`。
+- 結束時用 `export_policy` 匯出到 `final/`。card 的 `provenance.stages` 是 Stage 1 的 stages 加上 `{"name": "ppo", ...}`，`provenance.train_seed` 是 `--seed`。`--seed` 必須等於 Stage 1 的訓練 seed：Stage 1 的 card 有 `train_seed` 時要相同，沒有時路徑裡的 `seed_<n>` 不能和它矛盾，否則報錯，因為評估的回合編號由它決定（#188 review）。
+- actor 或 critic 的梯度不是有限值時，那一步不更新，monitor 以 exit 3 結束。
 
 ## 取代 Stage 1 的條件
 跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。

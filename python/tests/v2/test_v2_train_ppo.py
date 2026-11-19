@@ -209,7 +209,7 @@ def test_probe_reward_from_the_observation():
 
 
 def test_probe_truncation_bootstraps_from_the_state_before_the_reset():
-    """Reward 1 per step, cut by a time limit every 5 steps and never terminated: V = 1/(1-g)."""
+    """Reward 1 per step, cut by a forced reset every 5 steps and never terminated: V = 1/(1-g)."""
     n, steps = 32, 5
     critic = Critic(1, (16,))
     ones = torch.ones(steps, n)
@@ -330,3 +330,30 @@ def test_teacher_state_follows_the_student_through_the_warm_up(tmp_path):
         collector.collect_ppo(config["rollout_steps"], kickstart=ppo.steps_teacher(plan))
     torch.testing.assert_close(collector.teacher_central, collector.central, rtol=0, atol=1e-6)
     assert not torch.equal(collector.central, collector.teacher_initial)
+
+
+def test_the_seed_must_be_the_stage1_training_seed(tmp_path):
+    """#188 review: the card's train_seed picks the evaluation episodes."""
+    card = {"provenance": {"train_seed": 3}}
+    ppo.check_init_seed(tmp_path, card, 3)
+    with pytest.raises(ValueError, match="differs from the Stage 1 training seed 3"):
+        ppo.check_init_seed(tmp_path, card, 0)
+    ppo.check_init_seed(tmp_path / "seed_3" / "final", {"provenance": {}}, 3)
+    with pytest.raises(ValueError, match="contradicts the Stage 1 path"):
+        ppo.check_init_seed(tmp_path / "seed_3" / "final", {"provenance": {}}, 0)
+    ppo.check_init_seed(tmp_path / "stage1", {"provenance": {}}, 5)  # nothing to contradict
+
+
+def test_the_time_limit_terminates_and_a_forced_reset_bootstraps():
+    """#188 review: the critic sees time, so the 60 s end is terminal; a forced first-episode
+    reset is not part of the task and bootstraps."""
+    gamma = 0.9
+    features = torch.full((1, 2, 1), 0.5)
+    final = torch.full((1, 2, 1), 0.5)
+    reward = torch.ones(1, 2)
+    ended = torch.tensor([[True, False]])  # row 0: the time limit
+    forced = torch.tensor([[False, True]])  # row 1: a forced reset
+    rollout = _rollout(reward, ended, forced, features, final, torch.zeros(2, 1))
+    adv, _, values = advantages_and_returns(_ConstantCritic(), rollout, gamma, 0.95)
+    v = 0.5 / (1 - gamma)
+    torch.testing.assert_close(adv[0], torch.tensor([1 - v, 1 + gamma * v - v]))

@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -215,8 +216,10 @@ class Rollout:
     logp: Tensor  # [T, N]
     features: Tensor  # [T, N, F], critic features of the state each action saw
     reward: Tensor  # [T, N]
-    terminated: Tensor  # [T, N] bool: a collision
-    truncated: Tensor  # [T, N] bool: the time limit or a forced first-episode reset
+    # [T, N] bool: the episode ends without a bootstrap: a collision, or the task's time limit,
+    # which the critic sees as the episode time feature (#188 review; Pardo et al. 2018)
+    terminated: Tensor
+    truncated: Tensor  # [T, N] bool: cut short by a forced first-episode reset; bootstraps
     final_features: Tensor  # [T, N, F], the state before the reset where truncated
     last_features: Tensor  # [N, F], after the last step
     central: Tensor  # [N, S], the central state before the first step
@@ -249,7 +252,8 @@ def advantages_and_returns(
 ) -> tuple[Tensor, Tensor, Tensor]:
     """GAE in return units: (advantages [T, N], returns [T, N], values [T, N]).
 
-    A collision ends the return; a truncation bootstraps from the state before the reset; the
+    A terminated episode (a collision or the 60 s end of the task) ends the return; a truncated
+    one (a forced first-episode reset) bootstraps from the state before the reset; the
     advantage never crosses an episode boundary.
     """
     scale = 1.0 / (1.0 - gamma)
@@ -486,12 +490,14 @@ class PPOCollector(RolloutCollector):
             self._first_episode_resets(observations, resets, before_reset)
             reset = torch.cat(resets)
             forced = reset & ~(terminated | truncated)
-            truncated = truncated | forced
             buffers["reward"][t] = torch.cat([r.reward for r in results]).to(torch.float32)
-            buffers["terminated"][t] = terminated
-            buffers["truncated"][t] = truncated
-            buffers["final_features"][t] = torch.where(truncated[:, None], final, 0.0)
-            natural = terminated | (truncated & ~forced)
+            # The 60 s limit is the task's end (evaluation episodes are 60 s too) and the critic
+            # sees the episode time, so it terminates; only a forced first-episode end, which
+            # the task does not have, bootstraps (#188 review).
+            buffers["terminated"][t] = terminated | truncated
+            buffers["truncated"][t] = forced
+            buffers["final_features"][t] = torch.where(forced[:, None], final, 0.0)
+            natural = terminated | truncated
             info = {k: torch.cat([r.info[k] for r in results]) for k in ("episode_success",)}
             ended += natural.sum()
             stats["success"] += (info["episode_success"].to(torch.float32) * natural).sum()
@@ -526,6 +532,18 @@ class PPOCollector(RolloutCollector):
 # The run
 
 
+def check_init_seed(init: Path, card: Mapping, seed: int) -> None:
+    """--seed must be the Stage 1 artifact's training seed: the export records it as
+    provenance.train_seed, which picks the evaluation episodes, so Stage 1 and Stage 2 pair by
+    it (#188 review). Without one in the card, no seed_<n> part of the path may contradict it."""
+    stage1 = card.get("provenance", {}).get("train_seed")
+    in_path = {int(part[5:]) for part in Path(init).parts if re.fullmatch(r"seed_\d+", part)}
+    if stage1 is not None and stage1 != seed:
+        raise ValueError(f"--seed {seed} differs from the Stage 1 training seed {stage1}")
+    if stage1 is None and in_path and seed not in in_path:
+        raise ValueError(f"--seed {seed} contradicts the Stage 1 path {init}")
+
+
 def _sha256_json(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
@@ -535,6 +553,7 @@ class PPORun:
         self.config, self.seed, self.device, self.out = config, seed, device, out
         self.init = init
         self.init_card = json.loads((init / "model_card.json").read_text(encoding="utf-8"))
+        check_init_seed(init, self.init_card, seed)
         self.init_sha256 = hashlib.sha256((init / "SHA256SUMS").read_bytes()).hexdigest()
         self.policy = load_policy(init, device=device)
         self.policy.train()
@@ -622,7 +641,9 @@ class PPORun:
 
         with RunMonitor(
             self.out,
-            finite_keys=("value_loss", "critic_grad_norm"),
+            # A non-finite gradient skips its optimizer step; failing here keeps a run that has
+            # stopped learning from looking healthy (#188 review).
+            finite_keys=("value_loss", "critic_grad_norm", "actor_grad_norm"),
             on_failure=on_failure,
             start_env_steps=self.env_steps,
         ) as monitor:

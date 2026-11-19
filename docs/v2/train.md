@@ -27,11 +27,11 @@ OMP_NUM_THREADS=1 PYTHONPATH=python python -m flytrack_v2.train.dagger \
 - 四個 batched world 各跑一組世界與目標運動的組合，預設每組 256 列。各列的情境依最大餘數分配。同餘數依 normal、occlusion、noise、conflict 的順序優先。每個環境都有全域列號，初始、強制與自動重設都用 `episode_seed(seed, env_index, episode_index) | (1 << 40)`。初始序號為 0，每列進入下一回合時遞增。
 - `desync_first_episode: true` 預設在首回合錯開各列相位。每列以訓練 seed 衍生的獨立 generator 均勻抽取 `r_i ∈ [0, episode_steps)`。若 `r_i > 0` 且首回合仍在進行，執行第 `r_i` 步後強制重設。`r_i = 0` 時首回合自然結束，後續回合也依世界的碰撞與時間上限自然結束。可用 `--override desync_first_episode=false` 關閉，恢復同步起跑的收集方式。
 - 每步先取得 sensory code、學生 mode 與遮蔽 teacher 標籤，再用每列獨立的 Bernoulli 抽樣選擇動作。回合結束會重設 sensory、central 和 teacher 狀態。輪次交界保留這些狀態和世界狀態，後續 rollout 以更新過的學生參數接續。
-- 每輪的 CPU replay 保存 float32 code、teacher 動作及中央狀態，另存 reset、遮蔽旗標和世界、運動、情境的列標籤。中央狀態存於全域控制步數的每個 16 步倍數。取樣會在分片內選擇完整視窗，並跨累積分片均勻抽取合格的時間與列組合。序列可以跨回合。
+- 每輪的 CPU replay 跨累積分片均勻抽取合格的時間與列組合，視窗在同一分片內，可以跨回合。中央狀態存於全域控制步數的每個 16 步倍數。抽樣後按分片、環境列與起點排序讀取，最後還原抽樣順序。Code 和中央狀態在 CPU 還原成 float32，再傳到訓練裝置。
 - 預設 `teacher_limit_acceleration: false`（#184 的 Decision）：teacher 的標籤只套用動作的上下限，是 teacher「想要」的動作；被執行時（β 的那一部分）照樣由世界套用加速度限制。設成 true 是 v1 的標籤：依上一步實際套用的動作做加速度限制。學生駕駛時，這會把標籤錨定在學生自己的動作附近（速度每步 ±0.05 m/s、轉向 ±0.15 rad/s），等於教「維持你現在的動作」。沒有這個 key 的舊設定檔和舊 checkpoint 照舊用 true。
 - 預設 `readout_normalization: true`。圖變體在第一輪（`β = 1`）使用初始 policy，每四個控制步保存一次兩個世界訓練列的讀出 DN 速率。首輪 replay 保存這些樣本供擬合和續跑使用。收集結束後，trainer 擬合正規化、重設初始讀出權重及校準偏置，然後建立 Adam 與 cosine 排程，再執行第一次更新。GRU2 忽略此設定。 [#137 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/137)
 - 每輪至少收集一條完整視窗所需的時間步，之後以整批環境為計數單位。正式設定每輪 733 個控制步，共 750,592 個環境步。更新次數依實際環境步計算，每輪 184 次。前 16 步在 `no_grad` 下重建中央狀態，後 64 步計算 loss。reset 旗標作用於下一步。
-- 標籤依各維度的動作範圍內縮。設 `m = label_margin`，速度限制在 `[m × v_max, (1 − m) × v_max]`，轉向限制在 `[−(1 − m) × ω_max, (1 − m) × ω_max]`。內縮後用 `unsquash` 算潛在高斯 NLL。預設 `m = 1e-3` 時，速度的潛在值範圍為 `[logit(1e-3), logit(1 − 1e-3)] ≈ [−6.9, 6.9]`。
+- 標籤依各維度的動作範圍內縮。設 `m = label_margin`，速度限制在 `[m × v_max, (1 − m) × v_max]`，轉向限制在 `[−(1 − m) × ω_max, (1 − m) × ω_max]`。內縮後用 `unsquash` 算潛在高斯 NLL。預設 `m = 1e-3` 時，速度的潛在值範圍為 `[logit(1e-3), logit(1 − 1e-3)] ≈ [−6.9, 6.9]`。 預設 `label_latent_bound: 3.0`（#184 Decision、#189 review）：速度的 m = sigmoid(−3) ≈ 0.0474、轉向的 m = 1 − tanh(3) ≈ 0.0049，所以每個標籤的潛在值都在 ±3 以內，貼在動作上下限的標籤不會主導 NLL；沒有這個 key 的設定照舊用 `label_margin`。
 - 活動懲罰對圖變體使用所有讀出 DN 以外的神經元速率平方平均，GRU2 使用隱狀態平方平均。梯度累積以 micro-batch 的序列數加權。有限的梯度做全域範數裁剪後交給 Adam。Cosine 排程涵蓋四輪，以參數群組的 LR 比例一起下降。
 - `hosts.yaml` 設 4060、2060、4070 的 micro-batch 為 128、64、128。若縮小 effective batch 至主機值以下，整批作為一個 micro-batch。實際的 micro-batch 必須整除 effective batch。Activation checkpoint 預設關，並在設定與 model card 記錄實際值。
 
@@ -61,14 +61,18 @@ Trainer 在 checkpoint 時同步輸出 `diagnostics.json`。各項診斷也寫�
 
 ## 停止、續跑與匯出
 
-在輸出目錄建立 `STOP`。Trainer 會在輪次邊界、讀出擬合前後及每輪每 50 次更新查閱該檔，保存進度後以 0 結束。移除 `STOP`，以相同設定、主機、裝置、變體和 seed 加上 `--resume`。續跑讀取最後發布的完整或輪內 checkpoint。Checkpoint 保存 RNG、世界與三種 recurrent state，以及首回合的重設排程、已執行的列和收集步數。輪內 checkpoint 也保存下一次更新的位置，並讀取已收集的 replay。首輪收集後的 checkpoint 可接續擬合，擬合後的 checkpoint 會還原正規化 buffer 及 Adam，直接接續更新。Monitor 與診斷輸出對齊 checkpoint 的環境步和日誌位置。要續跑加入錯相設定前的 checkpoint，請使用 `--override desync_first_episode=false`。要續跑加入 DN 正規化前的圖策略 checkpoint，請使用 `--override readout_normalization=false`。
+在輸出目錄建立 `STOP`。Trainer 會在輪次邊界、讀出擬合前後及每輪每 50 次更新查閱該檔，保存進度後以 0 結束。移除 `STOP`，以相同設定、主機、裝置、變體和 seed 加上 `--resume`。續跑讀取最後發布的完整或輪內 checkpoint。Checkpoint 保存 RNG、世界與三種 recurrent state，以及首回合的重設排程、已執行的列和收集步數。輪內 checkpoint 也保存下一次更新的位置，並讀取已收集的 replay。首輪收集後的 checkpoint 可接續擬合，擬合後的 checkpoint 會還原正規化 buffer 及 Adam，直接接續更新。Monitor 與診斷輸出對齊 checkpoint 的環境步和日誌位置。舊 checkpoint 若在收集 replay 前建立，續跑可沿用當時的設定。錯相設定加入前使用 `--override desync_first_episode=false`，圖策略的 DN 正規化加入前使用 `--override readout_normalization=false`。
 
 續跑沿用 `config.json` 中的 `model` 覆寫，CLI 可省略原先的 `model.*` 參數。續跑時若指定了新增或不同的模型覆寫，trainer 會報錯。
 
-每輪 `round_<k>/replay.pt` 只寫入該輪的新資料。原子發布的 `checkpoint.pt` 指示該輪已完成，`progress.pt` 指示該輪可從中間續跑。`config.json` 記錄解析後設定，`model` 保存覆寫，`model_config` 保存完整模型設定。訓練完成時，`final/` 由 `export_policy` 產生，可直接用 `load_policy` 載入。Model card 的 `provenance.stages` 包含 DAgger 的設定、模型覆寫、主機、實際 micro-batch、activation checkpoint 與以實際步數推得的四輪排程。Model card 頂層的 `model_config` 會將雙側讀出展開為實際的型別清單和 bodyId。來源版本可由執行環境提供 `GIT_COMMIT` 或 `GITHUB_SHA`，缺值時記為 null。
+每輪 `round_<k>/replay.pt` 只寫入該輪的新資料。格式標記為 `layout: env_major_f16`。各步資料連續排列為 `[環境列, 步數, ...]`，中央狀態排列為 `[環境列, 快照, 狀態寬度]`，因此單一序列在各欄位內都是連續的 mmap 讀取。載入分片時，抽樣會用到的頁面設為 `MADV_RANDOM`，讓核心依缺頁需求讀取，避免每次跳到新位置時大量預讀。讀出 DN 速率保留預設的 mmap 行為，供首輪擬合循序讀取。Code 和中央狀態以 float16 保存，teacher 動作和讀出 DN 速率以 float32 保存，reset 和遮蔽旗標以 bool 保存。分片另存世界、運動、情境與 held-out 的列標籤。舊的時間優先 float32 分片會報錯，請使用新輸出目錄重新訓練。
+
+原子發布的 `checkpoint.pt` 指示該輪已完成，`progress.pt` 指示該輪可從中間續跑。`config.json` 記錄解析後設定，`model` 保存覆寫，`model_config` 保存完整模型設定。訓練完成時，`final/` 由 `export_policy` 產生，可直接用 `load_policy` 載入。Model card 的 `provenance.stages` 包含 DAgger 的設定、模型覆寫、主機、實際 micro-batch、activation checkpoint 與以實際步數推得的四輪排程。Model card 頂層的 `model_config` 會將雙側讀出展開為實際的型別清單和 bodyId。來源版本可由執行環境提供 `GIT_COMMIT` 或 `GITHUB_SHA`，缺值時記為 null。
 
 ## 記憶體
 
-正式 VO2 的 296 欄 code、兩欄動作與兩個旗標共約 3.58 GB。以 8,598 欄中央狀態及每 16 步存一次計算，快照另需 6.48 GB。四輪合計 10.06 GB（9.37 GiB）。Replay 逐輪落盤，取樣以 mmap 存取分片，維持 float32 精度。收集和統計時新分片約用 2.52 GB heap，單眼百分位的暫存上限約 0.43 GB。OS 會依可用記憶體保留 mmap 的檔案頁面。
+以預設 VO2 四輪、每輪 1,024 列 × 733 步估算，296 欄 code、兩欄動作、兩個旗標及每 16 步存一次的 8,598 欄中央狀態，合計由 10.06 GB 降到 5.05 GB（未計讀出樣本、列標籤和封裝開銷）。以 4060 實際觀察到的約 27 GB 舊分片用量換算，相同收集量的新格式約 13.5 GB。依環境連續存放可讓抽樣沿著視窗讀取，減少分散缺頁引發的預讀量。
+
+預設設定每輪的收集緩衝約 2.52 GB，單眼百分位的暫存上限約 0.43 GB。統計完成後，每 64 列轉置拷貝到連續的目的張量，先轉換 code 並釋放舊 code，再轉換較大的中央狀態快照。轉置時同時在記憶體中的 replay 張量峰值約 2.96 GB。OS 會依可用記憶體保留 mmap 的檔案頁面。
 
 GPU 收集每 32 個控制步批次拷回 CPU，VO2 的暫存約 105 MiB。強制重設在 graph replay 後執行，同一世界、同一步的列合成一個遮罩，並就地更新 graph 使用的張量。每輪收集完會釋放世界的 CUDA graph capture pool，下一輪用同一世界狀態重新 capture。無 activation checkpoint 時，VO2 的 recurrent core 計算圖主項估計在 128 條序列約 3.94 GiB、64 條序列約 1.97 GiB。連同讀出、CSR 工作區、模型緩衝及世界狀態，訓練峰值粗估約為 5–6 GiB 及 3–4 GiB，收集階段的峰值另受 CUDA graph 影響。實測值以 monitor 的 `max_memory_allocated` 為準。

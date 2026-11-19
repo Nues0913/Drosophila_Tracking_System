@@ -13,8 +13,9 @@
 - rollout: one batched world per world kind (v1compat, and wind at the protocol's U), the
   four scenarios mixed and both motions, the VO2 policy step (sense + core, no gradient,
   deterministic action) and DAgger's teacher label (OcclusionTeacher) every step; batched
-  environment steps per second at each batch size. Training's backward pass and optimiser
-  come with WP4a, so this bounds the end-to-end rate from above (#161 F).
+  environment steps per second at each batch size. It bounds the end-to-end rate from above
+  (#161 F): training's backward pass and optimiser come with WP4a, and the 100 timed steps
+  of a 1,200-step episode include no episode reset (#174 review).
 
 The JSON written to runs/bench/ is the baseline every hot-path v2 PR is compared against. It
 identifies the host only by --host-label, never by its name.

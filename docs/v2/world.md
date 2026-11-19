@@ -19,12 +19,15 @@
 - **參數來源**：建構時用同樣的選項建一個 v1 `FlyTrackEnv`，從它讀取參數。所以解析方式、預設值和 reward 的 survival 上界都直接是 v1 的。
 - **沒有風**：`wind` 觀測和 valid 的風旗標都是 0。風和 filament plume 屬於 WP2b（#133）。
 - **兩個和 v1 不同的預設**（#161 的 Decision）：
-  - `reward="track_v2"`（D3）：計劃書 3.8 的 PPO reward，沒有單獨的速度項。
+  - `reward="track_v2"`（#161 D3 Decision，2026-11-19）：計劃書 3.8 的 PPO reward，沒有單獨的速度項。
     - 追蹤中（2 m 內、45° 內）每步 +1；
-    - −0.3 · min(|d − 1 m|, 3 m)；
-    - 碰撞 −10；
+    - 每步距離扣分 −0.3 · min(|d − 1 m|, 3 m)，無碰撞時加 0.9 的存活項，兩項合計 +0.3 · (3 − min(|d − 1 m|, 3 m))；
+    - 碰撞步扣 10，存活項為 0；
     - −0.05 · ‖Δa‖（動作變化的歐氏範數）。
     - `reward="v1"` 是 `FlyTrackEnv` 的 reward，只給 parity 測試用。
+    - 固定軌跡用 `python/tests/v2/test_v2_track_v2_reward.py` 測試，並用 `scripts/v2/track_v2_trajectories.py` 量測。
+    - CPU 60 s、每種運動 8 列。C10stop（離牆 0.5 m 停車）與 C10（撞牆）的平均總回報分別為 curved 464.96 與 429.55、wander 595.09 與 491.45。C10stop 的總回報逐列較高，γ = 0.95、0.99、0.999 從 0 s 或 10 s 起算的折扣回報也都逐列較高。
+    - A（持續追上）與 B2（0.12 m/s 常速落後）的平均總回報分別為 curved 2187.45 與 1173.74、wander 2183.05 與 1419.30。A 在兩種運動的每一列都較高，最小逐列差分別為 100.73 與 441.84。
   - `occlusion_view="hide_target"`（C2）：遮蔽時影像照常 render，只是看不到目標。
     - `occlusion_view="blackout"` 是 v1 的全黑影像，給 parity 測試，以及用全黑遮蔽訓練出來的 v1 actor 用。
     - 兩種模式下 `valid` 都維持 1：`valid = 0` 只代表感測資料遺失（noise 情境的 dropout），所以模型沒辦法從 valid 讀出「現在是遮蔽」。

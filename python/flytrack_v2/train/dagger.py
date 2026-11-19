@@ -596,6 +596,8 @@ class DAggerRun:
                 "dirty": None,
                 "config_sha256": self.config_sha256,
                 "stages": [{"name": "dagger", **self.resolved}],
+                # Evaluation reads the episode numbers' training seed from here (#192 R3).
+                "train_seed": self.seed,
             },
         )
         if stage_health["reason"] is not None:

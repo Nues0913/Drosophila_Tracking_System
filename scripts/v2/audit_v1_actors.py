@@ -24,7 +24,7 @@ import numpy as np
 import yaml
 from flytrack_core.model import load_policy_artifact
 from flytrack_v2.contracts import SensorContractV2
-from flytrack_v2.eval.runner import V1Actor, run_episodes, to_records
+from flytrack_v2.eval.runner import V1Actor, json_line, run_episodes, to_records
 from flytrack_v2.metrics import validate_episode_record
 from flytrack_v2.world.v1compat import V1CompatWorld
 
@@ -142,7 +142,7 @@ def main() -> None:
                     invalid.append(
                         {"variant": variant, "seed": seed, "row": i, "error": str(error)}
                     )
-                stream.write(json.dumps(record) + "\n")
+                stream.write(json_line(record))
                 extra = {key: values[i] for key, values in result.speed_distance.items()}
                 extra.update({key: values[i] for key, values in result.occlusion_phases.items()})
                 extra.update(
@@ -151,7 +151,7 @@ def main() -> None:
                     scenario=record["scenario"],
                     episode_seed=record["episode_seed"],
                 )
-                secondary.write(json.dumps(extra) + "\n")
+                secondary.write(json_line(extra))
             for scenario in scenarios:
                 ours = float(np.mean([r["success"] for r in records if r["scenario"] == scenario]))
                 comparison.append(

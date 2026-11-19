@@ -108,6 +108,13 @@ class _PolicyV2(nn.Module):
         """
         return self._refresh_rest_cache(self._rest_cache_key(), full=full).clone()
 
+    def restore_rest_state(self, state: Tensor) -> None:
+        """Restore a checkpoint's settled state for the currently loaded parameters."""
+        if state.shape != (1, self.central_state_size):
+            raise ValueError("Unexpected checkpoint rest state shape")
+        state = state.detach().to(self.log_std)
+        self._rest_cache = (self._rest_cache_key(), state)
+
     def _cached_rest_state(self) -> Tensor:
         key = self._rest_cache_key()
         cached = self._rest_cache
@@ -161,6 +168,10 @@ class ConnectomePolicyV2(_PolicyV2):
         self.core = ConnectomeCoreV2(graph, config, self.contract)
         self.projection = SeedProjection(graph, encoder.layout, enable_vision=variant != "O2")
         self.readout = DNReadoutV2(graph, config, self.contract, body_ids=readout_body_ids)
+        non_readout = torch.ones(graph.n_nodes, dtype=torch.bool)
+        non_readout[self.readout.node_indices] = False
+        self.register_buffer("_non_readout", non_readout, persistent=False)
+        self._non_readout_count = max(1, graph.n_nodes - len(self.readout.node_indices))
         if not from_artifact:
             self._calibrate_readout(self.readout.speed_bias, self.readout.turn_bias)
 
@@ -175,16 +186,25 @@ class ConnectomePolicyV2(_PolicyV2):
         rates = self.core.rates(state).index_select(1, self.readout.node_indices)
         return self.readout(rates)
 
-    def forward_code(self, code: Tensor, central_state: Tensor) -> PolicyStep:
+    def forward_code(
+        self, code: Tensor, central_state: Tensor, *, non_readout_activity: bool = False
+    ) -> PolicyStep:
+        """Advance the core and optionally restrict the activity diagnostic to non-readout nodes."""
         normalized = self.input_norm(code, self.encoder.enabled)
         external = self.projection(normalized)
         central_state = self.core(central_state, external)
         rates = self.core.rates(central_state)
         dn_rates = rates.index_select(1, self.readout.node_indices)
+        activity = rates.square()
+        activity_sq = (
+            (activity * self._non_readout).sum(1) / self._non_readout_count
+            if non_readout_activity
+            else activity.mean(1)
+        )
         return PolicyStep(
             self._distribution(self.readout(dn_rates)),
             central_state,
-            {"dn_rates": dn_rates, "activity_sq": rates.square().mean(1)},
+            {"dn_rates": dn_rates, "activity_sq": activity_sq},
         )
 
     def describe(self) -> dict:

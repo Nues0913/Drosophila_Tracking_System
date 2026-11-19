@@ -130,9 +130,14 @@ comparisons:
     # used during occlusion rests on wander and on the E1 ablations, never on curved alone.
     G-B by motion: VO2 - V2 in wind occlusion, curved and wander separately
     E1 attribution: >-
-      one VO2 checkpoint on the same episodes: (a) left and right odor swapped, total
-      unchanged; (b) wind rotated with the odor unchanged (flytrack_v2.eval.runner
-      ObservationAblation); and occlusion tracking before, during, after the occlusion until
+      one VO2 checkpoint on the same episodes, wind world, occlusion scenario: (a) left and
+      right odor swapped, total unchanged; (b) wind rotated by 90 degrees with the odor
+      unchanged (flytrack_v2.eval.runner ObservationAblation). The attribution applies them
+      during the occlusion only (8-38 s, scripts/v2/evaluate_v2.py *_occlusion runs): paired
+      episodes are identical until the occlusion starts, so a drop in occlusion tracking is
+      the channel's use while the target is hidden (#192 R5). The same ablations over the
+      whole episode are reported beside them and only say whether the controller depends on
+      the channel. Occlusion tracking is reported before, during, after the occlusion until
       reacquisition, and after reacquisition
     A3 speed: >-
       deterministic actions (mode); per seed, the slope of the commanded speed on the
@@ -140,13 +145,30 @@ comparisons:
       45 degrees (the success rule's bearing; the aligned slope) and over all steps (reported
       beside it); and the actor with its speed held at 0.20 m/s on paired episodes. "The
       speed problem is solved" needs a positive aligned slope on at least 4 of 5 seeds and
-      lower normal success with the speed held. The aligned slope decides because the
+      lower normal success with the speed held, in a one-sided paired t test over training
+      seeds (p < 0.05, a secondary family of its own; #192 R12). Each seed's aligned slope is
+      reported in m/s per m beside the teacher's 0.257 (#184 (b), teacher driving), with the
+      speed-held paired difference, so a small positive slope is never read as a working speed
+      control. The aligned slope decides because the
       teacher's speed is 0.7 max(d - 1, 0) max(cos bearing, 0): a policy that imitates it
       slows down whenever it is not facing the target, so its unrestricted slope can be zero
       or negative (#184 Decision, made before any aligned slope was measured). Formal-v1's
       actors have unrestricted slopes of about 0 (#170 audit); both slopes are recomputed for
       them
     noise sensitivity: every gate's comparison at noise scales 0.5 and 1.0, reported only
+# #192 R13, registered before M4: the wording of each negative result. Every training seed's
+# result is reported, so many episodes never hide the uncertainty across seeds.
+negative_results:
+  speed: >-
+    "no effective speed control was established" when A3's condition fails: the aligned slope
+    is positive on fewer than 4 of 5 seeds, or holding the speed at 0.20 m/s does not lower
+    normal success (the one-sided paired t test is not significant)
+  occlusion: >-
+    "the use of direction during the occlusion was not shown" when G-B fails, or when the
+    occlusion-window E1 ablations do not lower occlusion tracking
+  structure: >-
+    "the structure comparison is not testable: no qualifying control" when no control reaches
+    normal success 0.3 (G-C, #161 E2)
 reacquisition:
   report: censored fraction and the restricted mean time; never the uncensored mean alone
   restricted_bound_s: 22  # occlusion end (38 s) to episode end (60 s)

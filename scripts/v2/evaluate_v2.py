@@ -10,7 +10,8 @@ secondary.jsonl (the A3 speed slope and E1 occlusion phases per episode) and man
 Optional secondary runs on the same episodes:
 - --speed-clamp: every actor with its speed held at 0.20 m/s (#161 A3), normal scenario;
 - --ablations: VO2 in the wind world's occlusion scenario with the odor swapped and with the
-  wind rotated by 90 degrees (#161 E1).
+  wind rotated by 90 degrees (#161 E1), each during the occlusion only (the attribution, #192
+  R5) and over the whole episode.
 
 The summary (flytrack_v2.eval.summary) is built from episodes.jsonl afterwards.
 
@@ -53,6 +54,24 @@ NOISE_KEYS = (
     "image_dropout",
     "odor_dropout",
 )
+
+
+# #161 E1 ablations, VO2 in the wind world's occlusion scenario: (channel, timing). The
+# occlusion-window runs are the registered attribution (#192 R5): paired episodes are identical
+# until the occlusion starts, so a change is the channel's use while the target is hidden. The
+# whole-episode runs say whether the controller depends on the channel at all.
+ABLATIONS = {
+    "odor_swap_occlusion": ("odor", "occlusion"),
+    "wind_rotate_90_occlusion": ("wind", "occlusion"),
+    "odor_swap": ("odor", "episode"),
+    "wind_rotate_90": ("wind", "episode"),
+}
+
+
+def occlusion_window(protocol: dict) -> tuple[float, float]:
+    occlusion = protocol["scenarios"]["occlusion"]
+    start = float(occlusion["occlusion_start_s"])
+    return start, start + float(occlusion["occlusion_duration_s"])
 
 
 def load_artifact(path: Path):
@@ -161,10 +180,7 @@ def main() -> None:
             if args.speed_clamp:
                 runs.append(("speed_clamp", kind, motion, ("normal",), scale))
             if args.ablations and kind == "wind":
-                runs += [
-                    (name, kind, motion, ("occlusion",), scale)
-                    for name in ("odor_swap", "wind_rotate_90")
-                ]
+                runs += [(name, kind, motion, ("occlusion",), scale) for name in ABLATIONS]
     manifest = {
         "commit": commit,
         "protocol_sha256": hashlib.sha256(args.protocol.read_bytes()).hexdigest(),
@@ -187,16 +203,21 @@ def main() -> None:
             )
             for path, policy, card, digest in loaded:
                 variant, seed = card["variant"], train_seed_of(path, card)
-                if label in ("odor_swap", "wind_rotate_90") and variant != "VO2":
+                if label in ABLATIONS and variant != "VO2":
                     continue
                 actor = V2Actor(policy.to(args.device))
                 if label == "speed_clamp":
                     actor = SpeedClamp(actor, 0.20)
-                elif label == "odor_swap":
-                    actor = ObservationAblation(actor, swap_odor)
-                elif label == "wind_rotate_90":
+                elif label in ABLATIONS:
+                    channel, timing = ABLATIONS[label]
+                    transform = (
+                        swap_odor
+                        if channel == "odor"
+                        else rotate_wind(90.0, contract.antenna_angle_deg)
+                    )
+                    window = occlusion_window(protocol) if timing == "occlusion" else None
                     actor = ObservationAblation(
-                        actor, rotate_wind(90.0, contract.antenna_angle_deg)
+                        actor, transform, window=window, control_dt=contract.control_dt
                     )
                 started = time.perf_counter()
                 seeds = episode_seeds(protocol, args.seeds, seed, episodes, len(scenarios))

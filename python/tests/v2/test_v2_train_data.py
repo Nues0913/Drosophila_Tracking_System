@@ -102,8 +102,13 @@ def test_first_episode_reset_matches_automatic_reset():
             for key, obs in collector.obs.items():
                 assert torch.equal(obs[first], automatic.obs[key][first]), key
         seeds = torch.cat([world.privileged()["episode_seed"] for world in collector.worlds])
+        # Match b1119c4: each row starts at episode 0 and advances once per reset.
+        # The global row includes the instance offset, and bit 40 is set in all seeds.
         episode = (tick >= first_end).long() + (tick >= first_end + horizon).long()
-        assert torch.equal(seeds, episode_seed(seed, global_rows, episode) | EPISODE_SEED_BIT)
+        expected = episode_seed(seed, global_rows, episode) | (1 << 40)
+        torch.testing.assert_close(
+            seeds, expected, rtol=0, atol=0, msg=f"episode seeds at tick {tick}"
+        )
         seen.append(seeds if tick == 0 else seeds[first | second])
     assert torch.cat(seen).unique().numel() == 3 * collector.rows
     saved = collector.checkpoint()["first_episode_resets"]

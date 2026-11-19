@@ -13,7 +13,6 @@ from torch import Tensor
 
 from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model.sensory import SensoryState
-from flytrack_v2.world.rng import episode_seed
 from flytrack_v2.world.teacher import OcclusionTeacher, PrivilegedTeacher
 from flytrack_v2.world.v1compat import V1CompatWorld
 from flytrack_v2.world.wind import WindConfig
@@ -33,54 +32,6 @@ EPISODE_SEED_BIT = 1 << 40
 _TRANSFER_TICKS = 32
 _READOUT_SAMPLE_STRIDE = 4
 _TEACHER_KEYS = ("agent_pose", "agent_velocity", "target_pose", "target_velocity", "occluded")
-
-
-class _TrainingSeedState(dict):
-    def __init__(self, state: dict, seeds: Tensor):
-        super().__init__(state)
-        self.seeds = seeds
-
-    def __setitem__(self, name, value):
-        super().__setitem__(name, self.seeds if name == "seed" else value)
-
-
-class _TrainingWorld(V1CompatWorld):
-    """Apply training episode numbering and seeds to automatic and masked resets."""
-
-    env_offset: int = 0
-
-    def reset(
-        self, mask: Tensor | None = None, episode_seeds: Tensor | None = None
-    ) -> dict[str, Tensor]:
-        if mask is not None and self._state:
-            mask = mask.to(self.device)
-            self.episode_index.add_(mask)
-        return super().reset(mask, episode_seeds)
-
-    def _reset_rows(self, mask: Tensor, episode_seeds: Tensor | None) -> None:
-        state = self._state
-        # The world's env_index also indexes its local tensors. Derive seeds with a global
-        # index separately and substitute them before the first reset draw. This keeps the
-        # normal reset path graph-capturable, with no synchronous explicit-seed validation.
-        seeds = (
-            episode_seed(self.seed, self.env_index + self.env_offset, self.episode_index)
-            if episode_seeds is None
-            else episode_seeds.to(self.device, torch.int64)
-        )
-        self._state = _TrainingSeedState(
-            state, torch.where(mask, seeds | EPISODE_SEED_BIT, state["seed"])
-        )
-        try:
-            super()._reset_rows(mask, episode_seeds)
-            state.update(self._state)
-        finally:
-            self._state = state
-
-    def release_rollout_graphs(self) -> None:
-        """Release the capture pool while keeping state tensors for the next round."""
-        if self._graph is not None:
-            self._graph = None
-            del self._reset_graph, self._graph_outputs, self._graph_action
 
 
 def mix_actions(teacher: Tensor, student: Tensor, beta: float, generator: torch.Generator):
@@ -159,7 +110,7 @@ class RolloutCollector:
         self.worlds, tags = [], []
         for world_id, kind in enumerate(WORLD_NAMES):
             for motion_id, motion in enumerate(MOTION_NAMES):
-                world = _TrainingWorld(
+                world = V1CompatWorld(
                     policy.contract,
                     rows,
                     scenarios=names,
@@ -172,8 +123,9 @@ class RolloutCollector:
                     device=device,
                     scenario_configs=scenario_configs,
                     wind=WindConfig(speed_m_s=config["wind_speed_m_s"]) if kind == "wind" else None,
+                    env_index_offset=len(self.worlds) * rows,
+                    episode_seed_namespace=EPISODE_SEED_BIT,
                 )
-                world.env_offset = len(self.worlds) * rows
                 self.worlds.append(world)
                 tags.extend((world_id, motion_id, SCENARIO_NAMES.index(name)) for name in names)
         self.tags = torch.tensor(tags, dtype=torch.uint8)
@@ -211,8 +163,8 @@ class RolloutCollector:
         self._rollout_ticks = ticks
 
     def checkpoint(self) -> dict:
-        # V1CompatWorld has no serialization API. These are the mutable physical state and
-        # episode counters. On CUDA the graphs are re-captured against the restored tensors.
+        # Checkpoint/restore are the only users of world internals because V1CompatWorld has
+        # no serialization API. On CUDA the graphs are re-captured against the restored state.
         saved = {
             "worlds": [
                 {
@@ -238,6 +190,7 @@ class RolloutCollector:
         for world, values in zip(self.worlds, saved["worlds"], strict=True):
             world._state = {name: value.to(self.device) for name, value in values["state"].items()}
             world.episode_index.copy_(values["episode_index"])
+        # Rebuild the observation from the restored state without advancing the world.
         self.obs = self._observations([world._observation(world._state) for world in self.worlds])
         self.sensory = SensoryState(*(value.to(self.device) for value in saved["sensory"]))
         self.central = saved["central"].to(self.device)

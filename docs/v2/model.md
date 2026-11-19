@@ -112,6 +112,14 @@ GRU2 將正規化的完整感覺碼送入 GRUCell，線性層輸出速度和轉�
 
 RW2 在 1,826,780 次嘗試中成功交換 1,670,709 次，與原圖不同的邊佔 96.3564%。GRU2 的隱藏寬度為 35，有效參數比 VO2 多 1.39%。
 
+## 匯出與載入
+
+`flytrack_v2.model.export_policy(policy, out_dir, provenance=...)` 將 CPU 權重、實際使用的前端檔案、輸入正規化統計和感測契約分別存到 `weights.pt`、`frontend.npz`、`input_norm.npz`、`sensor_contract.json`。圖策略還寫入 `graph.npz`，保存實際的邊、邊的參數共享標籤和接線統計。匯出前以 `refresh_rest_state(full=True)` 從核心偏置狀態完整重算靜息狀態。
+
+`model_card.json` 記錄完整的 `model_config`，包括感覺碼設定、增益參數化、實際讀出型別、RW2／ER2 的結構種子，以及 GRU2 的有效參數預算和隱藏寬度。卡片保留原設定的相對路徑以供追溯。圖策略的速度與轉向讀出都按型別記錄左右兩側的 bodyId。接線後的圖匯出成新檔案時會有自己的 SHA-256，因此產物使用卡片中的 bodyId 定位讀出節點。來源圖的雜湊另存為 `graph_origin_sha256`。卡片也記錄感測契約雜湊、狀態尺寸、時序、動作限制和訓練來源。卡片的 `files` 記錄各資料檔的 SHA-256，`SHA256SUMS` 也涵蓋卡片本身。
+
+`flytrack_v2.model.load_policy(artifact_dir, device="cpu")` 是唯一的載入入口。它先驗證檔案雜湊和卡片，再用產物目錄內的檔案和解析後的設定建構策略。圖策略直接使用匯出的接線與讀出節點，並驗證每個 bodyId 的側別。載入以權重檔中的參數還原已訓練的讀出偏置，接著完整重算靜息狀態。
+
 ## 效能驗證
 
 實測主機為 4060（RTX 4060 Laptop，8 GB），使用 `torch 2.9.1+cu126` 與 SDDMM 版本的核心。[bench_core.py](../../scripts/v2/bench_core.py) 同步 CUDA 計時。推論使用隨機合法的 `obs`，暖身 5 步後取 20 個控制步的平均。上方訓練表的每組設定採用第二次執行所得的單次量測，記錄一條 80 步序列的前向與反向耗時及 CUDA 峰值配置。

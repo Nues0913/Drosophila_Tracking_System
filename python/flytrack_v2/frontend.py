@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from flytrack_core.contracts import SensorContract
+from flytrack_core.contracts import SensorContract, file_sha256
 from flytrack_core.model.frontend import FrozenFlyvis
 from torch import Tensor, nn
 
@@ -44,6 +44,8 @@ class NodeMajorFlyvis(nn.Module):
     ):
         super().__init__()
         self.frozen = FrozenFlyvis(path, contract, visual_bins)
+        self.source_path = Path(path).resolve()
+        self.source_sha256 = file_sha256(self.source_path)
         self.n_nodes = self.frozen.n_nodes
         self.n_ommatidia = self.frozen.n_ommatidia
         self.output_types = self.frozen.output_types

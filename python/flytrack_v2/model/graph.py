@@ -42,6 +42,7 @@ class GraphV2:
     successful_swaps: int | None = None
     changed_edge_fraction: float | None = None
     source_sha256: str | None = field(default=None, repr=False)
+    origin_sha256: str | None = field(default=None, repr=False)
     fan_in: np.ndarray = field(init=False, repr=False)
     edge_label: np.ndarray = field(init=False, repr=False)
     label_pairs: np.ndarray = field(init=False, repr=False)
@@ -99,13 +100,39 @@ class GraphV2:
     def n_edges(self) -> int:
         return self.pre.size
 
+    def save(self, path: str | Path) -> None:
+        """Save the active edges and their parameter-sharing labels, with source provenance."""
+        arrays = {
+            name: getattr(self, name) for name in (*_NODE_ARRAYS, *_EDGE_ARRAYS, "type_names")
+        }
+        arrays["edge_type_pairs"] = self.label_pairs[self.edge_label]
+        arrays["origin_sha256"] = self.origin_sha256 or ""
+        for name in ("successful_swaps", "changed_edge_fraction"):
+            value = getattr(self, name)
+            if value is not None:
+                arrays[name] = value
+        with Path(path).open("wb") as stream:
+            np.savez(stream, **arrays)
+
     @classmethod
     def load(cls, path: str | Path) -> GraphV2:
         data = Path(path).read_bytes()
+        source_sha256 = hashlib.sha256(data).hexdigest()
         with np.load(io.BytesIO(data), allow_pickle=False) as archive:
             return cls(
                 **{key: archive[key] for key in (*_NODE_ARRAYS, *_EDGE_ARRAYS, "type_names")},
-                source_sha256=hashlib.sha256(data).hexdigest(),
+                edge_type_pairs=archive.get("edge_type_pairs"),
+                **{
+                    name: archive[name].item()
+                    for name in ("successful_swaps", "changed_edge_fraction")
+                    if name in archive
+                },
+                source_sha256=source_sha256,
+                origin_sha256=(
+                    archive["origin_sha256"].item() or None
+                    if "origin_sha256" in archive
+                    else source_sha256
+                ),
             )
 
 

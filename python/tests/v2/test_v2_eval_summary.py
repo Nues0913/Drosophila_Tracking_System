@@ -6,6 +6,7 @@ import pytest
 from flytrack_v2.eval.summary import (
     ComparisonSpec,
     build_summary,
+    check_pairing,
     records_sha256,
     selection_seed_means,
     validate_summary,
@@ -139,3 +140,29 @@ def test_validate_summary_catches_inconsistent_rows():
     bad["cells"][0]["n_seeds"] = 4
     with pytest.raises(ValueError, match="n_seeds"):
         validate_summary(bad)
+
+
+def test_a_missing_motion_on_either_side_is_refused_not_passed():
+    """#192 R1, the review's counterexample: VO2 and V2 behave the same, then VO2 loses every
+    wander episode and V2 every curved one. Pooled per seed, VO2's easy curved would be
+    compared with V2's hard wander and pass G-B."""
+    records = []
+    for seed in range(5):
+        for motion, rate in (("curved", 8), ("wander", 2)):
+            for episode in range(10):
+                for variant in ("VO2", "V2"):
+                    records.append(_record(variant, seed, episode, episode < rate, motion))
+    same = build_summary(records, [G_B], protocol_seed=1, protocol_sha256="p" * 64)
+    assert same["comparisons"][0]["mean"] == pytest.approx(0.0)
+    assert same["comparisons"][0]["gate_passed"] is False
+    holes = [
+        r
+        for r in records
+        if not (r["variant"] == "VO2" and r["motion"] == "wander")
+        and not (r["variant"] == "V2" and r["motion"] == "curved")
+    ]
+    with pytest.raises(ValueError, match="VO2 misses 5 cells"):
+        build_summary(holes, [G_B], protocol_seed=1, protocol_sha256="p" * 64)
+    # check_pairing is the second line: it alone also refuses the comparison
+    with pytest.raises(ValueError, match="G-B: the two sides do not cover the same episodes"):
+        check_pairing(holes, G_B)

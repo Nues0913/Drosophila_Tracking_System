@@ -1,7 +1,7 @@
 """Record-set checks before aggregation (#161 C5)."""
 
 import pytest
-from flytrack_v2.eval.records import check_records
+from flytrack_v2.eval.records import check_records, expected_grid
 
 
 def _record(variant="VO2", seed=0, episode=1, artifact="a" * 64, **override):
@@ -67,3 +67,66 @@ def test_missing_and_unpaired_episodes_are_refused():
         check_records(records)
     with pytest.raises(ValueError, match=r"missing \[3\]"):
         check_records(_paired(), expected_episode_seeds=[1, 2, 3])
+
+
+_PROTOCOL = {
+    "worlds": ["v1compat", "wind"],
+    "motions": {"primary": "curved", "secondary": "wander"},
+    "episodes_per_cell": 2,
+    "scenarios": {
+        "normal": {},
+        "noise": {"scale": 0.75, "sensitivity_scales": [0.5, 1.0]},
+    },
+    "episode_seeds": {"formal_evaluation": {"base": 1000, "per_train_seed": 100}},
+}
+
+
+def _from_grid(grid):
+    return [
+        _record(v, s, e, artifact=v[0] * 64, world=w, scenario=scenario, motion=m, noise_scale=n)
+        for (v, s, w, scenario, m, n), seeds in grid.items()
+        for e in sorted(seeds)
+    ]
+
+
+def test_expected_grid_uses_each_training_seed_episodes_and_the_noise_scales():
+    grid = expected_grid(_PROTOCOL, "formal_evaluation", variants=["VO2"], train_seeds=[0, 3])
+    # 2 seeds x 2 worlds x 2 motions x (normal + noise at 3 scales)
+    assert len(grid) == 2 * 2 * 2 * 4
+    assert grid[("VO2", 3, "wind", "noise", "wander", 1.0)] == {1300, 1301}
+    assert grid[("VO2", 0, "v1compat", "normal", "curved", None)] == {1000, 1001}
+    main = expected_grid(
+        _PROTOCOL, "formal_evaluation", variants=["VO2"], train_seeds=[0], sensitivity=False
+    )
+    assert {key[3:] for key in main} == {("normal", m, None) for m in ("curved", "wander")} | {
+        ("noise", m, 0.75) for m in ("curved", "wander")
+    }
+
+
+def test_the_grid_refuses_a_missing_block_and_another_seeds_episodes():
+    grid = expected_grid(_PROTOCOL, "formal_evaluation", variants=["VO2", "V2"], train_seeds=[0, 1])
+    records = _from_grid(grid)
+    assert len(check_records(records, grid=grid)) == len(records)
+    # every wander episode of VO2 gone: invisible to the per-cell check, caught by the grid
+    no_wander = [r for r in records if not (r["variant"] == "VO2" and r["motion"] == "wander")]
+    check_records([r for r in no_wander if r["motion"] == "curved"])
+    with pytest.raises(ValueError, match="expected cells have no records"):
+        check_records(no_wander, grid=grid)
+    # seed 1 evaluated on seed 0's episode numbers
+    shifted = [
+        {**r, "episode_seed": r["episode_seed"] - 100} if r["train_seed"] == 1 else r
+        for r in records
+    ]
+    with pytest.raises(ValueError, match=r"'train_seed': 1.*episode seeds differ"):
+        check_records(shifted, grid=grid)
+
+
+def test_every_v2_variant_must_cover_the_same_cells_even_without_a_grid():
+    """#193 review: check_records alone refuses a variant missing whole cells; formal-v1
+    reference actors (v1:...) may cover fewer cells."""
+    records = _paired()
+    wander = [{**r, "motion": "wander"} for r in records]
+    with pytest.raises(ValueError, match="VO2 misses 2 cells"):
+        check_records([*records, *[r for r in wander if r["variant"] == "V2"]])
+    reference = [_record("v1:VO-late", s, e, artifact="1" * 64) for s in (0, 1) for e in (1, 2)]
+    assert len(check_records([*records, *wander, *reference])) == 20

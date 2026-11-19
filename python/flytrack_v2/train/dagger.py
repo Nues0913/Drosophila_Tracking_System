@@ -39,7 +39,7 @@ from .config import (
     read_yaml,
     validate_model_overrides,
 )
-from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch, normalization_stats
+from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch
 from .update import (
     LossSettings,
     batch_metrics,
@@ -94,8 +94,8 @@ def _atomic_save(value: dict, path: Path) -> None:
     temporary.replace(path)
 
 
-def _load(path: Path, *, mmap: bool = False) -> dict:
-    return torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
+def _load(path: Path) -> dict:
+    return torch.load(path, map_location="cpu", weights_only=True)
 
 
 def _atomic_json(value: dict, path: Path) -> None:
@@ -243,9 +243,7 @@ class DAggerRun:
             complete, partial = directory / "checkpoint.pt", directory / "progress.pt"
             if not complete.is_file() and not partial.is_file():
                 break
-            self.replay.shards.append(
-                ReplayShard.restore(_load(directory / "replay.pt", mmap=True))
-            )
+            self.replay.shards.append(ReplayShard.load(directory / "replay.pt"))
             path = complete if complete.is_file() else partial
             if path == partial:
                 break
@@ -332,14 +330,13 @@ class DAggerRun:
         plan = self.plans[index]
         directory = self.round_dir(index)
         directory.mkdir(exist_ok=True)
-        shard, rollout_metrics = self.collector.collect(
+        shard, rollout_metrics, stats = self.collector.collect(
             plan, sample_readout_rates=self.normalize_readout and index == 0
         )
         self.progress.env_steps += plan.ticks * self.collector.rows
-        stats = normalization_stats(shard, self.policy.input_norm)
         replay_path = directory / "replay.pt"
         _atomic_save(shard.checkpoint(), replay_path)
-        self.replay.shards.append(ReplayShard.restore(_load(replay_path, mmap=True)))
+        self.replay.shards.append(ReplayShard.load(replay_path))
         self.progress.round_metrics = {
             **stats,
             **rollout_metrics,

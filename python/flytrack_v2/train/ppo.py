@@ -568,8 +568,14 @@ class PPORun:
         self.update = 0
         self.env_steps = 0
         self.collector: PPOCollector | None = None
-        resolved = {k: v for k, v in config.items() if k != "host"}
-        self.resolved = {**resolved, "init_artifact_sha256": self.init_sha256}
+        # The resume check covers the seed, the host and the device too: resuming with another
+        # --seed would keep the old collector RNG but export the new train_seed (#188 review).
+        self.resolved = {
+            **config,
+            "seed": seed,
+            "device": str(device),
+            "init_artifact_sha256": self.init_sha256,
+        }
         self.config_sha256 = _sha256_json(self.resolved)
 
     @property
@@ -607,7 +613,7 @@ class PPORun:
         if resume:
             saved = torch.load(self.checkpoint_path(), map_location="cpu", weights_only=False)
             if saved["config_sha256"] != self.config_sha256:
-                raise ValueError("--resume needs the same config, host and init artifact")
+                raise ValueError("--resume needs the same config, seed, host, device and init")
             self.policy.load_state_dict(saved["policy"])
             self.critic.load_state_dict(saved["critic"])
             self.actor_optimizer.load_state_dict(saved["actor_optimizer"])
@@ -643,7 +649,15 @@ class PPORun:
             self.out,
             # A non-finite gradient skips its optimizer step; failing here keeps a run that has
             # stopped learning from looking healthy (#188 review).
-            finite_keys=("value_loss", "critic_grad_norm", "actor_grad_norm"),
+            # policy_loss and approx_kl as well: a NaN KL never counts toward the kl_stop
+            # streak, since NaN > threshold is false (#188 review)
+            finite_keys=(
+                "value_loss",
+                "critic_grad_norm",
+                "actor_grad_norm",
+                "policy_loss",
+                "approx_kl",
+            ),
             on_failure=on_failure,
             start_env_steps=self.env_steps,
         ) as monitor:

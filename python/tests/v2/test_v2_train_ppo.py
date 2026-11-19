@@ -291,6 +291,8 @@ def test_ppo_runs_stops_resumes_and_exports(tmp_path):
     first = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
     assert [row["update"] for row in first] == [1] and not (out / "final").exists()
     (out / "STOP").unlink()
+    with pytest.raises(SystemExit):  # #188 review: another seed must not resume this run
+        ppo.main([*args[:3], "6", *args[4:], "--resume"])
     assert ppo.main([*args, "--resume"]) == 0
     rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
     assert [row["update"] for row in rows] == [1, 2, 3, 4]  # 8 envs x 3 steps per update

@@ -1,0 +1,13 @@
+{
+  "artifact": "artifacts/input_norm_v2/input_norm.npz",
+  "sha256": "5d393b5c8a284305a0c7286f771655aad6467892f55f97430f1e114b396702a9",
+  "commit": "928a5cf362c65b672724b0a56d0a8edea47219df",
+  "worlds": "v1compat and wind (U = 0.5 m/s), hide_target, half each",
+  "teacher": "OcclusionTeacher (walls on)",
+  "episodes": 200,
+  "samples": 239560,
+  "unfitted_columns": 0,
+  "unfitted_column_index": [],
+  "std_below_floor": 0,
+  "fit": "flytrack_v2.model.sensory.fit_input_norm"
+}

@@ -128,3 +128,38 @@ def test_fused_matches_eager_and_v1_on_cuda(contract, dtype):
     _assert_close(fused, reference, dtype)
     # Same arithmetic on the same device: the two paths agree to rounding.
     _assert_close(fused, eager, dtype)
+
+
+def test_per_eye_poses_render_each_eye_at_its_own_pose(contract):
+    poses, disks, wall_intensity = _pose_set(8, seed=5)
+    other, other_disks, _ = _pose_set(8, seed=6)
+    retina = BatchedRetina(contract, WALLS, "cpu", torch.float64)
+    left = retina.render(
+        torch.as_tensor(poses), torch.as_tensor(wall_intensity), torch.as_tensor(disks)
+    )
+    right = retina.render(
+        torch.as_tensor(other), torch.as_tensor(wall_intensity), torch.as_tensor(other_disks)
+    )
+    both = retina.render(
+        torch.as_tensor(np.stack((poses, other), 1)),
+        torch.as_tensor(wall_intensity),
+        torch.as_tensor(np.stack((disks, other_disks), 1)),
+    )
+    torch.testing.assert_close(both[:, 0], left[:, 0], rtol=0, atol=0)
+    torch.testing.assert_close(both[:, 1], right[:, 1], rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the fused path runs on CUDA")
+def test_render_target_matches_render_on_cuda(contract):
+    """The world's two-kernel target render against the general disk render."""
+    poses, disks, wall_intensity = _pose_set(300, seed=8)
+    target = torch.as_tensor(disks[:, 1], device="cuda")  # x, y, radius, height 0.5, intensity
+    retina = BatchedRetina(contract, WALLS, "cuda", torch.float32)
+    pose, light = (
+        torch.as_tensor(poses, device="cuda"),
+        torch.as_tensor(wall_intensity, device="cuda"),
+    )
+    fast = retina.render_target(pose, light, target[:, :2], target[:, 2], 0.5, target[:, 4])
+    general = retina.render(pose, light, target[:, None])
+    _assert_close(fast.cpu().numpy(), general.cpu().numpy(), torch.float32)

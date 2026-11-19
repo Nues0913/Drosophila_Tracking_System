@@ -7,6 +7,7 @@ import torch
 from flytrack_core.contracts import SensorContract
 from flytrack_core.model.frontend import FrozenFlyvis
 from flytrack_v2.frontend import NodeMajorFlyvis
+from torch._inductor.exc import InductorError
 
 ROOT = Path(__file__).resolve().parents[3]
 EXPORT = ROOT / "artifacts/frontend_v2/frontend.npz"
@@ -58,3 +59,52 @@ def test_reset_restarts_only_the_masked_environments(contract):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the fused update runs on CUDA")
 def test_fused_update_matches_v1_on_cuda(contract):
     _run(contract, "cuda", fused=True)
+
+
+def test_compile_failure_falls_back_to_eager_with_one_warning(contract, monkeypatch):
+    import flytrack_v2.frontend as module
+
+    def broken(*args):
+        raise InductorError(RuntimeError("no C compiler"), "")
+
+    monkeypatch.setattr(module, "_fused_update", broken)
+    monkeypatch.setattr(module, "_FUSED_FAILURE", None)
+    fused = NodeMajorFlyvis(EXPORT, contract, 9, fused=True)
+    eager = NodeMajorFlyvis(EXPORT, contract, 9, fused=False)
+    assert fused.update_path("cpu") == "fused"
+    vision = torch.rand(2, 2, contract.n_ommatidia, generator=torch.Generator().manual_seed(1))
+    valid = torch.ones(2, 2)
+    with pytest.warns(RuntimeWarning, match="no C compiler"):
+        out, state = fused(vision, fused.initial_state(2, "cpu"), valid)
+    reference, _ = eager(vision, eager.initial_state(2, "cpu"), valid)
+    torch.testing.assert_close(out, reference)
+    assert fused.update_path("cpu") == "eager"
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the second call stays quiet
+        fused(vision, state, valid)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        torch.OutOfMemoryError("CUDA out of memory"),
+        InductorError(torch.OutOfMemoryError("CUDA out of memory while autotuning"), ""),
+        RuntimeError("CUDA error: an illegal memory access was encountered"),
+    ],
+    ids=["oom", "oom-inside-compiler", "runtime"],
+)
+def test_runtime_errors_propagate_and_keep_the_fused_path(contract, monkeypatch, error):
+    import flytrack_v2.frontend as module
+
+    def failing(*args):
+        raise error
+
+    monkeypatch.setattr(module, "_fused_update", failing)
+    monkeypatch.setattr(module, "_FUSED_FAILURE", None)
+    fused = NodeMajorFlyvis(EXPORT, contract, 9, fused=True)
+    vision = torch.rand(2, 2, contract.n_ommatidia, generator=torch.Generator().manual_seed(1))
+    with pytest.raises(type(error)):
+        fused(vision, fused.initial_state(2, "cpu"), torch.ones(2, 2))
+    assert fused.update_path("cpu") == "fused"

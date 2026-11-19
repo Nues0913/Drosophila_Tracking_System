@@ -1,12 +1,19 @@
-"""Truth-aware world node that publishes only bilateral local concentration."""
+"""Truth-aware world node that publishes only bilateral local concentration.
 
+With ``world: wind`` (a v2 deployment, #140) it runs the 2D wind world's meandering wind and
+filament plume (wind_field.py) and also publishes the antenna reading on ``/sim/wind`` at the
+odor tick (the 2D world samples the antennae on the odor clock: wind_hz = odor_hz). With the
+default ``world: v1compat`` nothing changes: v1's plume, no wind topic.
+"""
+
+import json
 import os
 import time
 
 import numpy as np
 from flytrack_core.sensing import odor_sensor_positions
 from flytrack_core.world import make_plume
-from flytrack_interfaces.msg import OdorReading, ScenarioEvent
+from flytrack_interfaces.msg import OdorReading, ScenarioEvent, WindReading
 from geometry_msgs.msg import PoseStamped
 
 from .common import (
@@ -20,6 +27,10 @@ from .common import (
     spin_main,
     stamp_seconds,
 )
+from .contract import has_wind
+from .wind_field import WindPlume
+
+WORLDS = ("v1compat", "wind")
 
 
 class OdorFieldNode(WorldNode):
@@ -33,7 +44,23 @@ class OdorFieldNode(WorldNode):
         self.sensor_forward_m = float(param(self, "sensor_forward_m", 0.15))
         self.agent_pose = self.target_pose = None
         self.agent_stamp = self.target_stamp = -np.inf
-        self.plume = make_plume(self.plume_model, self.plume_config, self.base_seed)
+        self.world = param(self, "world", "v1compat")
+        if self.world not in WORLDS:
+            raise ValueError(f"world must be one of {WORLDS}, got {self.world!r}")
+        self.wind_config = None
+        self.wind_publisher = None
+        if self.world == "wind":
+            if not has_wind(self.contract):
+                raise ValueError("world: wind needs a v2 sensor contract (wind_hz and antennae)")
+            if self.contract.wind_hz != self.contract.odor_hz:
+                raise ValueError("the wind world samples wind on the odor clock: wind_hz = odor_hz")
+            from flytrack_v2.world.wind import WindConfig  # v2 deployments only
+
+            self.wind_config = WindConfig.from_dict(
+                json.loads(param(self, "wind_config_json", "") or "{}")
+            )
+            self.wind_publisher = self.create_publisher(WindReading, "/sim/wind", SENSOR_QOS)
+        self.plume = self._make_plume(self.plume_model, {}, self.base_seed)
         self.publisher = self.create_publisher(OdorReading, "/sim/odor", SENSOR_QOS)
         self.create_subscription(PoseStamped, "/world/agent/pose", self._agent, POSE_QOS)
         self.create_subscription(PoseStamped, "/world/target/pose", self._target, POSE_QOS)
@@ -55,14 +82,22 @@ class OdorFieldNode(WorldNode):
     def _scenario(self, message):
         new, values = self.consume_event(message)
         if new:
-            self.plume = make_plume(
+            self.plume = self._make_plume(
                 values.get("plume_model", self.plume_model),
-                {**self.plume_config, **values.get("plume_config", {})},
+                values.get("plume_config", {}),
                 int(message.seed),
             )
             # Reject pre-reset truth even if the bridge last published it recently.
             self.agent_pose = self.target_pose = None
             self.agent_stamp = self.target_stamp = -np.inf
+
+    def _make_plume(self, model, overrides, seed):
+        if self.wind_config is None:
+            return make_plume(model, {**self.plume_config, **overrides}, seed)
+        # The wind world's plume replaces the scenario's plume settings, as in 2D (v1compat.py):
+        # its filament values come from the wind config, its drift from the meandering wind.
+        sources = 2 if self.scenario_spec.name == "conflict" else 1
+        return WindPlume(self.wind_config, sources, seed)
 
     def _tick(self):
         if not self.active or self.agent_pose is None or self.target_pose is None:
@@ -93,6 +128,22 @@ class OdorFieldNode(WorldNode):
         message.clock_domain = os.environ.get("FLYTRACK_CLOCK_DOMAIN", "")
         message.source_monotonic_ns = time.monotonic_ns()
         self.publisher.publish(message)
+        if self.wind_publisher is not None:
+            self._publish_wind(message.header.stamp)
+
+    def _publish_wind(self, stamp):
+        reading = self.plume.antenna_reading(
+            float(self.agent_pose[2]),
+            self.contract.antenna_angle_deg,
+            self.contract.wind_reference_m_s,
+        )
+        message = WindReading()
+        message.header.stamp = stamp  # the same sample time as the odor reading
+        message.header.frame_id = self.world_frame
+        message.left, message.right, message.valid = float(reading[0]), float(reading[1]), True
+        message.clock_domain = os.environ.get("FLYTRACK_CLOCK_DOMAIN", "")
+        message.source_monotonic_ns = time.monotonic_ns()
+        self.wind_publisher.publish(message)
 
 
 def main(args=None):

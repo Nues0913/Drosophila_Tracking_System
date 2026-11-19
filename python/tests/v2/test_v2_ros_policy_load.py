@@ -101,6 +101,68 @@ def test_runtime_arms_and_commands_within_limits(artifact):
     assert (np.abs(commands[:, 1]) <= contract.omega_max).all()
 
 
+def feed(runtime, rng, now, wind=True):
+    for eye in (0, 1):
+        assert runtime.update_vision(eye, rng.random(721, dtype=np.float32), now)
+    assert runtime.update_odor(rng.random(2, dtype=np.float32), now)
+    if wind:
+        assert runtime.update_wind(rng.normal(size=2).astype(np.float32), now)
+
+
+def test_wind_runtime_arms_only_with_the_antennae(artifact):
+    policy, contract, _card, _spec = artifact_module.load_deployment_policy(artifact)
+    runtime = runtime_module.PolicyRuntime(policy, contract, wind=True)
+    rng = np.random.default_rng(1)
+    feed(runtime, rng, 0.05, wind=False)
+    command, activity, valid = runtime.tick(0.05)
+    assert activity is None and not command.any() and valid.tolist() == [True] * 3 + [False]
+    feed(runtime, rng, 0.10)
+    _command, activity, valid = runtime.tick(0.10)
+    assert activity is not None and valid.all()
+
+
+@torch.no_grad()
+def test_wind_runtime_feeds_the_antennae_like_the_v2_api(artifact):
+    """The runtime's 4-sensor observation drives the policy as policy_step does, wind included;
+    a missing antenna sample turns valid[3] off and zeroes the wind (wind * valid[:, 3])."""
+    policy, contract, _card, _spec = artifact_module.load_deployment_policy(artifact)
+    runtime = runtime_module.PolicyRuntime(policy, contract, wind=True)
+    reference = load_policy(artifact)
+    sensory = reference.initial_sensory_state(1, "cpu")
+    central = reference.initial_central_state(1, "cpu")
+    rng = np.random.default_rng(2)
+    for tick in range(12):
+        now = 0.05 * (tick + 1)
+        dropped = tick in (6, 7, 8, 9, 10, 11)  # older than the watchdog from tick 10 on
+        feed(runtime, rng, now, wind=not dropped)
+        wind_before = runtime.wind.copy()
+        command, activity, valid = runtime.tick(now)
+        assert activity is not None
+        expected_valid = [1.0, 1.0, 1.0, float(valid[3])]
+        obs = runtime.history[-1]
+        v2_obs = {
+            "vision": torch.as_tensor(obs["vision"])[None],
+            "odor": torch.as_tensor(obs["odor"])[None],
+            "wind": torch.as_tensor(wind_before * np.float32(valid[3]))[None],
+            "valid": torch.tensor([expected_valid]),
+        }
+        np.testing.assert_array_equal(obs["valid"], expected_valid)
+        np.testing.assert_array_equal(obs["wind"], v2_obs["wind"][0].numpy())
+        step, sensory, _ = policy_step(reference, v2_obs, sensory, central)
+        central = step.central_state
+        torch.testing.assert_close(torch.as_tensor(runtime.state[1]), central, rtol=0, atol=0)
+        if tick >= 10:
+            assert not valid[3] and not obs["wind"].any()
+
+
+def test_three_sensor_runtime_refuses_wind(artifact):
+    policy, contract, _card, _spec = artifact_module.load_deployment_policy(artifact)
+    runtime = runtime_module.PolicyRuntime(policy, contract)
+    assert runtime.sensor_count == 3
+    with pytest.raises(ValueError, match="no wind sensor"):
+        runtime.update_wind(np.zeros(2, dtype=np.float32), 0.05)
+
+
 def write(tmp_path, contract, name):
     path = tmp_path / name
     path.write_text(json.dumps(contract.to_dict()), encoding="utf-8")

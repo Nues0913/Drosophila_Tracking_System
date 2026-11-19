@@ -82,3 +82,8 @@ def validate_episode_record(record: Mapping) -> None:
         raise ValueError("a censored reacquisition has no time")
     if record["reacquisition_time_s"] is not None and record["reacquisition_censored"] is not False:
         raise ValueError("a reacquisition time needs reacquisition_censored = false")
+    if record["reacquisition_censored"] is False and record["reacquisition_time_s"] is None:
+        raise ValueError(
+            "an uncensored reacquisition needs its time; an occlusion that never ended "
+            "(the episode ended first) has both fields null (#161 E3)"
+        )

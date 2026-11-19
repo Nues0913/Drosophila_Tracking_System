@@ -152,7 +152,45 @@ def test_restricted_reacquisition_counts_censored_episodes_at_the_bound():
         {"reacquisition_censored": False, "reacquisition_time_s": 3.0},
         {"reacquisition_censored": False, "reacquisition_time_s": 40.0},
     ]
-    values = [r["restricted_reacquisition_time_s"] for r in restricted_reacquisition(records, 22.0)]
-    assert values == [None, 22.0, 3.0, 22.0]
+    values = [
+        r["restricted_reacquisition_time_s"] for r in restricted_reacquisition(records[:3], 22.0)
+    ]
+    assert values == [None, 22.0, 3.0]
+    with pytest.raises(ValueError, match="exceeds the bound"):
+        restricted_reacquisition(records, 22.0)  # 40 s cannot be observed before the end
     with pytest.raises(ValueError):
         restricted_reacquisition(records, 0.0)
+
+
+def test_equal_differences_use_the_exact_sign_flip_value():
+    """#155 review: five seeds all +0.01 gave p = 0; the exact one-sided value is 1/32."""
+    reference = {s: 0.5 for s in range(5)}
+    result = paired_comparison("flat", {s: 0.51 for s in range(5)}, reference, "superiority")
+    assert result.degenerate and result.p_value == pytest.approx(1 / 32)
+    (adjusted,) = holm([result])
+    assert adjusted.degenerate and adjusted.passed  # 1/32 < 0.05 for a family of one
+    tie = paired_comparison("tie", dict(reference), reference, "superiority")
+    assert tie.degenerate and tie.p_value == 1.0
+
+
+def test_equal_differences_with_float_residue_are_still_degenerate():
+    # #166 review: one more success per seed, k/100 against (k-1)/100, leaves residues ~1e-17
+    k = [51, 99, 55, 7, 35]
+    candidate = {seed: k[seed] / 100 for seed in range(5)}
+    reference = {seed: (k[seed] - 1) / 100 for seed in range(5)}
+    assert np.std([candidate[s] - reference[s] for s in range(5)]) > 0  # the residue is there
+    result = paired_comparison("G-B", candidate, reference, "superiority")
+    assert result.degenerate and result.p_value == pytest.approx(1 / 32)
+    at_margin = paired_comparison(
+        "G-C",
+        {seed: k[seed] / 100 for seed in range(5)},
+        {seed: (k[seed] + 5) / 100 for seed in range(5)},
+        "noninferiority",
+        margin=0.05,
+    )
+    assert at_margin.degenerate and at_margin.p_value == 1.0  # exactly -margin is not above it
+
+
+def test_superiority_refuses_a_margin():
+    with pytest.raises(ValueError, match="gate_passes"):
+        paired_comparison("G-B", {0: 0.6, 1: 0.7}, {0: 0.4, 1: 0.5}, "superiority", 0.10)

@@ -331,7 +331,7 @@ def test_track_v2_reward(contracts):
         torch.tensor([[0.0, 0.0], [0.3, 0.4], [0.0, 0.0], [0.0, 0.0]]),
         1.0,
     )
-    expected = torch.tensor([1.0, -0.9 - 0.025, 1 - 0.21 - 10, -0.45], dtype=torch.float64)
+    expected = torch.tensor([1.9, -0.025, 1 - 0.21 - 10, 0.45], dtype=torch.float64)
     torch.testing.assert_close(reward, expected)
     world = _world(contracts)
     assert world.reward_kind == "track_v2" and world.occlusion_view == "hide_target"

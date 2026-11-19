@@ -63,13 +63,20 @@ def _v1_contract(contract: SensorContractV2) -> SensorContract:
 def track_v2_reward(
     tracked: Tensor, distance: Tensor, collision: Tensor, change: Tensor, following: float
 ) -> Tensor:
-    """Plan 3.8's PPO reward (#161 D3), aligned with the success rule, no speed term:
-    +1 per tracked step, -0.3 min(|d - 1 m|, 3 m), -10 on collision, -0.05 |delta a|."""
-    error = (distance - following).abs().clamp(max=3.0)
+    """PPO reward aligned with the tracking success rule (plan 3.8, #161 D3).
+
+    The survival bonus cancels the maximum distance penalty. From the same state,
+    braking to a stop and holding position costs only the small change in action,
+    with nonnegative rewards thereafter while safe. Hitting the wall ends the
+    episode with a large penalty, so stopping wins for any discount factor.
+    """
+    survival = 0.3 * 3.0  # +0.9 per non-collision step, per the #161 D3 Decision.
+    error = (distance.to(torch.float64) - following).abs().clamp(max=3.0)
+    hit = collision.to(torch.float64)
     return (
         tracked.to(torch.float64)
-        - 0.3 * error
-        - 10.0 * collision.to(torch.float64)
+        + (survival * (1.0 - hit) - 0.3 * error)
+        - 10.0 * hit
         - 0.05 * change.to(torch.float64).norm(dim=-1)
     )
 

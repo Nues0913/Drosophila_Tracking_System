@@ -108,3 +108,52 @@ def test_runtime_errors_propagate_and_keep_the_fused_path(contract, monkeypatch,
     with pytest.raises(type(error)):
         fused(vision, fused.initial_state(2, "cpu"), torch.ones(2, 2))
     assert fused.update_path("cpu") == "fused"
+
+
+def test_unavailable_torch_compile_falls_back_to_eager(contract, monkeypatch):
+    """Python 3.14+ (the ROS image, #140): torch.compile itself raises."""
+    import warnings
+
+    import flytrack_v2.frontend as module
+
+    def unsupported(*args, **kwargs):
+        raise RuntimeError("torch.compile is not supported on Python 3.14+")
+
+    monkeypatch.setattr(module.torch, "compile", unsupported)
+    monkeypatch.setattr(module, "_fused_update", None)
+    monkeypatch.setattr(module, "_FUSED_FAILURE", None)
+    fused = NodeMajorFlyvis(EXPORT, contract, 9, fused=True)
+    eager = NodeMajorFlyvis(EXPORT, contract, 9, fused=False)
+    with pytest.warns(RuntimeWarning, match="not supported on Python 3.14"):
+        assert fused.update_path("cpu") == "eager"
+    vision = torch.rand(2, 2, contract.n_ommatidia, generator=torch.Generator().manual_seed(1))
+    valid = torch.ones(2, 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # warned once, the update itself stays quiet
+        out, _ = fused(vision, fused.initial_state(2, "cpu"), valid)
+    reference, _ = eager(vision, eager.initial_state(2, "cpu"), valid)
+    torch.testing.assert_close(out, reference)
+
+
+def test_importing_the_model_never_calls_torch_compile():
+    import subprocess
+    import sys
+
+    code = (
+        "import torch\n"
+        "def unsupported(*a, **k):\n"
+        "    raise RuntimeError('torch.compile is not supported on Python 3.14+')\n"
+        "torch.compile = unsupported\n"
+        "import flytrack_v2.frontend, flytrack_v2.model\n"
+        "print('imported')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT / "python"), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip() == "imported"

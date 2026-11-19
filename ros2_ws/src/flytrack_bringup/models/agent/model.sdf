@@ -8,7 +8,11 @@
      4.805 m from the centre on oblique approaches and no collision was recorded.
      wheel_separation is the spacing of the wheels' inner edges (0.26 - 0.035 m): the physics touches the
      floor there, so with the centre spacing the agent turned faster than commanded (the old model by
-     0.32 / 0.285 = 1.123, measured 0.561 rad/s for 0.5). -->
+     0.32 / 0.285 = 1.123, measured 0.561 rad/s for 0.5).
+     #140 (E11): with the mass over the wheel axle and only the rear caster, braking tipped the agent
+     forward about 35 deg onto its body. The front caster mirrors the rear one but sits 3 mm above the
+     floor, so the wheels and the rear caster still carry the agent as before (the G0d turn-rate
+     measurement stays valid) and the forward pitch is limited to atan(0.003 / 0.13) = 1.3 deg. -->
 <sdf version="1.10">
   <model name="agent">
     <pose>0 0 0.12 0 0 0</pose>
@@ -50,9 +54,16 @@
         <surface><friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction></surface></collision>
       <visual name="ball"><geometry><sphere><radius>0.035</radius></sphere></geometry><material><ambient>0 0 0 1</ambient><diffuse>0 0 0 1</diffuse><specular>0 0 0 1</specular><emissive>0.0196 0.0196 0.0196 1</emissive></material></visual>
     </link>
+    <link name="front_caster"><pose>0.13 0 -0.082 0 0 0</pose>
+      <inertial><mass>0.05</mass><inertia><ixx>0.000025</ixx><iyy>0.000025</iyy><izz>0.000025</izz></inertia></inertial>
+      <collision name="ball"><geometry><sphere><radius>0.035</radius></sphere></geometry>
+        <surface><friction><ode><mu>0.01</mu><mu2>0.01</mu2></ode></friction></surface></collision>
+      <visual name="ball"><geometry><sphere><radius>0.035</radius></sphere></geometry><material><ambient>0 0 0 1</ambient><diffuse>0 0 0 1</diffuse><specular>0 0 0 1</specular><emissive>0.0196 0.0196 0.0196 1</emissive></material></visual>
+    </link>
     <joint name="left_wheel_joint" type="revolute"><parent>base_link</parent><child>left_wheel</child><axis><xyz expressed_in="__model__">0 1 0</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis></joint>
     <joint name="right_wheel_joint" type="revolute"><parent>base_link</parent><child>right_wheel</child><axis><xyz expressed_in="__model__">0 1 0</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis></joint>
     <joint name="caster_joint" type="ball"><parent>base_link</parent><child>caster</child></joint>
+    <joint name="front_caster_joint" type="ball"><parent>base_link</parent><child>front_caster</child></joint>
     <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
       <left_joint>left_wheel_joint</left_joint><right_joint>right_wheel_joint</right_joint>
       <wheel_separation>0.225</wheel_separation><wheel_radius>0.08</wheel_radius>

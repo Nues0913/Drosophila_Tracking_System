@@ -194,6 +194,9 @@ class EpisodeResult:
     speed_distance: dict[str, list[float]]
     # #161 E1, per row: tracking fraction and steps in each occlusion phase (OCCLUSION_PHASES)
     occlusion_phases: dict[str, list[float]]
+    # with run_episodes(snapshot_step=k): each row's agent (x, y) before its k-th action, the
+    # check that paired E1 runs still agree when an occlusion-window ablation starts (#194)
+    snapshot_xy: list[list[float]] | None = None
 
 
 # before the occlusion; during it; after it ends until |bearing| < 15 deg (the world's
@@ -252,6 +255,7 @@ def run_episodes(
     episode_seeds: Sequence[int] | Tensor,
     max_steps: int,
     sync_every: int = 50,
+    snapshot_step: int | None = None,
 ) -> EpisodeResult:
     """Evaluate one episode per world row; `world.num_envs` must equal len(episode_seeds)."""
     device = world.device
@@ -280,7 +284,10 @@ def run_episodes(
         zeros(torch.bool),
     )
     reset_mask = None
+    snapshot = None
     for step in range(max_steps):
+        if step == snapshot_step:
+            snapshot = world.privileged()["agent_pose"][:, :2].double().cpu().tolist()
         action = actor.act(obs, reset_mask)
         result = world.step(action)
         live = ~done
@@ -339,7 +346,7 @@ def run_episodes(
         occlusion_phases[f"{name}_tracking_fraction"] = [
             h / n if n > 0 else math.nan for h, n in zip(hits, steps, strict=True)
         ]
-    return EpisodeResult(host, speed_distance, occlusion_phases)
+    return EpisodeResult(host, speed_distance, occlusion_phases, snapshot)
 
 
 def to_records(

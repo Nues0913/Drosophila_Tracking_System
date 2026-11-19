@@ -108,3 +108,13 @@ def test_e1_ablations_include_the_occlusion_window_runs():
     # the control: the same occlusion-only batch, no ablation
     assert evaluate_v2.ABLATIONS["occlusion_baseline"] == (None, "episode")
     assert {channel for channel, _ in evaluate_v2.ABLATIONS.values()} == {None, "odor", "wind"}
+
+
+def test_e1_premise_measures_each_pair_against_the_baseline():
+    snapshots = {
+        ("a", "curved", "occlusion_baseline"): [[0.0, 0.0], [1.0, 1.0]],
+        ("a", "curved", "odor_swap_occlusion"): [[0.0, 0.0], [1.0, 1.02]],
+    }
+    (row,) = evaluate_v2.e1_premise(snapshots)
+    assert row["run"] == "odor_swap_occlusion" and row["fraction_over_1cm"] == 0.5
+    assert row["max_m"] == pytest.approx(0.02)

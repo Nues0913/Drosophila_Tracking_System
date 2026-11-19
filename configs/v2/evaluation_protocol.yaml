@@ -130,17 +130,21 @@ comparisons:
     # used during occlusion rests on wander and on the E1 ablations, never on curved alone.
     G-B by motion: VO2 - V2 in wind occlusion, curved and wander separately
     E1 attribution: >-
-      one VO2 checkpoint on the same episodes, wind world, occlusion scenario: (a) left and
-      right odor swapped, total unchanged; (b) wind rotated by 90 degrees with the odor
-      unchanged (flytrack_v2.eval.runner ObservationAblation). The attribution applies them
+      every VO2 training seed's checkpoint on its own episodes, wind world, occlusion scenario:
+      (a) left and right odor swapped, total unchanged; (b) wind rotated by 90 degrees with the
+      odor unchanged (flytrack_v2.eval.runner ObservationAblation). The attribution applies them
       during the occlusion only (8-38 s, scripts/v2/evaluate_v2.py *_occlusion runs) and
-      compare them with occlusion_baseline, the same occlusion-only batch without an ablation:
+      compares them with occlusion_baseline, the same occlusion-only batch without an ablation:
       paired episodes agree until the occlusion starts up to float32 rounding (batch layout,
-      GPU nondeterminism; #194 review), so a drop in occlusion tracking is the channel's use
-      while the target is hidden (#192 R5). The same ablations over the
-      whole episode are reported beside them and only say whether the controller depends on
-      the channel. Occlusion tracking is reported before, during, after the occlusion until
-      reacquisition, and after reacquisition
+      GPU nondeterminism; #194 review), which manifest.json's e1_premise checks (each pair's
+      distance when the occlusion starts: the maximum and the fraction above 1 cm). The
+      measure is the tracking fraction during the occlusion (secondary.jsonl
+      during_tracking_fraction), per seed the mean of (ablation - occlusion_baseline) over its
+      episodes; each of (a) and (b) is a one-sided paired t test over training seeds that the
+      ablation lowers it, p < 0.05 with Holm across the two, a secondary family of its own
+      (#194 review). The same ablations over the whole episode are reported beside them and
+      only say whether the controller depends on the channel. Occlusion tracking is reported
+      before, during, after the occlusion until reacquisition, and after reacquisition
     A3 speed: >-
       deterministic actions (mode); per seed, the slope of the commanded speed on the
       distance seen before acting, over the steps whose bearing seen before acting is within
@@ -166,8 +170,8 @@ negative_results:
     is positive on fewer than 4 of 5 seeds, or holding the speed at 0.20 m/s does not lower
     normal success (the one-sided paired t test is not significant)
   occlusion: >-
-    "the use of direction during the occlusion was not shown" when G-B fails, or when the
-    occlusion-window E1 ablations do not lower occlusion tracking
+    "the use of direction during the occlusion was not shown" when G-B fails, or when
+    neither occlusion-window E1 test (odor, wind) is significant
   structure: >-
     "the structure comparison is not testable: no qualifying control" when no control reaches
     normal success 0.3 (G-C, #161 E2)

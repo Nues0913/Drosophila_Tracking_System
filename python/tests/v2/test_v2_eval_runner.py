@@ -246,3 +246,11 @@ def test_a_windowed_ablation_changes_only_the_window_and_restarts_each_episode()
     assert seen[6:12] == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0]  # the clock restarts after the reset
     with pytest.raises(ValueError, match="window needs control_dt"):
         ObservationAblation(recorder, ones, window=(0.1, 0.2))
+
+
+def test_a_snapshot_records_each_row_before_the_chosen_action():
+    world = _World(2)
+    world.privileged = lambda: {"agent_pose": torch.stack((world.t, -world.t, world.t), -1)}
+    result = run_episodes(world, _Actor(), [3, 2], max_steps=20, sync_every=1, snapshot_step=2)
+    assert result.snapshot_xy == [[2.0, -2.0], [2.0, -2.0]]
+    assert run_episodes(_World(1), _Actor(), [3], max_steps=20).snapshot_xy is None

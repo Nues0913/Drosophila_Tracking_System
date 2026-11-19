@@ -73,6 +73,32 @@ ABLATIONS = {
 }
 
 
+# The runs whose positions are compared when the occlusion starts (#194 review): every
+# occlusion-window ablation against occlusion_baseline, the same batch unablated.
+PREMISE_RUNS = ("occlusion_baseline", "odor_swap_occlusion", "wind_rotate_90_occlusion")
+
+
+def e1_premise(snapshots: dict) -> list[dict]:
+    """Per artifact, motion and window ablation: how far each paired episode's agent is from
+    the baseline's when the occlusion starts (max, and the fraction farther than 1 cm)."""
+    rows = []
+    for (path, motion, label), xy in sorted(snapshots.items()):
+        if label == "occlusion_baseline":
+            continue
+        base = np.asarray(snapshots[(path, motion, "occlusion_baseline")])
+        distance = np.linalg.norm(np.asarray(xy) - base, axis=1)
+        rows.append(
+            {
+                "artifact": path,
+                "motion": motion,
+                "run": label,
+                "max_m": float(distance.max()),
+                "fraction_over_1cm": float((distance > 0.01).mean()),
+            }
+        )
+    return rows
+
+
 def occlusion_window(protocol: dict, world_config: dict | None = None) -> tuple[float, float]:
     """The protocol's occlusion [start, end) s; with ``world_config`` (the occlusion scenario
     file the world reads) the two must agree (#194 review)."""
@@ -219,6 +245,7 @@ def main() -> None:
     # Each artifact is loaded and verified once, kept on the CPU, and moved to the device only
     # for its own runs, so the GPU holds one policy at a time.
     loaded = [(path, *load_artifact(path)) for path in args.artifacts]
+    snapshots: dict[tuple, list] = {}
     invalid = 0
     with (
         (args.output / "episodes.jsonl").open("w", encoding="utf-8") as records_out,
@@ -251,7 +278,15 @@ def main() -> None:
                     )
                 started = time.perf_counter()
                 seeds = episode_seeds(protocol, args.seeds, seed, episodes, len(scenarios))
-                result = run_episodes(world, actor, seeds, max_steps=max_steps)
+                snapshot_step = None
+                if label in ABLATIONS and label in PREMISE_RUNS:
+                    start = occlusion_window(protocol)[0]
+                    snapshot_step = round(start / contract.control_dt)
+                result = run_episodes(
+                    world, actor, seeds, max_steps=max_steps, snapshot_step=snapshot_step
+                )
+                if result.snapshot_xy is not None:
+                    snapshots[(str(path), motion, label)] = result.snapshot_xy
                 policy.to("cpu")
                 records = to_records(
                     result, rows, run_id=f"{args.output.name}:{label}", variant=variant,
@@ -289,6 +324,7 @@ def main() -> None:
                     }
                 )
                 print(f"{label} {kind} {motion} {variant} seed {seed}: {seconds:.0f} s", flush=True)
+    manifest["e1_premise"] = e1_premise(snapshots)
     manifest["artifacts"] = [str(p) for p in args.artifacts]
     manifest["invalid_records"] = invalid
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")

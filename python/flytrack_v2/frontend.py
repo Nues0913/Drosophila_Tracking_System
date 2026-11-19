@@ -11,6 +11,11 @@ batch 256 and 1024, within 2e-6 of v1. Column j of the state is environment j //
 torch.compile(dynamic=False) compiles once per batch size and caches 8 sizes; past that it
 falls back to eager (one warning, about half the speed). Batched evaluation therefore keeps a
 fixed batch size, padding the last batch instead of shrinking it (#151 review).
+
+The fused update is created on first use, never at import: torch.compile itself raises on
+Python 3.14+ (the ROS image, #140), and a process that never fuses (CPU, eager) must import
+this module without a compiler. Where torch.compile is unavailable, the fused path falls back
+to eager like any other compiler failure.
 """
 
 from __future__ import annotations
@@ -32,7 +37,8 @@ def _update(voltage, recurrent, current, ratio, bias, columns):
     return voltage, torch.relu(voltage)
 
 
-_fused_update = torch.compile(_update, dynamic=False)
+# torch.compile(_update), created by _fused() on first use (see the module docstring).
+_fused_update = None
 # Why the fused update is unavailable in this process, once compiling it has failed (#158
 # review: the Triton backend needs a C compiler, which 4070's WSL lacks). None until a failure.
 # It is module-wide on purpose: one host runs one update path, for every frontend instance.
@@ -54,22 +60,38 @@ def _out_of_memory(error: BaseException) -> bool:
     return False
 
 
+def _fail(error: BaseException, stacklevel: int) -> None:
+    global _FUSED_FAILURE
+    _FUSED_FAILURE = f"{type(error).__name__}: {error}"[:300]
+    warnings.warn(
+        "Fused frontend update unavailable, falling back to eager (about half the "
+        f"speed): {_FUSED_FAILURE}",
+        RuntimeWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _fused():
+    """torch.compile(_update), or None after recording why torch.compile is unavailable."""
+    global _fused_update
+    if _fused_update is None and _FUSED_FAILURE is None:
+        try:
+            _fused_update = torch.compile(_update, dynamic=False)
+        except RuntimeError as error:  # "not supported on Python 3.14+"; nothing has run yet
+            _fail(error, stacklevel=4)
+    return _fused_update if _FUSED_FAILURE is None else None
+
+
 def _run_update(fused: bool, *args):
     """The fused update, or the eager one after warning once that compilation failed."""
-    global _FUSED_FAILURE
-    if fused and _FUSED_FAILURE is None:
+    update = _fused() if fused else None
+    if update is not None:
         try:
-            return _fused_update(*args)
+            return update(*args)
         except _COMPILE_ERRORS as error:
             if _out_of_memory(error):  # e.g. out of memory while autotuning: not a compiler gap
                 raise
-            _FUSED_FAILURE = f"{type(error).__name__}: {error}"[:300]
-            warnings.warn(
-                "Fused frontend update unavailable, falling back to eager (about half the "
-                f"speed): {_FUSED_FAILURE}",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+            _fail(error, stacklevel=4)
     return _update(*args)
 
 
@@ -101,7 +123,7 @@ class NodeMajorFlyvis(nn.Module):
     def update_path(self, device: torch.device | str) -> str:
         """fused or eager: which update this front end runs on device (log it per run)."""
         wants = torch.device(device).type == "cuda" if self.fused is None else self.fused
-        return "fused" if wants and _FUSED_FAILURE is None else "eager"
+        return "fused" if wants and _fused() is not None else "eager"
 
     def initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.frozen.bias.to(device).unsqueeze(1).expand(-1, 2 * batch_size).clone()

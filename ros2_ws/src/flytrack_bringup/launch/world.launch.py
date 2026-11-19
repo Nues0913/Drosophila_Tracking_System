@@ -155,6 +155,9 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("episode_seconds", default_value="60"),
+            # #140: "wind" runs the v2 wind world (meandering wind, filament plume, /sim/wind);
+            # it needs a v2 sensor contract. "v1compat" is v1's plume and no wind topic.
+            DeclareLaunchArgument("world", default_value="v1compat", choices=["v1compat", "wind"]),
             DeclareLaunchArgument(
                 "gz_args",
                 default_value=f"-r -s --headless-rendering {share / 'worlds/tracking.sdf'}",
@@ -209,7 +212,7 @@ def generate_launch_description():
             Node(
                 package="flytrack_world",
                 executable="odor_field",
-                parameters=[common],
+                parameters=[common, {"world": LaunchConfiguration("world")}],
                 output="screen",
             ),
             Node(

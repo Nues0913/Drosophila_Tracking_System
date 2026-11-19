@@ -116,16 +116,49 @@ class ObservationAblation:
     #161 E1 attributes G-B within one VO2 checkpoint on the same episode seeds: swap_odor
     exchanges left and right odor (the total stays), rotate_wind turns the wind the antennae
     report. The trajectory then differs, as the actor acts on what it was shown.
+
+    With ``window=(start_s, end_s)`` and ``control_dt`` the transform applies only to the
+    observations of episode times in [start_s, end_s), so paired episodes agree up to start_s
+    except for float32 rounding (batch layout, GPU nondeterminism; compare with a run of the same
+    batch, #194 review): before the occlusion the position, heading and recurrent state are those
+    of the unablated run, and a change inside the window is the use of that channel there. The
+    episode time of a row counts the actor's steps since its last reset.
     """
 
-    def __init__(self, actor: Actor, transform):
+    def __init__(
+        self,
+        actor: Actor,
+        transform,
+        *,
+        window: tuple[float, float] | None = None,
+        control_dt: float | None = None,
+    ):
+        if window is not None and (control_dt is None or not 0 <= window[0] < window[1]):
+            raise ValueError("a window needs control_dt and 0 <= start < end")
         self.actor, self.transform = actor, transform
+        self.window, self.control_dt = window, control_dt
+        self.steps: Tensor | None = None
 
     def reset(self, batch: int, device: torch.device) -> None:
         self.actor.reset(batch, device)
+        self.steps = torch.zeros(batch, dtype=torch.int64, device=device)
 
     def act(self, obs: dict[str, Tensor], reset_mask: Tensor | None) -> Tensor:
-        return self.actor.act(self.transform(obs), reset_mask)
+        if self.window is None:
+            return self.actor.act(self.transform(obs), reset_mask)
+        if reset_mask is not None:
+            self.steps = torch.where(reset_mask, torch.zeros_like(self.steps), self.steps)
+        time_s = self.steps.to(torch.float64) * self.control_dt
+        inside = (time_s >= self.window[0] - 1e-9) & (time_s < self.window[1] - 1e-9)
+        changed = self.transform(obs)
+        shown = {
+            key: torch.where(inside.reshape(-1, *([1] * (value.ndim - 1))), changed[key], value)
+            if key in changed and changed[key] is not value
+            else value
+            for key, value in obs.items()
+        }
+        self.steps = self.steps + 1
+        return self.actor.act(shown, reset_mask)
 
 
 def swap_odor(obs: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -161,6 +194,9 @@ class EpisodeResult:
     speed_distance: dict[str, list[float]]
     # #161 E1, per row: tracking fraction and steps in each occlusion phase (OCCLUSION_PHASES)
     occlusion_phases: dict[str, list[float]]
+    # with run_episodes(snapshot_step=k): each row's agent (x, y) before its k-th action, the
+    # check that paired E1 runs still agree when an occlusion-window ablation starts (#194)
+    snapshot_xy: list[list[float]] | None = None
 
 
 # before the occlusion; during it; after it ends until |bearing| < 15 deg (the world's
@@ -219,6 +255,7 @@ def run_episodes(
     episode_seeds: Sequence[int] | Tensor,
     max_steps: int,
     sync_every: int = 50,
+    snapshot_step: int | None = None,
 ) -> EpisodeResult:
     """Evaluate one episode per world row; `world.num_envs` must equal len(episode_seeds)."""
     device = world.device
@@ -247,7 +284,10 @@ def run_episodes(
         zeros(torch.bool),
     )
     reset_mask = None
+    snapshot = None
     for step in range(max_steps):
+        if step == snapshot_step:
+            snapshot = world.privileged()["agent_pose"][:, :2].double().cpu().tolist()
         action = actor.act(obs, reset_mask)
         result = world.step(action)
         live = ~done
@@ -306,7 +346,7 @@ def run_episodes(
         occlusion_phases[f"{name}_tracking_fraction"] = [
             h / n if n > 0 else math.nan for h, n in zip(hits, steps, strict=True)
         ]
-    return EpisodeResult(host, speed_distance, occlusion_phases)
+    return EpisodeResult(host, speed_distance, occlusion_phases, snapshot)
 
 
 def to_records(

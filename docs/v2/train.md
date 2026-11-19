@@ -80,3 +80,59 @@ Checkpoint 保存 policy、靜息狀態、optimizer、排程、讀出擬合資�
 中央狀態每批最多暫存兩個 float32 快照（VO2 約 70.43 MB 的 CPU 緩衝），批次結束後在 CPU 轉存到連續的環境優先 float16 分片。Code 以 float32 逐組計算有效讀值的精確百分位，單眼暫存上限約 0.44 GB，統計完成後每 64 列轉存到環境優先的 float16 張量。首輪活動陣列峰值在 code 轉存時，計入 46 個中央快照、兩份不同精度的 code、動作、旗標與首輪讀出樣本，估計由 2.97 GB 降至 2.16 GB（2.76 GiB 至 2.01 GiB）。後三輪各少約 7.16 MB 的讀出樣本。此估計只計上述陣列。模型、allocator 保留的記憶體，以及 OS 保留的 mmap 檔案頁面另計。
 
 GPU 收集每 32 個控制步批次拷回 CPU，VO2 的暫存約 105 MiB。強制重設在 graph replay 後執行，同一世界、同一步的列合成一個遮罩，並就地更新 graph 使用的張量。每輪收集完會釋放世界的 CUDA graph capture pool，下一輪用同一世界狀態重新 capture。無 activation checkpoint 時，VO2 的 recurrent core 計算圖主項估計在 128 條序列約 3.94 GiB、64 條序列約 1.97 GiB。連同讀出、CSR 工作區、模型緩衝及世界狀態，訓練峰值粗估約為 5–6 GiB 及 3–4 GiB，收集階段的峰值另受 CUDA graph 影響。實測值以 monitor 的 `max_memory_allocated` 為準。
+
+# PPO-v2（Stage 2，#138）
+
+從 Stage 1 的產物（`final/`）開始微調。程式在 `python/flytrack_v2/train/ppo.py`，設定在 `configs/v2/train/ppo.yaml`。
+
+```sh
+PYTHONPATH=python python -m flytrack_v2.train.ppo \
+  --init runs/v2/VO2/seed_0/dagger/final --seed 0 --host 4060 --device cuda \
+  --out runs/v2/VO2/seed_0/ppo
+```
+
+## 演算法
+- **世界**：沿用 WP4a 的四個世界實例（`v1compat`、`wind` × curved、wander），預設每個 256 列，共 1,024 個環境；情境混合和第一回合錯開也和 Stage 1 相同。
+- **actor**：用 `load_policy` 載入 Stage 1 產物，只看觀測。每一步從高斯分布抽樣，存下潛在變數 z，PPO 的比值用 `log_prob(z)` 計算，所以 squash 的 Jacobian 會在比值裡抵消。
+- **critic**：MLP（256、256，tanh），讀 24 個以 agent 為中心的特權特徵：
+  - 目標的相對位置、距離、方位、速度；
+  - 自己的速度、到四面牆的距離、朝向；
+  - 遮蔽和可見旗標、風、decoy；
+  - 回合時間。
+  
+  輸出的單位是 1/(1 − γ)，所以回報的數量級是 1。
+- **遞迴的更新**：
+  - 每次 rollout（32 步）存下第一步之前的中央狀態，以及每一步的感覺碼（前端是凍結的）；
+  - 更新時，每個 minibatch 的列從存下的狀態重跑同樣的 32 步，回合結束的列換回 rollout 當時的靜息狀態；
+  - minibatch 依環境切分（1,024 / 8 = 128 列），主機的 `micro_batch` 再切成小塊累積梯度。
+- **advantage**：GAE（γ 0.99、λ 0.95），在整批上做正規化。
+  - 碰撞和 60 s 的時間上限都結束回報（terminated）。60 s 是任務本身的終點（評估的回合也是 60 s），critic 又看得到回合時間，所以在有限時域下把它當成終止才是正確的值（#188 review；Pardo et al. 2018, *Time Limits in RL*）；
+  - 只有第一回合被強制提早結束時（任務本身沒有這種結束），才從重設前那個狀態的 value bootstrap；
+  - advantage 不跨回合累積。
+- **暖身**（計劃書 3.8，#161 D2）：前 `critic_only_updates` 次只訓練 critic；之後 `actor_ramp_updates` 次 actor 的 lr 從 0 線性升到 3e-4，再線性降到結束。critic 的 lr 從 3e-4 線性下降。
+- **kickstarting**（#161 D1）：loss 加上 λ·KL(π_teacher ‖ π_θ)。
+  - teacher 是同一個 Stage 1 產物另外載入、凍結的一份，在 rollout 時用自己的中央狀態跑同樣的感覺碼；
+  - KL 用兩個對角高斯的封閉形式；
+  - λ 在 actor 更新的前 30% 從 1 線性降到 0，之後不再執行 teacher。
+  - λ > 0 的期間（包括只訓練 critic 的暖身）teacher 每次 rollout 都跟著推進，所以開始算 KL 時，它和學生帶著同樣的歷史；暖身期間只是不計算 KL（#192 R7）。
+- **其他**：
+  - PPO clip 0.2、value 係數 0.5、entropy 0.001；
+  - 活動正則 1e-4，算法和 Stage 1 相同；
+  - actor、critic 分開用 Adam，各自做梯度裁剪 0.5。
+- **KL**：每個 epoch 的平均 approx KL 超過 1.5 × target（0.02）時，提早結束這次更新的 epoch。approx KL 連續 3 次超過 4 × target 時，以 exit 3 結束（monitor 的 `watch`）。
+
+## 監控、停止與續跑
+- `metrics.jsonl` 每次更新一筆：
+  - 結束的回合數、成功率、碰撞率、每步 reward；
+  - value loss、explained variance、policy loss、entropy、approx KL、clip 比例、`kl_teacher`；
+  - 學習率、λ、log std、收集和更新的秒數、GPU 峰值。
+- 在輸出目錄建立 `STOP`：trainer 在每次更新之後查看，存好 `checkpoint.pt` 後以 0 結束。移除 `STOP`，用相同的設定、主機和 `--init` 加上 `--resume` 續跑。
+- `checkpoint.pt` 保存：
+  - actor、critic、兩個 optimizer、更新用的 RNG；
+  - 世界、感覺、學生和 teacher 的狀態；
+  - 抽樣用的 RNG。
+- 結束時用 `export_policy` 匯出到 `final/`。card 的 `provenance.stages` 是 Stage 1 的 stages 加上 `{"name": "ppo", ...}`，`provenance.train_seed` 是 `--seed`。`--seed` 必須等於 Stage 1 的訓練 seed：Stage 1 的 card 有 `train_seed` 時要相同，沒有時路徑裡的 `seed_<n>` 不能和它矛盾，否則報錯，因為評估的回合編號由它決定（#188 review）。
+- actor 或 critic 的梯度不是有限值時，那一步不更新，monitor 以 exit 3 結束。
+
+## 取代 Stage 1 的條件
+跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。

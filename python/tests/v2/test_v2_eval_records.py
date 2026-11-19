@@ -119,3 +119,14 @@ def test_the_grid_refuses_a_missing_block_and_another_seeds_episodes():
     ]
     with pytest.raises(ValueError, match=r"'train_seed': 1.*episode seeds differ"):
         check_records(shifted, grid=grid)
+
+
+def test_every_v2_variant_must_cover_the_same_cells_even_without_a_grid():
+    """#193 review: check_records alone refuses a variant missing whole cells; formal-v1
+    reference actors (v1:...) may cover fewer cells."""
+    records = _paired()
+    wander = [{**r, "motion": "wander"} for r in records]
+    with pytest.raises(ValueError, match="VO2 misses 2 cells"):
+        check_records([*records, *[r for r in wander if r["variant"] == "V2"]])
+    reference = [_record("v1:VO-late", s, e, artifact="1" * 64) for s in (0, 1) for e in (1, 2)]
+    assert len(check_records([*records, *wander, *reference])) == 20

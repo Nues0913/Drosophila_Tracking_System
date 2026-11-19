@@ -6,6 +6,7 @@ import pytest
 from flytrack_v2.eval.summary import (
     ComparisonSpec,
     build_summary,
+    check_pairing,
     records_sha256,
     selection_seed_means,
     validate_summary,
@@ -160,5 +161,8 @@ def test_a_missing_motion_on_either_side_is_refused_not_passed():
         if not (r["variant"] == "VO2" and r["motion"] == "wander")
         and not (r["variant"] == "V2" and r["motion"] == "curved")
     ]
-    with pytest.raises(ValueError, match="G-B: the two sides do not cover the same episodes"):
+    with pytest.raises(ValueError, match="VO2 misses 5 cells"):
         build_summary(holes, [G_B], protocol_seed=1, protocol_sha256="p" * 64)
+    # check_pairing is the second line: it alone also refuses the comparison
+    with pytest.raises(ValueError, match="G-B: the two sides do not cover the same episodes"):
+        check_pairing(holes, G_B)

@@ -37,7 +37,8 @@ def shrink_labels(
     action: Tensor, v_max: float, omega_max: float, margin: float | tuple[float, float]
 ) -> Tensor:
     """Keep labels away from the inverse squash limits for nonnegative speed and signed turn."""
-    speed_margin, turn_margin = (margin, margin) if isinstance(margin, float) else margin
+    # A YAML label_margin may load as an int (e.g. 0); only a pair is (speed, turn).
+    speed_margin, turn_margin = margin if isinstance(margin, (tuple, list)) else (margin, margin)
     turn_bound = (1 - turn_margin) * omega_max
     speed = action[..., 0].clamp(speed_margin * v_max, (1 - speed_margin) * v_max)
     turn = action[..., 1].clamp(-turn_bound, turn_bound)

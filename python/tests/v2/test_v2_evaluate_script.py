@@ -95,3 +95,26 @@ def test_driver_evaluates_an_exported_artifact_end_to_end(tmp_path, monkeypatch)
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["invalid_records"] == 0
     assert [run["run"] for run in manifest["runs"]] == ["main", "speed_clamp"]
+
+
+def test_e1_ablations_include_the_occlusion_window_runs():
+    """#192 R5: the attribution runs ablate during the protocol's occlusion only."""
+    world = evaluate_v2.scenario_configs(0.75, PROTOCOL)["occlusion"]
+    assert evaluate_v2.occlusion_window(PROTOCOL, world) == (8.0, 38.0)
+    with pytest.raises(ValueError, match="differs from the world"):
+        evaluate_v2.occlusion_window(PROTOCOL, {**world, "occlusion_start_s": 10})
+    windowed = {k for k, (_, timing) in evaluate_v2.ABLATIONS.items() if timing == "occlusion"}
+    assert windowed == {"odor_swap_occlusion", "wind_rotate_90_occlusion"}
+    # the control: the same occlusion-only batch, no ablation
+    assert evaluate_v2.ABLATIONS["occlusion_baseline"] == (None, "episode")
+    assert {channel for channel, _ in evaluate_v2.ABLATIONS.values()} == {None, "odor", "wind"}
+
+
+def test_e1_premise_measures_each_pair_against_the_baseline():
+    snapshots = {
+        ("a", "curved", "occlusion_baseline"): [[0.0, 0.0], [1.0, 1.0]],
+        ("a", "curved", "odor_swap_occlusion"): [[0.0, 0.0], [1.0, 1.02]],
+    }
+    (row,) = evaluate_v2.e1_premise(snapshots)
+    assert row["run"] == "odor_swap_occlusion" and row["fraction_over_1cm"] == 0.5
+    assert row["max_m"] == pytest.approx(0.02)

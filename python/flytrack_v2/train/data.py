@@ -261,6 +261,31 @@ class RolloutCollector:
         if "first_episode_resets" in saved:
             self._set_first_resets(**saved["first_episode_resets"])
 
+    def _first_episode_resets(self, observations: list, resets: list, before_reset=None) -> None:
+        """End the scheduled first episodes early (desync_first_episode), in place.
+
+        ``before_reset(world_id, mask)`` runs before a world resets those rows, while the
+        world still holds their last state (PPO bootstraps from it, #138).
+        """
+        if self._first_reset_steps is None:
+            return
+        self._rollout_ticks += 1
+        for world_id in self._first_reset_schedule.get(self._rollout_ticks, ()):
+            world = self.worlds[world_id]
+            forced = self._forced_first_resets[world_id]
+            mask = (
+                (self._first_reset_steps[world_id] == self._rollout_ticks)
+                & (world.episode_index == 0)
+                & ~forced
+            )
+            if bool(mask.any()):
+                if before_reset is not None:
+                    before_reset(world_id, mask)
+                # The public reset commits into the same buffers used by the CUDA graphs.
+                observations[world_id] = world.reset(mask)
+                resets[world_id] |= mask
+                forced |= mask
+
     @torch.no_grad()
     def step(
         self,
@@ -292,21 +317,7 @@ class RolloutCollector:
             torch.cat([result.info["episode_steps"] for result in results], out=episode_steps)
         resets = [result.terminated | result.truncated for result in results]
         observations = [result.obs for result in results]
-        if self._first_reset_steps is not None:
-            self._rollout_ticks += 1
-            for world_id in self._first_reset_schedule.get(self._rollout_ticks, ()):
-                world = self.worlds[world_id]
-                forced = self._forced_first_resets[world_id]
-                mask = (
-                    (self._first_reset_steps[world_id] == self._rollout_ticks)
-                    & (world.episode_index == 0)
-                    & ~forced
-                )
-                if bool(mask.any()):
-                    # The public reset commits into the same buffers used by the CUDA graphs.
-                    observations[world_id] = world.reset(mask)
-                    resets[world_id] |= mask
-                    forced |= mask
+        self._first_episode_resets(observations, resets)
         reset = torch.cat(resets)
         self.obs = self._observations(observations)
         self.sensory = self.policy.reset_sensory_state(self.sensory, reset)

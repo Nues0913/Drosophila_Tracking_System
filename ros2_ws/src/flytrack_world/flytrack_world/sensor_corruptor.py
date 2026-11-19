@@ -1,16 +1,22 @@
-"""Corrupt raw sensor frames and preserve acquisition headers unchanged."""
+"""Corrupt raw sensor frames and preserve acquisition headers unchanged.
+
+The antenna reading (``/sim/wind``, v2 wind world) is relayed to ``/fly/wind`` with the noise
+scenario's odor dropout drawn independently, and no further noise: the world already adds the
+antenna noise, and the 2D wind world gives the wind no extra noise in the noise scenario (#169).
+"""
 
 import time
 from copy import deepcopy
 
 import numpy as np
 from flytrack_core.sensing import SensorCorruptor
-from flytrack_interfaces.msg import OdorReading, ScenarioEvent
+from flytrack_interfaces.msg import OdorReading, ScenarioEvent, WindReading
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from .common import CAMERA_QOS, EVENT_QOS, SENSOR_QOS, WorldNode, spin_main, stamp_seconds
 from .timing import TIMING_QOS, SensorTimingRelay
+from .wind_field import wind_dropped, wind_rng
 
 
 def decode_image(message: Image) -> np.ndarray:
@@ -56,6 +62,7 @@ class SensorCorruptorNode(WorldNode):
     def __init__(self):
         super().__init__("sensor_corruptor")
         self.corruptor = SensorCorruptor(self.base_seed)
+        self.wind_rng = wind_rng(self.base_seed)
         self.timing = SensorTimingRelay(self)
         self.camera_publishers = [
             self.create_publisher(Image, f"/fly/camera/{eye}/image_raw", CAMERA_QOS)
@@ -75,13 +82,16 @@ class SensorCorruptorNode(WorldNode):
                 lambda message, eye_index=index: self._image(message, eye_index),
                 CAMERA_QOS,
             )
+        self.wind_publisher = self.create_publisher(WindReading, "/fly/wind", SENSOR_QOS)
         self.create_subscription(OdorReading, "/sim/odor", self._odor, SENSOR_QOS)
+        self.create_subscription(WindReading, "/sim/wind", self._wind, SENSOR_QOS)
         self.create_subscription(ScenarioEvent, "/world/scenario", self._scenario, EVENT_QOS)
 
     def _scenario(self, message):
         new, _ = self.consume_event(message)
         if new:
             self.corruptor.reset(int(message.seed))
+            self.wind_rng = wind_rng(int(message.seed))
             self.timing.reset()
 
     def _image(self, message, eye: int):
@@ -142,6 +152,28 @@ class SensorCorruptorNode(WorldNode):
                 message.source_monotonic_ns,
                 message.clock_domain,
             )
+
+    def _wind(self, message):
+        ingress_ns = time.monotonic_ns()
+        stamp = stamp_seconds(message.header.stamp)
+        if not self.active or stamp <= self.started_at_s:
+            return
+        config = self.scenario_spec.corruption_at(stamp - self.started_at_s)
+        if message.valid and wind_dropped(self.wind_rng, config.odor_dropout):
+            return  # Drop the sample; the policy expires its previous stamp at the watchdog.
+        output = deepcopy(message)
+        if not message.valid:
+            output.left = output.right = 0.0
+        forward_ns = time.monotonic_ns()
+        self.wind_publisher.publish(output)
+        self.timing.record(
+            output.header,
+            "wind",
+            ingress_ns,
+            forward_ns,
+            message.source_monotonic_ns,
+            message.clock_domain,
+        )
 
 
 def main(args=None):

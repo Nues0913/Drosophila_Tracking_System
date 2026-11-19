@@ -84,7 +84,15 @@ world_audits:
     right_0.20: [0.2, -0.20]
     teacher_mean: the privileged teacher's mean applied action in that cell
   odor_teacher_min_occlusion_success: 0.5  # wind world (#133); memory-only reported beside it
-  v1_actor_consistency: formal-v1 actors in v1compat fall inside the formal-v1 intervals (#139)
+  # #139 Decision (the 11-19 audit passed both): (a) replaying v1's own evaluation episodes
+  # (draws v1, v1's seeds) reproduces each episode's success; (b) on per-seed hash episodes,
+  # no cell (formal-v1 success > 0.01) differs from formal-v1 in a two-sided paired t test
+  # over training seeds after Holm across cells; cells inside the formal-v1 interval are
+  # reported. scripts/v2/audit_v1_actors.py, occlusion_view blackout, v1's reward.
+  v1_actor_consistency:
+    replay_success_agreement_min: 0.99
+    distribution: two-sided paired t per cell over training seeds, Holm across cells, alpha 0.05
+    cells_min_formal_success: 0.01
 gates:
   G-A: {name: behaviour, rule: VO2 curved normal success >= 0.80 in v1compat and in wind}
   G-B:

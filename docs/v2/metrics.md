@@ -63,6 +63,7 @@
 **比較**（`ComparisonSpec`）
 - 兩邊各是一組「選取條件」，例如 `{"variant": "VO2", "world": "wind", "scenario": "occlusion"}`。每個 seed 的值，是那個 seed 所有符合條件的回合的平均。
   - 所以 G-B 照登記的方式，兩種運動合併；加上 `motion` 就是分運動的次要分析（#169 的 Decision 2）。
+  - 運動、世界可以刻意合併，變體不行：符合條件的紀錄如果來自兩個以上的變體，就報錯，要在條件裡寫明 `variant`（#172 的 review）。
 - 每一列：`p_value`（單尾配對 t 檢定，自由度 n − 1）、`p_holm`（在 `family` 內做 Holm 校正）、`t95`、`bootstrap95`（只報告，不拿來判定）、`degenerate`。
   - `degenerate` 是 true 時，表示每個 seed 的差值都相同：p 是精確的符號翻轉值，`t95` 寬度是 0，報告要寫明（#166）。
 - **gate**：`gate_passed` = Holm 校正後 p < `alpha`，而且平均差達到 `minimum_difference`（如果有設）。

@@ -71,6 +71,15 @@ def test_selection_pools_both_motions_per_seed():
         selection_seed_means(_records(), {"variant": "GRU2"}, "success")
 
 
+def test_selection_never_pools_variants():
+    with pytest.raises(ValueError, match=r"several variants \['V2', 'VO2'\]"):
+        selection_seed_means(_records(), {"world": "wind", "scenario": "occlusion"}, "success")
+    only_vo2 = [r for r in _records() if r["variant"] == "VO2"]
+    assert selection_seed_means(only_vo2, {"world": "wind"}, "success") == (
+        selection_seed_means(only_vo2, {"variant": "VO2"}, "success")
+    )
+
+
 def test_summary_reports_the_gate_and_the_secondary_family():
     per_motion = [
         ComparisonSpec(

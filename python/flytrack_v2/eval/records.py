@@ -3,6 +3,12 @@
 validate_episode_record checks one record; these check the set: no episode counted twice, one
 artifact per trained actor, every expected episode present, and the same episode seeds for
 every variant compared inside a cell, so that paired comparisons really pair.
+
+Inside a cell the variants are compared against each other, so a variant that is missing from
+whole cells (say every wander episode) is invisible there. The formal summary therefore also
+passes expected_grid(protocol, ...): every variant x training seed x world x scenario x motion x
+noise scale the protocol asks for, with that training seed's own episode numbers, as
+check_records(..., grid=...) (#192 R1).
 """
 
 from __future__ import annotations
@@ -14,10 +20,51 @@ from flytrack_v2.metrics import validate_episode_record
 
 # A cell holds the episodes that variants are compared on.
 CELL = ("train_seed", "world", "scenario", "motion", "noise_scale")
+# One trained actor's episodes in one cell.
+GRID_KEY = ("variant", *CELL)
+
+
+def expected_grid(
+    protocol: Mapping,
+    use: str,
+    *,
+    variants: Sequence[str],
+    train_seeds: Sequence[int],
+    worlds: Sequence[str] | None = None,
+    motions: Sequence[str] | None = None,
+    sensitivity: bool = True,
+    episodes: int | None = None,
+) -> dict[tuple, frozenset[int]]:
+    """{GRID_KEY values: episode seeds} the protocol expects from an evaluation (#192 R1).
+
+    Episode seeds are base + per_train_seed * train_seed + e, e < episodes_per_cell, the same in
+    every world, scenario and motion; the noise scenario appears at the protocol's scale and,
+    with ``sensitivity``, at each sensitivity scale; other scenarios have noise_scale None.
+    """
+    entry = protocol["episode_seeds"][use]
+    worlds = list(worlds or protocol["worlds"])
+    motions = list(motions or (protocol["motions"]["primary"], protocol["motions"]["secondary"]))
+    episodes = episodes or protocol["episodes_per_cell"]
+    noise = protocol["scenarios"]["noise"]
+    scales = [noise["scale"], *(noise["sensitivity_scales"] if sensitivity else [])]
+    grid = {}
+    for seed in train_seeds:
+        first = entry["base"] + entry["per_train_seed"] * seed
+        seeds = frozenset(range(first, first + episodes))
+        for variant in variants:
+            for world in worlds:
+                for motion in motions:
+                    for scenario in protocol["scenarios"]:
+                        for scale in scales if scenario == "noise" else [None]:
+                            grid[(variant, seed, world, scenario, motion, scale)] = seeds
+    return grid
 
 
 def check_records(
-    records: Iterable[Mapping], expected_episode_seeds: Sequence[int] | None = None
+    records: Iterable[Mapping],
+    expected_episode_seeds: Sequence[int] | None = None,
+    *,
+    grid: Mapping[tuple, Iterable[int]] | None = None,
 ) -> list[Mapping]:
     """Validate every record and the set; raise ValueError listing every problem found."""
     records = list(records)
@@ -52,6 +99,31 @@ def check_records(
                 extra = sorted(episode_seeds - reference)[:5]
                 problems.append(
                     f"{variant} in {cell}: episode seeds differ (missing {missing}, extra {extra})"
+                )
+    if grid is not None:
+        actual: dict[tuple, set[int]] = defaultdict(set)
+        for record in records:
+            actual[tuple(record[key] for key in GRID_KEY)].add(record["episode_seed"])
+        missing_cells = sorted(set(grid) - set(actual), key=str)
+        extra_cells = sorted(set(actual) - set(grid), key=str)
+        if missing_cells:
+            problems.append(
+                f"{len(missing_cells)} expected cells have no records, e.g. "
+                f"{dict(zip(GRID_KEY, missing_cells[0], strict=True))}"
+            )
+        if extra_cells:
+            problems.append(
+                f"{len(extra_cells)} cells are not in the protocol, e.g. "
+                f"{dict(zip(GRID_KEY, extra_cells[0], strict=True))}"
+            )
+        for key in sorted(set(grid) & set(actual), key=str):
+            want = set(grid[key])
+            if actual[key] != want:
+                missing = sorted(want - actual[key])[:5]
+                extra = sorted(actual[key] - want)[:5]
+                problems.append(
+                    f"{dict(zip(GRID_KEY, key, strict=True))}: episode seeds differ "
+                    f"(missing {missing}, extra {extra})"
                 )
     if problems:
         raise ValueError("; ".join(problems[:20]))

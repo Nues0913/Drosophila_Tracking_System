@@ -52,6 +52,13 @@
 
 `build_summary(records, specs, protocol_seed=…, protocol_sha256=…)` 先跑 `check_records`（#163），再產生下面的 JSON，最後用 `validate_summary` 檢查。
 
+**資料完整性**（#192 R1）
+- 正式彙總一定要傳 `expected=records.expected_grid(protocol, "formal_evaluation", variants=…, train_seeds=…)`。它列出協定要求的每一格（變體 × 訓練 seed × 世界 × 情境 × 運動 × noise 倍率），以及那個訓練 seed 自己的回合編號。少一格、多一格，或回合編號不對，都會報錯。
+- 原因：`check_records` 只在已經存在的格子裡比對各變體；如果某個變體整組軌跡都不見了，那些格子裡就只剩另一個變體，看不出缺漏。
+- 每個登記的比較另外檢查配對：候選和參照兩邊符合條件的紀錄，必須涵蓋完全相同的（訓練 seed、世界、情境、運動、noise 倍率、回合 seed），不然就報錯，不會算出 p 值。
+- **訓練 seed** 以產物 card 的 `provenance.train_seed` 為準（DAgger、PPO 匯出時都會寫入）。card 沒有時，路徑裡必須剛好只有一個 `seed_<n>`；card 和路徑矛盾也會報錯（#192 R3）。
+- **缺值**：次要輸出沒有資料的值（例如 normal 回合沒有遮蔽的各段）寫成 null，不寫 NaN；旁邊的步數說明有多少資料（#192 R4）。
+
 | 欄位 | 內容 |
 | --- | --- |
 | `spec_version` | 1 |

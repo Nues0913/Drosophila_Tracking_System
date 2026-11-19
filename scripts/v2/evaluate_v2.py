@@ -35,6 +35,7 @@ from flytrack_v2.eval.runner import (
     ObservationAblation,
     SpeedClamp,
     V2Actor,
+    json_line,
     rotate_wind,
     run_episodes,
     swap_odor,
@@ -69,13 +70,25 @@ def load_artifact(path: Path):
 
 
 def train_seed_of(path: Path, card: dict) -> int:
+    """The card's provenance.train_seed; the path's seed_<n> only when the card has none (#192 R3).
+
+    The training seed picks the episode numbers, so a wrong one silently changes what an actor is
+    evaluated on. A card seed that no seed_<n> component of the path agrees with, or a path
+    with two different seed_<n> components and no card seed, is an error.
+    """
     seed = card.get("provenance", {}).get("train_seed")
-    if seed is None:
-        match = re.search(r"seed_(\d+)", str(path))
-        if match is None:
-            raise ValueError(f"{path}: no train seed in the card or the path (seed_<n>)")
-        seed = match.group(1)
-    return int(seed)
+    in_path = {int(part[5:]) for part in Path(path).parts if re.fullmatch(r"seed_\d+", part)}
+    if seed is not None:
+        if type(seed) is not int or seed < 0:
+            raise ValueError(f"{path}: provenance.train_seed must be a nonnegative int")
+        if in_path and seed not in in_path:
+            raise ValueError(f"{path}: the card's train seed {seed} contradicts the path")
+        return seed
+    if len(in_path) != 1:
+        raise ValueError(
+            f"{path}: no train seed in the card, and the path has {len(in_path)} seed_<n> parts"
+        )
+    return in_path.pop()
 
 
 def scenario_configs(noise_scale: float, protocol: dict) -> dict[str, dict]:
@@ -213,7 +226,7 @@ def main() -> None:
                     except ValueError:
                         invalid += 1
                     if label in ("main", "noise_sensitivity"):
-                        records_out.write(json.dumps(record) + "\n")
+                        records_out.write(json_line(record))
                     extra = {key: values[i] for key, values in result.speed_distance.items()}
                     extra.update({k: v[i] for k, v in result.occlusion_phases.items()})
                     extra.update(
@@ -223,7 +236,7 @@ def main() -> None:
                         collision=record["collision"],
                         tracking_fraction=record["tracking_fraction"],
                     )  # fmt: skip
-                    secondary_out.write(json.dumps(extra) + "\n")
+                    secondary_out.write(json_line(extra))
                 seconds = time.perf_counter() - started
                 manifest["runs"].append(
                     {

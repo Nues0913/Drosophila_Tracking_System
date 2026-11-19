@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 
-from flytrack_v2.metrics import validate_episode_record
+from flytrack_v2.metrics import V1_REFERENCE_PREFIX, validate_episode_record
 
 # A cell holds the episodes that variants are compared on.
 CELL = ("train_seed", "world", "scenario", "motion", "noise_scale")
@@ -97,7 +97,7 @@ def check_records(
     cells_by_variant: dict[str, set[tuple]] = defaultdict(set)
     for cell, by_variant in seeds.items():
         for variant in by_variant:
-            if not variant.startswith("v1:"):
+            if not variant.startswith(V1_REFERENCE_PREFIX):
                 cells_by_variant[variant].add(cell)
     if len({frozenset(cells) for cells in cells_by_variant.values()}) > 1:
         union = set().union(*cells_by_variant.values())

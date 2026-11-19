@@ -8,6 +8,9 @@ from collections.abc import Mapping
 from flytrack_v2.artifacts import VARIANTS
 from flytrack_v2.contracts import MOTIONS, SCENARIOS, SUCCESS_RULE, WORLDS
 
+# Formal-v1 actors evaluated as references on v2 episodes ("v1:VO-late", #192 R2).
+V1_REFERENCE_PREFIX = "v1:"
+
 EPISODE_FIELDS: dict[str, tuple[type, ...]] = {
     "run_id": (str,),
     "variant": (str,),  # VARIANTS, or "v1:<variant>" for formal-v1 actors (T-4)
@@ -50,7 +53,7 @@ def validate_episode_record(record: Mapping) -> None:
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(f"{name} must be finite; use null for a missing occlusion value")
     variant = record["variant"]
-    if variant not in VARIANTS and not variant.startswith("v1:"):
+    if variant not in VARIANTS and not variant.startswith(V1_REFERENCE_PREFIX):
         raise ValueError(f"Unknown variant {variant}")
     for name, allowed in (("world", WORLDS), ("scenario", SCENARIOS), ("motion", MOTIONS)):
         if record[name] not in allowed:

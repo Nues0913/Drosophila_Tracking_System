@@ -36,6 +36,7 @@ from flytrack_v2.contracts import SensorContractV2
 from flytrack_v2.eval.runner import (
     ObservationAblation,
     SpeedClamp,
+    V1Actor,
     V2Actor,
     json_line,
     rotate_wind,
@@ -43,7 +44,7 @@ from flytrack_v2.eval.runner import (
     swap_odor,
     to_records,
 )
-from flytrack_v2.metrics import validate_episode_record
+from flytrack_v2.metrics import V1_REFERENCE_PREFIX, validate_episode_record
 from flytrack_v2.model import load_policy
 from flytrack_v2.world.v1compat import V1CompatWorld
 
@@ -150,6 +151,28 @@ def train_seed_of(path: Path, card: dict) -> int:
     return in_path.pop()
 
 
+def load_v1_artifact(path: Path):
+    """(policy on the CPU, card, weights sha256) of a formal-v1 actor <variant>/seed_<n>/actor.
+
+    Its records carry the variant "v1:<variant>" and the seed from the path, which formal-v1's
+    layout fixes (release formal-v1); evaluation uses that seed's v2 episode numbers, so G-D
+    pairs VO2 and v1 VO-late of one training seed on the same episodes (#192 R2).
+    """
+    from flytrack_core.model import load_policy_artifact
+
+    seed_dir, variant_dir = path.parent, path.parent.parent
+    if path.name != "actor" or not re.fullmatch(r"seed_\d+", seed_dir.name):
+        raise ValueError(f"{path}: a formal-v1 actor is <variant>/seed_<n>/actor")
+    policy, _, card = load_policy_artifact(path, device="cpu")
+    policy.eval()
+    card = {
+        **card,
+        "v2_variant": f"{V1_REFERENCE_PREFIX}{variant_dir.name}",
+        "v2_train_seed": int(seed_dir.name[5:]),
+    }
+    return policy, card, card["files"]["weights.pt"]
+
+
 def scenario_configs(noise_scale: float, protocol: dict) -> dict[str, dict]:
     base = protocol["scenarios"]["noise"]["base_at_scale_1"]
     configs = {}
@@ -199,6 +222,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--artifacts", nargs="+", type=Path, required=True)
     parser.add_argument(
+        "--v1-artifacts",
+        nargs="*",
+        type=Path,
+        default=[],
+        help="formal-v1 actors (<variant>/seed_<n>/actor), evaluated in v1compat's main run",
+    )
+    parser.add_argument(
         "--protocol", type=Path, default=ROOT / "configs/v2/evaluation_protocol.yaml"
     )
     parser.add_argument("--seeds", choices=("formal_evaluation", "pilot_held_out"), required=True)
@@ -244,7 +274,8 @@ def main() -> None:
     }
     # Each artifact is loaded and verified once, kept on the CPU, and moved to the device only
     # for its own runs, so the GPU holds one policy at a time.
-    loaded = [(path, *load_artifact(path)) for path in args.artifacts]
+    loaded = [("v2", path, *load_artifact(path)) for path in args.artifacts]
+    loaded += [("v1", path, *load_v1_artifact(path)) for path in args.v1_artifacts]
     snapshots: dict[tuple, list] = {}
     invalid = 0
     with (
@@ -255,11 +286,18 @@ def main() -> None:
             world, rows = build_world(
                 contract, kind, motion, scenarios, noise_scale, protocol, episodes, args.device
             )
-            for path, policy, card, digest in loaded:
-                variant, seed = card["variant"], train_seed_of(path, card)
+            for generation, path, policy, card, digest in loaded:
+                if generation == "v1":
+                    # G-D's reference (#192 R2): v1 has no wind sense and is compared in
+                    # v1compat only, on the same episodes as the v2 actors of its seed.
+                    if label != "main" or kind != "v1compat":
+                        continue
+                    variant, seed = card["v2_variant"], card["v2_train_seed"]
+                else:
+                    variant, seed = card["variant"], train_seed_of(path, card)
                 if label in ABLATIONS and variant != "VO2":
                     continue
-                actor = V2Actor(policy.to(args.device))
+                actor = (V1Actor if generation == "v1" else V2Actor)(policy.to(args.device))
                 if label == "speed_clamp":
                     actor = SpeedClamp(actor, 0.20)
                 elif label in ABLATIONS and ABLATIONS[label][0] is not None:
@@ -326,6 +364,7 @@ def main() -> None:
                 print(f"{label} {kind} {motion} {variant} seed {seed}: {seconds:.0f} s", flush=True)
     manifest["e1_premise"] = e1_premise(snapshots)
     manifest["artifacts"] = [str(p) for p in args.artifacts]
+    manifest["v1_artifacts"] = [str(p) for p in args.v1_artifacts]
     manifest["invalid_records"] = invalid
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     print(f"{invalid} records failed validate_episode_record", flush=True)

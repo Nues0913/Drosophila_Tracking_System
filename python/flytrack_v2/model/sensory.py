@@ -247,9 +247,20 @@ def fit_input_norm(
 
 
 class SeedProjection(nn.Module):
-    """Pool per-eye features into type/side groups, then send currents only to sensory seeds."""
+    """Pool per-eye features and send currents only to sensory seeds.
 
-    def __init__(self, graph: GraphV2, layout: CodeLayout, enable_vision: bool = True):
+    The learned offset is shared across eyes of each LC type and applies to valid eyes.
+    O2 keeps the offset in the formal parameter budget but never uses it in the forward pass.
+    """
+
+    def __init__(
+        self,
+        graph: GraphV2,
+        layout: CodeLayout,
+        enable_vision: bool = True,
+        *,
+        visual_offset_init: float | None = None,
+    ):
         super().__init__()
         self.n_nodes = graph.n_nodes
         self.layout = layout
@@ -283,6 +294,12 @@ class SeedProjection(nn.Module):
             if rf_count
             else None
         )
+        visual_types, rf_type = np.unique(rf_pairs[:, 0], return_inverse=True)
+        self.visual_offset = (
+            nn.Parameter(torch.full((len(visual_types),), float(visual_offset_init)))
+            if rf_count and visual_offset_init is not None
+            else None
+        )
         self.missing_bias = nn.Parameter(torch.zeros(len(np.unique(seed_types))))
 
         # Sources are [LC groups, left ORNs, right ORNs, midline ORNs, wind L/R/mean].
@@ -301,6 +318,7 @@ class SeedProjection(nn.Module):
             ("seed_validity", validity),
             ("source_index", source),
             ("rf_eye", rf_pairs[:, 1]),
+            ("rf_type", rf_type),
         ):
             self.register_buffer(name, torch.as_tensor(values), persistent=False)
 
@@ -316,6 +334,12 @@ class SeedProjection(nn.Module):
                 pooled = vision.reshape(len(code), 2, eye_width) @ F.softplus(self.lc_rf).T
                 groups = torch.arange(len(self.rf_eye), device=code.device)
                 visual_drive = pooled[:, self.rf_eye, groups]
+                if self.visual_offset is not None:
+                    flags = valid.index_select(1, self.rf_eye)
+                    eye_valid = (flags > 0.5) & flags.isfinite()
+                    visual_drive = visual_drive + torch.where(
+                        eye_valid, self.visual_offset[self.rf_type], 0.0
+                    )
             else:
                 visual_drive = code.new_zeros(len(code), len(self.rf_eye))
             sources.insert(0, visual_drive)

@@ -39,6 +39,7 @@ class ModelConfigV2:
     init_seed: int = 0
     structure_seed: int | None = None
     budget_target: int | None = None
+    visual_offset_init: float | None = None
 
     def __post_init__(self) -> None:
         for key in ("graph_path", "frontend_path"):
@@ -115,6 +116,8 @@ class ModelConfigV2:
         for key in ("readout_init_weight", "log_std_init"):
             if not _is_finite_number(getattr(self, key)):
                 raise ValueError(f"{key} must be finite")
+        if self.visual_offset_init is not None and not _is_finite_number(self.visual_offset_init):
+            raise ValueError("visual_offset_init must be finite or None")
 
     @classmethod
     def from_dict(cls, values: Mapping) -> ModelConfigV2:

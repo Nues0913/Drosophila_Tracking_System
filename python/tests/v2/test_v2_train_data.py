@@ -216,3 +216,39 @@ def test_replay_starts_at_saved_state_and_resets_inside_sequence():
     initial = policy.initial_central_state(2, "cpu")
     state = burn_in_state(policy, held.code[:2], held.reset[:2], held.initial, initial)
     torch.testing.assert_close(state, initial, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("limit", [True, False])
+def test_labels_follow_the_teacher_acceleration_setting(limit):
+    """#184: with the student driving, a limited label stays within one step's change of the
+    student's applied action; an unlimited label is the action the teacher wants."""
+    overrides = ["envs_per_instance=4", "desync_first_episode=false"]
+    config = load_config(
+        CONFIG_DIR / "dagger.yaml", "4060", [*overrides, f"teacher_limit_acceleration={limit}"]
+    )
+    assert config["teacher_limit_acceleration"] is limit
+    policy = build_policy("VO2", ModelConfigV2(initial_state="bias"), graph=small_graph())
+    collector = RolloutCollector(policy, config, seed=3, device=torch.device("cpu"))
+    initial = policy.initial_central_state(collector.rows, "cpu")
+    contract, dt = policy.contract, policy.contract.control_dt
+    step_limit = torch.tensor([contract.linear_accel_max, contract.angular_accel_max]) * dt
+    largest = torch.zeros(2)
+    for _ in range(20):
+        applied = torch.cat([world.privileged()["agent_velocity"] for world in collector.worlds])
+        label = collector.step(0.0, initial).action
+        largest = torch.maximum(largest, (label - applied).abs().amax(0))
+    if limit:
+        assert (largest <= step_limit + 1e-5).all()
+    else:
+        assert (largest > step_limit + 1e-3).any()
+
+
+def test_configs_without_the_setting_keep_v1_labels(tmp_path):
+    import yaml
+
+    values = yaml.safe_load((CONFIG_DIR / "dagger.yaml").read_text())
+    del values["teacher_limit_acceleration"]
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(values))
+    assert load_config(path, "4060")["teacher_limit_acceleration"] is True
+    assert load_config(CONFIG_DIR / "dagger.yaml", "4060")["teacher_limit_acceleration"] is False

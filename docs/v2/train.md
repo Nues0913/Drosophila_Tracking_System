@@ -28,6 +28,7 @@ OMP_NUM_THREADS=1 PYTHONPATH=python python -m flytrack_v2.train.dagger \
 - `desync_first_episode: true` 預設在首回合錯開各列相位。每列以訓練 seed 衍生的獨立 generator 均勻抽取 `r_i ∈ [0, episode_steps)`。若 `r_i > 0` 且首回合仍在進行，執行第 `r_i` 步後強制重設。`r_i = 0` 時首回合自然結束，後續回合也依世界的碰撞與時間上限自然結束。可用 `--override desync_first_episode=false` 關閉，恢復同步起跑的收集方式。
 - 每步先取得 sensory code、學生 mode 與遮蔽 teacher 標籤，再用每列獨立的 Bernoulli 抽樣選擇動作。回合結束會重設 sensory、central 和 teacher 狀態。輪次交界保留這些狀態和世界狀態，後續 rollout 以更新過的學生參數接續。
 - 每輪的 CPU replay 保存 float32 code、teacher 動作及中央狀態，另存 reset、遮蔽旗標和世界、運動、情境的列標籤。中央狀態存於全域控制步數的每個 16 步倍數。取樣會在分片內選擇完整視窗，並跨累積分片均勻抽取合格的時間與列組合。序列可以跨回合。
+- 預設 `teacher_limit_acceleration: false`（#184 的 Decision）：teacher 的標籤只套用動作的上下限，是 teacher「想要」的動作；被執行時（β 的那一部分）照樣由世界套用加速度限制。設成 true 是 v1 的標籤：依上一步實際套用的動作做加速度限制。學生駕駛時，這會把標籤錨定在學生自己的動作附近（速度每步 ±0.05 m/s、轉向 ±0.15 rad/s），等於教「維持你現在的動作」。沒有這個 key 的舊設定檔和舊 checkpoint 照舊用 true。
 - 預設 `readout_normalization: true`。圖變體在第一輪（`β = 1`）使用初始 policy，每四個控制步保存一次兩個世界訓練列的讀出 DN 速率。首輪 replay 保存這些樣本供擬合和續跑使用。收集結束後，trainer 擬合正規化、重設初始讀出權重及校準偏置，然後建立 Adam 與 cosine 排程，再執行第一次更新。GRU2 忽略此設定。 [#137 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/137)
 - 每輪至少收集一條完整視窗所需的時間步，之後以整批環境為計數單位。正式設定每輪 733 個控制步，共 750,592 個環境步。更新次數依實際環境步計算，每輪 184 次。前 16 步在 `no_grad` 下重建中央狀態，後 64 步計算 loss。reset 旗標作用於下一步。
 - 標籤依各維度的動作範圍內縮。設 `m = label_margin`，速度限制在 `[m × v_max, (1 − m) × v_max]`，轉向限制在 `[−(1 − m) × ω_max, (1 − m) × ω_max]`。內縮後用 `unsquash` 算潛在高斯 NLL。預設 `m = 1e-3` 時，速度的潛在值範圍為 `[logit(1e-3), logit(1 − 1e-3)] ≈ [−6.9, 6.9]`。

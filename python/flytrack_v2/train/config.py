@@ -121,6 +121,8 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     config = read_yaml(path)
     config.setdefault("desync_first_episode", False)
     config.setdefault("readout_normalization", defaults["readout_normalization"])
+    # Configs written before #184 labelled around the applied action.
+    config.setdefault("teacher_limit_acceleration", True)
     config.setdefault("model", {})
     if set(config) != set(defaults):
         raise ValueError("DAgger config must have the same keys as dagger.yaml")
@@ -168,7 +170,12 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     _integer(config["held_out"]["every_updates"], "held_out.every_updates")
     _integer(config["held_out"]["sequences"], "held_out.sequences")
     _number(config["held_out"]["fraction"], "held_out.fraction", 0, 1)
-    for key in ("activation_checkpoint", "desync_first_episode", "readout_normalization"):
+    for key in (
+        "activation_checkpoint",
+        "desync_first_episode",
+        "readout_normalization",
+        "teacher_limit_acceleration",
+    ):
         if type(config[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
 

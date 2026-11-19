@@ -6,6 +6,9 @@ envs_per_instance: 256
 episode_seconds: 60
 desync_first_episode: true
 readout_normalization: true
+# #184 Decision: labels are the action the teacher wants (bounds only); the world still applies
+# the acceleration limit to the executed actions. True is v1's label (around the applied action).
+teacher_limit_acceleration: false
 plume_model: puff
 rounds: {beta: [1.0, 0.5, 0.25, 0.0], env_steps_per_round: 750000}
 replay_ratio: 4

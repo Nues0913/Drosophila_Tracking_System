@@ -185,6 +185,11 @@ class DAggerRun:
                 if "readout_normalization" not in saved_keys and not self.normalize_readout:
                     legacy_config.pop("readout_normalization", None)
                 if (
+                    "teacher_limit_acceleration" not in saved_keys
+                    and legacy_config.get("teacher_limit_acceleration") is True
+                ):
+                    legacy_config.pop("teacher_limit_acceleration")
+                if (
                     "desync_first_episode" not in saved_keys
                     and legacy_config.get("desync_first_episode") is False
                 ):

@@ -97,6 +97,7 @@ class RolloutCollector:
         rows = config["envs_per_instance"]
         self.rows = rows * len(WORLD_NAMES) * len(MOTION_NAMES)
         self.mix_rng = torch.Generator(device=device).manual_seed(seed)
+        self.limit_acceleration = config.get("teacher_limit_acceleration", True)
         split_rng = torch.Generator().manual_seed(seed ^ 0x5EED)
         reserve = max(1, round(self.rows * config["held_out"]["fraction"]))
         self.held_out = torch.zeros(self.rows, dtype=torch.bool)
@@ -222,7 +223,11 @@ class RolloutCollector:
             torch.index_select(student.aux["dn_rates"], 0, rows, out=output)
         privileged = _concatenate([world.privileged() for world in self.worlds], _TEACHER_KEYS)
         label, self.teacher_state = self.teacher.act(
-            privileged, self.obs, privileged["agent_velocity"], self.teacher_state
+            privileged,
+            self.obs,
+            privileged["agent_velocity"],
+            self.teacher_state,
+            limit_acceleration=self.limit_acceleration,
         )
         action = mix_actions(label, student.dist.mode(), beta, self.mix_rng)
         results = [

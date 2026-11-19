@@ -7,7 +7,6 @@ import time
 
 import numpy as np
 import rclpy
-from flytrack_core.model import load_policy_artifact
 from flytrack_core.sensing.hex_eye import CAMERA_KERNELS, HexEye
 from flytrack_interfaces.msg import NeuralActivity, OdorReading
 from geometry_msgs.msg import Twist
@@ -20,6 +19,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 from std_srvs.srv import Trigger
 
+from .artifact import load_deployment_policy
 from .contract import check_deployment_contract
 from .profiling import PolicyProfiler
 from .runtime import PolicyRuntime
@@ -102,7 +102,9 @@ class ConnectomePolicyNode(Node):
                 "The artifact parameter must identify a complete exported policy directory"
             )
         device = str(self.get_parameter("device").value)
-        policy, contract, self.card = load_policy_artifact(artifact, device=device)
+        policy, contract, self.card, self.artifact_spec = load_deployment_policy(
+            artifact, device=device
+        )
         check_deployment_contract(str(self.get_parameter("sensor_contract_json").value), contract)
         self.contract = contract
         self.vision_kernel = str(self.get_parameter("vision_kernel").value)
@@ -154,8 +156,8 @@ class ConnectomePolicyNode(Node):
             self.tracer.on_trace_state = self.profiler.record_trace_state
         self.last_activity_stamp = -float("inf")
         self.get_logger().info(
-            f"Loaded {self.card['variant']} policy with "
-            f"{self.card['trainable_parameters']} trainable parameters"
+            f"Loaded {self.artifact_spec} {self.card['variant']} policy with "
+            f"{self.card.get('trainable_parameters', 'unrecorded')} trainable parameters"
         )
 
     def camera_callback(self, message: Image, eye: int) -> None:

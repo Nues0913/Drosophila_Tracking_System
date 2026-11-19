@@ -133,9 +133,11 @@ comparisons:
       one VO2 checkpoint on the same episodes, wind world, occlusion scenario: (a) left and
       right odor swapped, total unchanged; (b) wind rotated by 90 degrees with the odor
       unchanged (flytrack_v2.eval.runner ObservationAblation). The attribution applies them
-      during the occlusion only (8-38 s, scripts/v2/evaluate_v2.py *_occlusion runs): paired
-      episodes are identical until the occlusion starts, so a drop in occlusion tracking is
-      the channel's use while the target is hidden (#192 R5). The same ablations over the
+      during the occlusion only (8-38 s, scripts/v2/evaluate_v2.py *_occlusion runs) and
+      compare them with occlusion_baseline, the same occlusion-only batch without an ablation:
+      paired episodes agree until the occlusion starts up to float32 rounding (batch layout,
+      GPU nondeterminism; #194 review), so a drop in occlusion tracking is the channel's use
+      while the target is hidden (#192 R5). The same ablations over the
       whole episode are reported beside them and only say whether the controller depends on
       the channel. Occlusion tracking is reported before, during, after the occlusion until
       reacquisition, and after reacquisition

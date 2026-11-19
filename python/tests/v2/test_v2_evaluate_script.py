@@ -79,7 +79,12 @@ def test_driver_evaluates_an_exported_artifact_end_to_end(tmp_path, monkeypatch)
 
 def test_e1_ablations_include_the_occlusion_window_runs():
     """#192 R5: the attribution runs ablate during the protocol's occlusion only."""
-    assert evaluate_v2.occlusion_window(PROTOCOL) == (8.0, 38.0)
+    world = evaluate_v2.scenario_configs(0.75, PROTOCOL)["occlusion"]
+    assert evaluate_v2.occlusion_window(PROTOCOL, world) == (8.0, 38.0)
+    with pytest.raises(ValueError, match="differs from the world"):
+        evaluate_v2.occlusion_window(PROTOCOL, {**world, "occlusion_start_s": 10})
     windowed = {k for k, (_, timing) in evaluate_v2.ABLATIONS.items() if timing == "occlusion"}
     assert windowed == {"odor_swap_occlusion", "wind_rotate_90_occlusion"}
-    assert {channel for channel, _ in evaluate_v2.ABLATIONS.values()} == {"odor", "wind"}
+    # the control: the same occlusion-only batch, no ablation
+    assert evaluate_v2.ABLATIONS["occlusion_baseline"] == (None, "episode")
+    assert {channel for channel, _ in evaluate_v2.ABLATIONS.values()} == {None, "odor", "wind"}

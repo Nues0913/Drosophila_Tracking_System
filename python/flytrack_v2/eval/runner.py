@@ -117,8 +117,9 @@ class ObservationAblation:
     report. The trajectory then differs, as the actor acts on what it was shown.
 
     With ``window=(start_s, end_s)`` and ``control_dt`` the transform applies only to the
-    observations of episode times in [start_s, end_s), so paired episodes are identical up to
-    start_s (#192 R5): before the occlusion the position, heading and recurrent state are those
+    observations of episode times in [start_s, end_s), so paired episodes agree up to start_s
+    except for float32 rounding (batch layout, GPU nondeterminism; compare with a run of the same
+    batch, #194 review): before the occlusion the position, heading and recurrent state are those
     of the unablated run, and a change inside the window is the use of that channel there. The
     episode time of a row counts the actor's steps since its last reset.
     """

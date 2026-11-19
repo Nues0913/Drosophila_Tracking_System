@@ -11,7 +11,8 @@ Optional secondary runs on the same episodes:
 - --speed-clamp: every actor with its speed held at 0.20 m/s (#161 A3), normal scenario;
 - --ablations: VO2 in the wind world's occlusion scenario with the odor swapped and with the
   wind rotated by 90 degrees (#161 E1), each during the occlusion only (the attribution, #192
-  R5) and over the whole episode.
+  R5, against occlusion_baseline: the same occlusion-only batch unablated) and over the whole
+  episode.
 
 The summary (flytrack_v2.eval.summary) is built from episodes.jsonl afterwards.
 
@@ -57,10 +58,13 @@ NOISE_KEYS = (
 
 
 # #161 E1 ablations, VO2 in the wind world's occlusion scenario: (channel, timing). The
-# occlusion-window runs are the registered attribution (#192 R5): paired episodes are identical
-# until the occlusion starts, so a change is the channel's use while the target is hidden. The
-# whole-episode runs say whether the controller depends on the channel at all.
+# occlusion-window runs are the registered attribution (#192 R5): paired episodes agree until
+# the occlusion starts up to float32 rounding, so a change is the channel's use while the target
+# is hidden. Their control is occlusion_baseline, the same occlusion-only batch without an
+# ablation: a different batch composition would reorder the float operations (#194 review).
+# The whole-episode runs say whether the controller depends on the channel at all.
 ABLATIONS = {
+    "occlusion_baseline": (None, "episode"),
     "odor_swap_occlusion": ("odor", "occlusion"),
     "wind_rotate_90_occlusion": ("wind", "occlusion"),
     "odor_swap": ("odor", "episode"),
@@ -68,10 +72,20 @@ ABLATIONS = {
 }
 
 
-def occlusion_window(protocol: dict) -> tuple[float, float]:
+def occlusion_window(protocol: dict, world_config: dict | None = None) -> tuple[float, float]:
+    """The protocol's occlusion [start, end) s; with ``world_config`` (the occlusion scenario
+    file the world reads) the two must agree (#194 review)."""
     occlusion = protocol["scenarios"]["occlusion"]
     start = float(occlusion["occlusion_start_s"])
-    return start, start + float(occlusion["occlusion_duration_s"])
+    window = start, start + float(occlusion["occlusion_duration_s"])
+    if world_config is not None:
+        world_start = float(world_config["occlusion_start_s"])
+        world_window = world_start, world_start + float(world_config["occlusion_duration_s"])
+        if world_window != window:
+            raise ValueError(
+                f"the protocol's occlusion {window} differs from the world's {world_window}"
+            )
+    return window
 
 
 def load_artifact(path: Path):
@@ -208,14 +222,17 @@ def main() -> None:
                 actor = V2Actor(policy.to(args.device))
                 if label == "speed_clamp":
                     actor = SpeedClamp(actor, 0.20)
-                elif label in ABLATIONS:
+                elif label in ABLATIONS and ABLATIONS[label][0] is not None:
                     channel, timing = ABLATIONS[label]
                     transform = (
                         swap_odor
                         if channel == "odor"
                         else rotate_wind(90.0, contract.antenna_angle_deg)
                     )
-                    window = occlusion_window(protocol) if timing == "occlusion" else None
+                    window = None
+                    if timing == "occlusion":
+                        world_config = scenario_configs(noise_scale, protocol)["occlusion"]
+                        window = occlusion_window(protocol, world_config)
                     actor = ObservationAblation(
                         actor, transform, window=window, control_dt=contract.control_dt
                     )

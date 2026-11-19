@@ -46,6 +46,7 @@ from .update import (
     first_batch_gradient_norms,
     health_metrics,
     label_latent_quantiles,
+    label_margins,
     make_scheduler,
     train_update,
 )
@@ -158,7 +159,7 @@ class DAggerRun:
         sequence = config["sequence"]
         self.replay = Replay(sequence["burn_in"], sequence["length"])
         self.settings = LossSettings(
-            sequence["burn_in"], config["activity_coef"], config["label_margin"]
+            sequence["burn_in"], config["activity_coef"], label_margins(config)
         )
         self.micro_batch = config["micro_batch"]
         self.failure_batch: SequenceBatch | None = None
@@ -184,6 +185,16 @@ class DAggerRun:
                     legacy_config["model"] = legacy_config.pop("model_config")
                 if "readout_normalization" not in saved_keys and not self.normalize_readout:
                     legacy_config.pop("readout_normalization", None)
+                if (
+                    "label_latent_bound" not in saved_keys
+                    and legacy_config.get("label_latent_bound") is None
+                ):
+                    legacy_config.pop("label_latent_bound", None)
+                if (
+                    "teacher_limit_acceleration" not in saved_keys
+                    and legacy_config.get("teacher_limit_acceleration") is True
+                ):
+                    legacy_config.pop("teacher_limit_acceleration")
                 if (
                     "desync_first_episode" not in saved_keys
                     and legacy_config.get("desync_first_episode") is False

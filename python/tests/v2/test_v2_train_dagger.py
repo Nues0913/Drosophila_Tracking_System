@@ -21,6 +21,7 @@ from flytrack_v2.train.update import (
     _latent_log_prob_by_action,
     batch_metrics,
     burn_in_state,
+    label_margins,
     make_scheduler,
     sequence_loss,
     shrink_labels,
@@ -653,10 +654,11 @@ def test_round_health_warning_and_stage_failure(tmp_path, monkeypatch, silent_ro
 
     contract = dagger.SensorContractV2.from_json(dagger.ROOT / "configs/v2/sensor_contract.json")
     v_max, omega_max = contract.v_max, contract.omega_max
+    resolved = json.loads((tmp_path / "config.json").read_text())
     for record in round_ends:
         replay = torch.load(tmp_path / f"round_{int(record['round'])}/replay.pt", weights_only=True)
         action = replay["steps"]["action"].reshape(-1, 2)
-        labels = shrink_labels(action, v_max, omega_max, SETTINGS.label_margin)
+        labels = shrink_labels(action, v_max, omega_max, label_margins(resolved))
         latent = unsquash(labels, v_max, omega_max).double()
         quantiles = latent.new_tensor([0.001, 0.01, 0.5, 0.99, 0.999])
         expected = torch.quantile(latent, quantiles, dim=0).T.tolist()

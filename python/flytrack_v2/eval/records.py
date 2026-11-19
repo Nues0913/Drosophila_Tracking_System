@@ -90,6 +90,24 @@ def check_records(
     for actor, hashes in sorted(artifacts.items(), key=str):
         if len(hashes) > 1:
             problems.append(f"{actor} mixes {len(hashes)} artifacts")
+    # Every v2 variant must cover the same cells (#192 R1), with or without a grid: a variant
+    # missing a whole motion is invisible inside the cells. Formal-v1 reference actors
+    # ("v1:<variant>", #192 R2) run in v1compat's main run only; the grid and
+    # summary.check_pairing cover them.
+    cells_by_variant: dict[str, set[tuple]] = defaultdict(set)
+    for cell, by_variant in seeds.items():
+        for variant in by_variant:
+            if not variant.startswith("v1:"):
+                cells_by_variant[variant].add(cell)
+    if len({frozenset(cells) for cells in cells_by_variant.values()}) > 1:
+        union = set().union(*cells_by_variant.values())
+        for variant, cells in sorted(cells_by_variant.items()):
+            if cells != union:
+                missing = sorted(union - cells, key=str)
+                problems.append(
+                    f"{variant} misses {len(missing)} cells the other variants have, e.g. "
+                    f"{dict(zip(CELL, missing[0], strict=True))}"
+                )
     expected = None if expected_episode_seeds is None else set(expected_episode_seeds)
     for cell, by_variant in sorted(seeds.items(), key=str):
         reference = expected if expected is not None else next(iter(by_variant.values()))

@@ -381,3 +381,10 @@ def test_restore_rejects_legacy_time_major_replay(tmp_path):
     )
     with pytest.raises(ValueError, match=r"legacy time-major float32.*Start a new DAgger run"):
         ReplayShard.load(path)
+
+
+def test_an_integer_label_margin_is_one_margin():
+    from flytrack_v2.train.update import shrink_labels
+
+    labels = shrink_labels(torch.tensor([[0.0, 1.5]]), 0.5, 1.5, 0)
+    assert labels.tolist() == [[0.0, 1.5]]

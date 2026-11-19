@@ -10,6 +10,15 @@ import numpy as np
 import torch
 
 
+def state_is_finite(state) -> bool:
+    """True when every tensor in a (nested tuple) policy state is finite; v2 states are tuples."""
+    if isinstance(state, torch.Tensor):
+        return bool(torch.isfinite(state).all())
+    if isinstance(state, (tuple, list)):
+        return all(state_is_finite(item) for item in state)
+    return True
+
+
 class PolicyRuntime:
     def __init__(self, policy, contract, device: str = "cpu", profiler_enabled: bool = False):
         self.policy, self.contract, self.device = policy, contract, torch.device(device)
@@ -142,7 +151,7 @@ class PolicyRuntime:
         finite_started_ns = monotonic_ns() if self.profiler_enabled else 0
         if (
             not torch.isfinite(action).all()
-            or not torch.isfinite(next_state).all()
+            or not state_is_finite(next_state)
             or not torch.isfinite(activity).all()
         ):
             self.reset(minimum_stamp=now)

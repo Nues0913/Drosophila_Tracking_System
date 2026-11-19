@@ -65,10 +65,15 @@ def track_v2_reward(
 ) -> Tensor:
     """PPO reward aligned with the tracking success rule (plan 3.8, #161 D3).
 
-    The survival bonus cancels the maximum distance penalty. From the same state,
-    braking to a stop and holding position costs only the small change in action,
-    with nonnegative rewards thereafter while safe. Hitting the wall ends the
-    episode with a large penalty, so stopping wins for any discount factor.
+    Each collision-free step earns at least −0.05 · ‖Δa‖ because the +0.9
+    survival bonus covers the maximum distance penalty. A wall collision skips
+    that bonus, subtracts 10, and ends the episode, so the collision step always
+    earns less than a step spent holding still safely.
+
+    In the fixed trajectories in test_v2_track_v2_reward.py, stopping beats
+    hitting the wall on total return and on discounted return at γ = 0.95,
+    0.99, and 0.999. Braking incurs an action-change penalty, so this ordering
+    can reverse at very small γ, when only the first few steps carry much weight.
     """
     survival = 0.3 * 3.0  # +0.9 per non-collision step, per the #161 D3 Decision.
     error = (distance.to(torch.float64) - following).abs().clamp(max=3.0)

@@ -420,10 +420,11 @@ def test_stop_mid_round_resume_matches_uninterrupted_run_and_loads_export(tmp_pa
         name = f"round_{int(row['round'])}/replay.pt"
         replay = torch.load(resumed / name, weights_only=True)
         baseline = torch.load(uninterrupted / name, weights_only=True)
+        assert replay.pop("layout") == baseline.pop("layout") == "env_major_f16"
         torch.testing.assert_close(replay, baseline, rtol=0, atol=0)
         assert "episode_steps" not in replay["steps"]
         samples = []
-        for reset in replay["steps"]["reset"]:
+        for reset in replay["steps"]["reset"].T:
             samples.append(ages)
             ages = torch.where(reset, 0, ages + 1)
         std, mean = torch.std_mean(torch.stack(samples).double(), correction=0)
@@ -489,7 +490,17 @@ def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
         "activation_checkpoint=true",
     ]
     full, resumed = tmp_path / "full", tmp_path / "resumed"
-    full_status = main([*args, "--out", str(full)])
+    rollout_step = dagger.RolloutCollector.step
+    rollout_codes = []
+
+    def capture_code(collector, *args, **kwargs):
+        data = rollout_step(collector, *args, **kwargs)
+        rollout_codes.append(data.code.clone())
+        return data
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dagger.RolloutCollector, "step", capture_code)
+        full_status = main([*args, "--out", str(full)])
     assert full_status in (0, 3)
     assert (full / "final").is_dir()
 
@@ -536,15 +547,17 @@ def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
     ):
         torch.testing.assert_close(baseline[key], continued[key], rtol=0, atol=0, equal_nan=True)
 
-    # Independently replay the initial network on all rows and recover exactly the fit samples.
+    # Independently replay the float32 rollout to recover exactly the fit samples.
     replay = torch.load(full / "round_1/replay.pt", weights_only=True)
     policy = tiny_policy("VO2", 0, activation_checkpoint=False, model_overrides={})
-    initial = replay["states"][0]
+    resets = replay["steps"]["reset"].T
+    codes = torch.stack(rollout_codes[: len(resets)])
+    initial = policy.initial_central_state(resets.size(1), "cpu")
+    assert torch.equal(replay["steps"]["code"], codes.transpose(0, 1).half())
+    assert torch.equal(replay["states"][:, 0], initial.half())
     state, sampled = initial, []
     with torch.no_grad():
-        for tick, (code, reset) in enumerate(
-            zip(replay["steps"]["code"], replay["steps"]["reset"], strict=True)
-        ):
+        for tick, (code, reset) in enumerate(zip(codes, resets, strict=True)):
             step = policy.forward_code(code, state)
             if tick % 4 == 0:
                 sampled.append(step.aux["dn_rates"][~replay["held_out"]])

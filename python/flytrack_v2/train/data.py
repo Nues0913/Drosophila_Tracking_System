@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import math
+import mmap
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -30,6 +34,8 @@ from .config import (
 
 EPISODE_SEED_BIT = 1 << 40
 _TRANSFER_TICKS = 32
+_PACK_ROWS = 64
+_REPLAY_LAYOUT = "env_major_f16"
 _READOUT_SAMPLE_STRIDE = 4
 _TEACHER_KEYS = ("agent_pose", "agent_velocity", "target_pose", "target_velocity", "occluded")
 
@@ -48,22 +54,48 @@ class StepData(NamedTuple):
 
 @dataclass
 class ReplayShard:
-    steps: StepData
-    states: Tensor  # [snapshots, envs, state_size]
+    steps: StepData  # [envs, ticks, ...], code is float16
+    states: Tensor  # [envs, snapshots, state_size], float16
     tags: Tensor  # [envs, 3], indices into WORLD_NAMES, MOTION_NAMES, SCENARIO_NAMES
     held_out: Tensor  # [envs], fixed throughout the run
     first_snapshot: int
     readout_rates: Tensor | None = None  # [samples, DNs], only for the first fit
 
     def checkpoint(self) -> dict:
-        saved = {**vars(self), "steps": self.steps._asdict()}
+        saved = {**vars(self), "layout": _REPLAY_LAYOUT, "steps": self.steps._asdict()}
         if self.readout_rates is None:
             del saved["readout_rates"]
         return saved
 
     @classmethod
     def restore(cls, saved: dict) -> ReplayShard:
-        return cls(**{**saved, "steps": StepData(**saved["steps"])})
+        values = saved.copy()
+        layout = values.pop("layout", "legacy time-major float32")
+        if layout != _REPLAY_LAYOUT:
+            raise ValueError(
+                f"Unsupported replay layout {layout!r}; expected {_REPLAY_LAYOUT!r}. "
+                "Start a new DAgger run in a new output directory."
+            )
+        values["steps"] = StepData(**values["steps"])
+        return cls(**values)
+
+    @classmethod
+    def load(cls, path: Path) -> ReplayShard:
+        shard = cls.restore(torch.load(path, map_location="cpu", weights_only=True, mmap=True))
+        # PyTorch exposes the mapped storages, but keeps the mmap handle internal.
+        madvise = ctypes.CDLL(None, use_errno=True).madvise
+        madvise.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+        madvise.restype = ctypes.c_int
+        for tensor in (*shard.steps, shard.states, shard.tags, shard.held_out):
+            storage = tensor.untyped_storage()
+            size = storage.nbytes()
+            if size:
+                address = storage.data_ptr()
+                page_offset = address % mmap.PAGESIZE
+                if madvise(address - page_offset, size + page_offset, mmap.MADV_RANDOM) != 0:
+                    errno = ctypes.get_errno()
+                    raise OSError(errno, os.strerror(errno), path)
+        return shard
 
 
 class SequenceBatch(NamedTuple):
@@ -85,6 +117,15 @@ def _allocate_steps(ticks: int, rows: int, width: int, device: torch.device | st
         torch.empty(ticks, rows, dtype=torch.bool, device=device),
         torch.empty(ticks, rows, dtype=torch.bool, device=device),
     )
+
+
+def _env_major(time_major: Tensor, dtype: torch.dtype) -> Tensor:
+    rows = time_major.transpose(0, 1)
+    packed = torch.empty(rows.shape, dtype=dtype, device=rows.device)
+    for start in range(0, len(rows), _PACK_ROWS):
+        block = slice(start, start + _PACK_ROWS)
+        packed[block].copy_(rows[block])
+    return packed
 
 
 def _concatenate(parts: list[dict[str, Tensor]], keys) -> dict[str, Tensor]:
@@ -258,7 +299,7 @@ class RolloutCollector:
     @torch.no_grad()
     def collect(
         self, plan: RoundPlan, *, sample_readout_rates: bool = False
-    ) -> tuple[ReplayShard, dict[str, float]]:
+    ) -> tuple[ReplayShard, dict[str, float], dict[str, float]]:
         start = time.perf_counter()
         steps = _allocate_steps(plan.ticks, self.rows, self.policy.code_size, "cpu")
         episode_steps = torch.empty(plan.ticks, self.rows, dtype=torch.int64, device=self.device)
@@ -325,9 +366,22 @@ class RolloutCollector:
             "episode_time_std_s": std.item() * dt,
         }
         samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
+        code, action, reset, occluded = steps
+        del steps, staging, staged_states
+        stats = normalization_stats(code, self.policy.input_norm)
+        # Release the time-major code before allocating the packed snapshots.
+        code = _env_major(code, torch.float16)
+        states = _env_major(states, torch.float16)
+        steps = StepData(
+            code,
+            _env_major(action, action.dtype),
+            _env_major(reset, reset.dtype),
+            _env_major(occluded, occluded.dtype),
+        )
         return (
             ReplayShard(steps, states, self.tags, self.held_out, plan.first_snapshot, samples),
             metrics,
+            stats,
         )
 
 
@@ -340,11 +394,14 @@ class Replay:
         self, size: int, generator: torch.Generator, *, held_out: bool = False
     ) -> SequenceBatch:
         rows = [torch.where(shard.held_out == held_out)[0] for shard in self.shards]
-        counts = [
-            len(envs)
-            * (1 + (len(shard.steps.code) - shard.first_snapshot - self.window) // STATE_STRIDE)
-            for shard, envs in zip(self.shards, rows, strict=True)
+        starts = [
+            max(
+                0,
+                1 + (shard.steps.code.size(1) - shard.first_snapshot - self.window) // STATE_STRIDE,
+            )
+            for shard in self.shards
         ]
+        counts = [len(envs) * n_starts for envs, n_starts in zip(rows, starts, strict=True)]
         total = sum(counts)
         if not total:
             raise ValueError("Replay has no complete sequences for this split")
@@ -354,28 +411,32 @@ class Replay:
             draws = torch.randint(total, (size,), generator=generator)
         first = self.shards[0]
         steps = _allocate_steps(self.window, len(draws), first.steps.code.size(-1), "cpu")
-        states = first.states.new_empty((len(draws), first.states.size(-1)))
+        states = first.states.new_empty((len(draws), first.states.size(-1)), dtype=torch.float32)
         tags = first.tags.new_empty((len(draws), first.tags.size(-1)))
-        time_offsets = torch.arange(self.window)[:, None]
         offset = 0
-        for shard, envs, count in zip(self.shards, rows, counts, strict=True):
+        for shard, envs, n_starts, count in zip(self.shards, rows, starts, counts, strict=True):
             positions = torch.where((draws >= offset) & (draws < offset + count))[0]
             if len(positions):
                 local = draws[positions] - offset
                 snaps, env = local // len(envs), envs[local % len(envs)]
-                ticks = shard.first_snapshot + STATE_STRIDE * snaps + time_offsets
+                order = (env * n_starts + snaps).argsort()
+                positions, env, snaps = positions[order], env[order], snaps[order]
+                reads = list(zip(positions.tolist(), env.tolist(), snaps.tolist(), strict=True))
                 for dest, source in zip(steps, shard.steps, strict=True):
-                    dest[:, positions] = source[ticks, env]
-                states[positions] = shard.states[snaps, env]
+                    for position, row, snap in reads:
+                        tick = shard.first_snapshot + STATE_STRIDE * snap
+                        dest[:, position].copy_(source[row, tick : tick + self.window])
+                for position, row, snap in reads:
+                    states[position].copy_(shard.states[row, snap])
                 tags[positions] = shard.tags[env]
             offset += count
         return SequenceBatch(steps.code, steps.action, steps.reset, states, tags, steps.occluded)
 
 
-def normalization_stats(shard: ReplayShard, norm) -> dict[str, float]:
+def normalization_stats(code: Tensor, norm) -> dict[str, float]:
     """Exact per-modality extrema and quantiles over valid values, one modality in memory."""
     width = sum(norm.layout.widths)
-    codes = shard.steps.code.reshape(-1, shard.steps.code.size(-1)).numpy()
+    codes = code.reshape(-1, code.size(-1)).numpy()
     mean = norm.mean.cpu().numpy()
     std = norm.std.clamp_min(norm.std_floor).cpu().numpy()
     values, first = {}, 0

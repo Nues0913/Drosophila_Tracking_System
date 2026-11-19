@@ -252,3 +252,23 @@ def test_configs_without_the_setting_keep_v1_labels(tmp_path):
     path.write_text(yaml.safe_dump(values))
     assert load_config(path, "4060")["teacher_limit_acceleration"] is True
     assert load_config(CONFIG_DIR / "dagger.yaml", "4060")["teacher_limit_acceleration"] is False
+
+
+def test_label_latent_bound_keeps_every_label_within_three():
+    import math
+
+    from flytrack_v2.interfaces import unsquash
+    from flytrack_v2.train.update import label_margins, shrink_labels
+
+    config = load_config(CONFIG_DIR / "dagger.yaml", "4060")
+    assert config["label_latent_bound"] == 3.0
+    margins = label_margins(config)
+    assert margins == pytest.approx((1 / (1 + math.exp(3)), 1 - math.tanh(3)))
+    extremes = torch.tensor([[0.0, -1.5], [0.5, 1.5], [0.25, 0.0]])
+    latent = unsquash(shrink_labels(extremes, 0.5, 1.5, margins), 0.5, 1.5)
+    assert latent[:2].abs().amax() == pytest.approx(3.0, abs=1e-4)
+    assert latent[2].abs().amax() < 1e-5
+    legacy = load_config(CONFIG_DIR / "dagger.yaml", "4060", ["label_latent_bound=null"])
+    assert label_margins(legacy) == (1e-3, 1e-3)
+    with pytest.raises(ValueError, match="label_latent_bound"):
+        load_config(CONFIG_DIR / "dagger.yaml", "4060", ["label_latent_bound=0"])

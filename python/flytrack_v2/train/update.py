@@ -20,20 +20,33 @@ from .data import SequenceBatch
 class LossSettings:
     burn_in: int
     activity_coef: float
-    label_margin: float
+    label_margin: float | tuple[float, float]  # one margin, or (speed, turn)
 
 
-def shrink_labels(action: Tensor, v_max: float, omega_max: float, margin: float) -> Tensor:
+def label_margins(config) -> tuple[float, float]:
+    """(speed, turn) margins: from label_latent_bound b when set, so every label's latent is
+    within +-b (speed v_max sigmoid(z), turn omega_max tanh(z), #184 Decision), else
+    label_margin for both (configs before #189)."""
+    bound = config.get("label_latent_bound")
+    if bound is None:
+        return config["label_margin"], config["label_margin"]
+    return 1.0 / (1.0 + math.exp(bound)), 1.0 - math.tanh(bound)
+
+
+def shrink_labels(
+    action: Tensor, v_max: float, omega_max: float, margin: float | tuple[float, float]
+) -> Tensor:
     """Keep labels away from the inverse squash limits for nonnegative speed and signed turn."""
-    turn_bound = (1 - margin) * omega_max
-    speed = action[..., 0].clamp(margin * v_max, (1 - margin) * v_max)
+    speed_margin, turn_margin = (margin, margin) if isinstance(margin, float) else margin
+    turn_bound = (1 - turn_margin) * omega_max
+    speed = action[..., 0].clamp(speed_margin * v_max, (1 - speed_margin) * v_max)
     turn = action[..., 1].clamp(-turn_bound, turn_bound)
     return torch.stack((speed, turn), dim=-1)
 
 
 @torch.no_grad()
 def label_latent_quantiles(
-    action: Tensor, v_max: float, omega_max: float, margin: float
+    action: Tensor, v_max: float, omega_max: float, margin: float | tuple[float, float]
 ) -> dict[str, float]:
     """Measure the latent targets over all collected labels in a round."""
     percentiles = (1, 10, 500, 990, 999)

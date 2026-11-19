@@ -123,6 +123,7 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     config.setdefault("readout_normalization", defaults["readout_normalization"])
     # Configs written before #184 labelled around the applied action.
     config.setdefault("teacher_limit_acceleration", True)
+    config.setdefault("label_latent_bound", None)
     config.setdefault("model", {})
     if set(config) != set(defaults):
         raise ValueError("DAgger config must have the same keys as dagger.yaml")
@@ -167,6 +168,11 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     _number(config["label_margin"], "label_margin", 0, 1)
     if config["label_margin"] > 0.5:
         raise ValueError("label_margin must be <= 0.5 to leave a valid speed interval")
+    bound = config["label_latent_bound"]
+    if bound is not None and (
+        isinstance(bound, bool) or not isinstance(bound, (int, float)) or not 0 < bound <= 10
+    ):
+        raise ValueError("label_latent_bound must be null or a number in (0, 10]")
     _integer(config["held_out"]["every_updates"], "held_out.every_updates")
     _integer(config["held_out"]["sequences"], "held_out.sequences")
     _number(config["held_out"]["fraction"], "held_out.fraction", 0, 1)

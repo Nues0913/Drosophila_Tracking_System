@@ -16,7 +16,10 @@ sequence: {length: 64, burn_in: 16}
 batch_sequences: 256
 optimizer: {name: adam, lr: 1.0e-3, lr_final: 1.0e-4, schedule: cosine_over_all_updates, grad_clip: 1.0}
 activity_coef: 1.0e-4
-label_margin: 1.0e-3
+label_margin: 1.0e-3  # used only when label_latent_bound is null
+# #184 Decision: every label's latent within +-3 (speed v in [0.024, 0.476] m/s, |turn| <= 0.995
+# omega_max), so labels at the action limits cannot dominate the NLL (#189 review).
+label_latent_bound: 3.0
 held_out: {every_updates: 50, sequences: 256, fraction: 0.05}
 activation_checkpoint: false
 model: {}

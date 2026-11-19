@@ -19,10 +19,30 @@ def state_is_finite(state) -> bool:
     return True
 
 
+WIND = 3  # sensor index of the antennae: after the two eyes (0, 1) and odor (2)
+
+
 class PolicyRuntime:
-    def __init__(self, policy, contract, device: str = "cpu", profiler_enabled: bool = False):
+    """Buffers the sensors, arms once every one is fresh, and steps the policy.
+
+    ``wind=True`` (a v2 policy in the wind world, #140) adds the antenna reading as a fourth
+    sensor: it must also be fresh to arm, and the observation carries ``wind`` and a 4-channel
+    ``valid``. Without it there are three sensors, as in v1 and the v2 v1compat world, and a v2
+    policy sees wind 0 with valid 0 (V2PolicyAdapter).
+    """
+
+    def __init__(
+        self,
+        policy,
+        contract,
+        device: str = "cpu",
+        profiler_enabled: bool = False,
+        wind: bool = False,
+    ):
         self.policy, self.contract, self.device = policy, contract, torch.device(device)
         self.profiler_enabled = bool(profiler_enabled)
+        self.wind_enabled = bool(wind)
+        self.sensor_count = 4 if self.wind_enabled else 3
         self.history = deque(maxlen=contract.history_steps)
         self.reset()
 
@@ -30,8 +50,9 @@ class PolicyRuntime:
         self.state = self.policy.initial_state(1, self.device)
         self.vision = np.zeros((2, self.contract.n_ommatidia), dtype=np.float32)
         self.odor = np.zeros(2, dtype=np.float32)
-        self.stamps = np.full(3, np.nan, dtype=np.float64)
-        self.sensor_available = np.zeros(3, dtype=bool)
+        self.wind = np.zeros(2, dtype=np.float32)
+        self.stamps = np.full(self.sensor_count, np.nan, dtype=np.float64)
+        self.sensor_available = np.zeros(self.sensor_count, dtype=bool)
         self.armed = False
         self.minimum_stamp = minimum_stamp
         self.previous_action = np.zeros(2, dtype=np.float32)
@@ -60,7 +81,7 @@ class PolicyRuntime:
 
     def mark_missing(self, sensor: int, stamp: float) -> None:
         if (
-            sensor not in (0, 1, 2)
+            sensor not in range(self.sensor_count)
             or not math.isfinite(stamp)
             or (self.minimum_stamp is not None and stamp <= self.minimum_stamp)
         ):
@@ -88,6 +109,28 @@ class PolicyRuntime:
         self.odor = np.maximum(values, 0)
         self.stamps[2] = stamp
         self.sensor_available[2] = True
+        return True
+
+    def update_wind(self, values: np.ndarray, stamp: float, valid: bool = True) -> bool:
+        """The antenna reading; signed, so unlike odor it is not clipped at 0."""
+        if not self.wind_enabled:
+            raise ValueError("this runtime has no wind sensor (wind=False)")
+        values = np.asarray(values, dtype=np.float32)
+        if self.minimum_stamp is not None and stamp <= self.minimum_stamp:
+            return False
+        if (
+            values.shape != (2,)
+            or not math.isfinite(stamp)
+            or not np.isfinite(values).all()
+            or not valid
+        ):
+            self.mark_missing(WIND, stamp)
+            return False
+        if np.isfinite(self.stamps[WIND]) and stamp < self.stamps[WIND]:
+            return False
+        self.wind = values
+        self.stamps[WIND] = stamp
+        self.sensor_available[WIND] = True
         return True
 
     def tick(self, now: float) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
@@ -120,6 +163,9 @@ class PolicyRuntime:
             "odor": self.odor.copy(),
             "valid": valid.astype(np.float32),
         }
+        if self.wind_enabled:
+            # The wind valid flag gates it as in the 2D world (wind * valid[:, 3]).
+            observation["wind"] = self.wind * np.float32(valid[WIND])
         self.history.append(observation)
         inference_started = perf_counter()
         tensors = {

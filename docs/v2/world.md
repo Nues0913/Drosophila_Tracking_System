@@ -197,3 +197,25 @@ DAgger 在遮蔽期間用它的標籤（#133、#161 D4）；遮蔽以外則是�
 - 其他情境：特權 teacher 都是 1.00，最好的 blind 策略 ≤ 0.02，結果和 `v1compat` 相同。
 
 **速度**（4070，`bench_world.py --worlds wind`）：B = 1,024，normal 沒有重設的步 5.48 ms、預期平均 5.99 ms；四種混合 6.57 ms。比 `v1compat` 慢約 0.9 ms，原因是 filament 比較多（203 對 163 個），而且每個 tick 都要更新風。
+
+## 8. Gazebo 的 `wind` 世界（WP6，#140）
+
+ROS／Gazebo 端用 numpy 照第 7 節的模型實作同一個世界，給 v2 的 G1／G3 使用。預設的 `world: v1compat` 和之前完全相同。
+
+**怎麼開**
+- `world.launch.py`／`tracking.launch.py` 的 `world:=wind`；compose 用 `FLYTRACK_WORLD=wind`，並用 `SENSOR_CONTRACT=/workspace/configs/v2/sensor_contract.json` 指定 v2 contract。
+- world 節點讀到有風欄位的 contract 時，會當成 `SensorContractV2`，三個風欄位缺一就報錯；`world: wind` 需要 v2 contract，policy 的 `world: wind` 需要 v2 模型。
+
+**模型**（`flytrack_world/wind_field.py`）
+- 風：速度 U，方向每回合均勻抽，偏移是 OU（初始值從穩態分布抽）。每個 plume tick 先走一步 OU，再照 v1 的 puff 順序：變老、隨當下的風平移、湍流、丟掉超過壽命的、釋放。
+- 絲狀 plume 的設定取自 `WindConfig`，容量是 min(來源數 × (壽命 × 釋放率 + 3), `capacity`)，和 2D 相同。
+- 觸角讀數在 odor 的 tick 取樣（wind_hz = odor_hz），用當下的頭向，加上 `antenna_noise_std` 的雜訊，發布到 `/sim/wind`。
+- 干擾節點把 `/sim/wind` 轉成 `/fly/wind`：noise 情境的 odor dropout 機率另外抽一次，不加額外雜訊（#169 的 Decision）。
+
+**policy 端**
+- `world: wind` 時 runtime 有 4 個感測器：要 4 個都新鮮才開始推論，觀測帶 `wind`（乘上 valid[3]）和 4 個 valid；風的樣本太舊時 valid[3] = 0、wind = 0。
+- `/fly/control_trace` 和 profiler 仍然只記 v1 的 3 個感測器，風不在因果延遲的追蹤裡（`ControlTrace` 的陣列長度是 3）。
+
+**和 2D 的差別**
+- 隨機數用回合 seed 的 numpy generator，不是 2D 的 counter-based hash，所以同一個 seed 在 Gazebo 和 2D 的風向不同；G1 比的是分布，和 v1 一樣。
+- 驗證（不需 ROS）：觸角公式和 `flytrack_v2.world.wind.antenna` 差 ≤ 1e-12；沒有偏移時 puff 位置和 v1 固定風的 `PuffPlume` 逐位元相同；OU 的穩態 std、雜訊 std、dropout 比例。

@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 
 import pytest
 import torch
@@ -60,6 +61,44 @@ def test_reserved_seeds_and_automatic_reset():
         assert not collector.step(0.5, initial).reset.any()
         assert collector.step(0.5, initial).reset.all()
         torch.testing.assert_close(collector.central, initial, rtol=0, atol=0)
+
+
+def test_restore_releases_graphs_before_replacing_state(monkeypatch):
+    config = load_config(
+        CONFIG_DIR / "dagger.yaml", "4060", ["envs_per_instance=3", "episode_seconds=0.3"]
+    )
+    policy = build_policy("VO2", ModelConfigV2(initial_state="bias"), graph=small_graph())
+    device = torch.device("cpu")
+    collector = RolloutCollector(policy, config, 11, device)
+    initial = policy.initial_central_state(collector.rows, device)
+    for _ in range(2):
+        collector.step(0.5, initial)
+    # CPU checkpoints can share storage with the collector's live state.
+    saved = deepcopy(collector.checkpoint())
+    expected = RolloutCollector(policy, config, 11, device, restore=deepcopy(saved))
+    for _ in range(3):
+        collector.step(0.5, initial)
+
+    old_states = {world: world._state for world in collector.worlds}
+    world_type = type(collector.worlds[0])
+    release = world_type.release_rollout_graphs
+    released = []
+
+    def record_release(world):
+        assert world._state is old_states[world]
+        released.append(world)
+        release(world)
+
+    monkeypatch.setattr(world_type, "release_rollout_graphs", record_release)
+    collector.restore(saved)
+    assert released == collector.worlds
+    for _ in range(6):
+        torch.testing.assert_close(
+            collector.step(0.5, initial), expected.step(0.5, initial), rtol=0, atol=0
+        )
+    torch.testing.assert_close(
+        collector.checkpoint(), expected.checkpoint(), rtol=0, atol=0, equal_nan=True
+    )
 
 
 def test_first_episode_reset_matches_automatic_reset():

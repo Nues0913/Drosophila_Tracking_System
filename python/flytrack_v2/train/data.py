@@ -187,6 +187,12 @@ class RolloutCollector:
         return saved
 
     def restore(self, saved: dict) -> None:
+        """Restore a checkpoint and discard CUDA graphs before replacing world state tensors.
+
+        The next rollout step must recapture the graphs against the new buffers.
+        """
+        for world in self.worlds:
+            world.release_rollout_graphs()
         for world, values in zip(self.worlds, saved["worlds"], strict=True):
             world._state = {name: value.to(self.device) for name, value in values["state"].items()}
             world.episode_index.copy_(values["episode_index"])

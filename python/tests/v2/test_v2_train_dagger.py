@@ -3,23 +3,68 @@ import json
 import pytest
 import torch
 from flytrack_v2.artifacts import VARIANTS
-from flytrack_v2.model import ModelConfigV2, build_policy, load_policy, parameter_groups
+from flytrack_v2.interfaces import ACTION_EPS, ActionDistribution, reset_rows, unsquash
+from flytrack_v2.model import (
+    ConnectomePolicyV2,
+    ModelConfigV2,
+    build_policy,
+    load_policy,
+    parameter_groups,
+)
 from flytrack_v2.monitor import RunMonitor
 from flytrack_v2.train import dagger
+from flytrack_v2.train.config import CONFIG_DIR, ROOT, load_config, read_yaml
 from flytrack_v2.train.dagger import _normalize_device, build_training_policy, main
 from flytrack_v2.train.data import SequenceBatch
 from flytrack_v2.train.update import (
     LossSettings,
+    _latent_log_prob_by_action,
     batch_metrics,
     burn_in_state,
     make_scheduler,
     sequence_loss,
+    shrink_labels,
     train_update,
 )
 from test_v2_model_core import small_graph
 
 SETTINGS = LossSettings(burn_in=2, activity_coef=1e-4, label_margin=1e-3)
 OPTIMIZER = {"lr": 0.01, "lr_final": 0.001}
+
+
+def test_shrink_labels_respects_asymmetric_limits_and_preserves_interior():
+    v_max, omega_max, margin = 0.4, 2.0, SETTINGS.label_margin
+    action = torch.tensor(
+        [[0, -omega_max], [v_max, omega_max], [0.3, -1.1], [-0.1, 0.1]],
+        dtype=torch.float64,
+    )
+    shrunk = shrink_labels(action, v_max, omega_max, margin)
+    latent = unsquash(shrunk, v_max, omega_max)
+    expected = torch.tensor(
+        [
+            [margin, -(1 - margin)],
+            [1 - margin, 1 - margin],
+        ],
+        dtype=action.dtype,
+    )
+    expected[:, 0] = expected[:, 0].logit()
+    expected[:, 1] = expected[:, 1].atanh()
+    assert latent.isfinite().all()
+    torch.testing.assert_close(latent[:2], expected, rtol=0, atol=1e-12)
+    assert (latent[:, 0] >= expected[0, 0]).all()
+    assert torch.equal(shrunk[2], action[2])
+
+
+def test_latent_log_prob_by_action_sums_to_joint_log_prob():
+    rng = torch.Generator().manual_seed(12)
+    mean = torch.randn(3, 4, 2, generator=rng, dtype=torch.float64)
+    latent = torch.randn(3, 4, 2, generator=rng, dtype=torch.float64)
+    log_std = torch.tensor([-0.3, 0.2], dtype=torch.float64)
+    dist = ActionDistribution(mean, log_std, v_max=0.4, omega_max=2.0)
+
+    per_action = _latent_log_prob_by_action(dist, latent)
+    assert per_action.shape == latent.shape
+    torch.testing.assert_close(per_action.sum(-1), dist.log_prob(latent), atol=1e-12, rtol=0)
 
 
 def test_normalize_cuda_device_without_a_gpu(monkeypatch):
@@ -145,10 +190,50 @@ def test_nonfinite_loss_skips_optimizer_and_scheduler():
         assert torch.equal(before[name], value)
 
 
+def test_saturation_counts_both_speed_limits_and_joint_nll_once():
+    policy = _policy("GRU2")
+    batch = _batch(policy)
+    v_max, omega_max = policy.contract.v_max, policy.contract.omega_max
+    batch.action[: SETTINGS.burn_in].zero_()
+    batch.action[SETTINGS.burn_in :] = batch.action.new_tensor(
+        [
+            [ACTION_EPS * v_max, 0],
+            [(1 - ACTION_EPS) * v_max, omega_max],
+            [0.5 * v_max, -omega_max],
+            [2 * ACTION_EPS * v_max, 0],
+        ]
+    )
+    initial = policy.initial_central_state(1, "cpu")
+    interior = SequenceBatch(
+        batch.code[:, 3:],
+        batch.action[:, 3:],
+        batch.reset[:, 3:],
+        batch.initial[3:],
+        batch.tags[3:],
+        batch.occluded[:, 3:],
+    )
+    with torch.no_grad():
+        interior_nll = sequence_loss(policy, interior, initial, SETTINGS)["nll"]
+    optimizer = torch.optim.Adam(parameter_groups(policy, OPTIMIZER["lr"]))
+    scheduler = make_scheduler(optimizer, OPTIMIZER, 1)
+    metrics = train_update(policy, optimizer, scheduler, batch, SETTINGS, 2, 1.0)
+    assert metrics["saturation_fraction"] == 0.75
+    assert metrics["saturation_fraction_speed_low"] == 0.25
+    assert metrics["saturation_fraction_speed_high"] == 0.25
+    assert metrics["saturation_fraction_turn"] == 0.5
+    torch.testing.assert_close(
+        metrics["saturated_nll_fraction"], 1 - interior_nll / (4 * metrics["nll"])
+    )
+
+
 @pytest.mark.slow
 @torch.no_grad()
 def test_bundled_fitted_input_norm_calibrates_resting_speed():
     policy = build_training_policy("VO2", 0, activation_checkpoint=False)
+    empty = build_training_policy("VO2", 0, activation_checkpoint=False, model_overrides={})
+    assert empty.config == policy.config
+    assert empty.readout.speed_types == policy.readout.speed_types == ("DNp09",)
+    torch.testing.assert_close(empty.state_dict(), policy.state_dict(), atol=0, rtol=0)
     assert policy.input_norm.fitted and policy.input_norm.n_samples > 0
     state = policy.initial_central_state(1, "cpu")
     speed = policy._distribution(policy._readout_mean(state)).mode()[0, 0]
@@ -161,6 +246,99 @@ def test_bundled_fitted_input_norm_calibrates_resting_speed():
         state = step.central_state
     print(f"rest speed = {speed.item():.8f}, max drift = {maximum_drift:.6g} m/s")
     assert maximum_drift <= 0.01
+
+
+@pytest.mark.parametrize("key", ["init_seed", "structure_seed", "activation_checkpoint", "unknown"])
+def test_model_override_rejects_invalid_keys(tmp_path, key):
+    message = "Unknown model config key" if key == "unknown" else f"model.{key} is controlled"
+    with pytest.raises(ValueError, match=message):
+        load_config(CONFIG_DIR / "dagger.yaml", "4060", [f"model.{key}=1"])
+    with pytest.raises(ValueError, match=message):
+        build_training_policy("VO2", 0, activation_checkpoint=False, model_overrides={key: 1})
+
+    config = tmp_path / "dagger.yaml"
+    defaults = (CONFIG_DIR / "dagger.yaml").read_text()
+    config.write_text(defaults.replace("model: {}", f"model: {{{key}: 1}}"))
+    with pytest.raises(ValueError, match=message):
+        load_config(config, "4060")
+
+
+def test_model_yaml_overrides_are_applied_before_cli(tmp_path):
+    config = tmp_path / "dagger.yaml"
+    defaults = (CONFIG_DIR / "dagger.yaml").read_text()
+    config.write_text(defaults.replace("model: {}", "model: {gain_parameterization: bounded}"))
+    settings = load_config(config, "4060", ["model.gain_parameterization=softplus"])
+    assert settings["model"] == {"gain_parameterization": "softplus"}
+    config.write_text(defaults.replace("model: {}", "model: {gain_parameterization: invalid}"))
+    settings = load_config(config, "4060")
+    with pytest.raises(ValueError, match="gain_parameterization"):
+        build_training_policy(
+            "VO2", 0, activation_checkpoint=False, model_overrides=settings["model"]
+        )
+
+
+@pytest.mark.slow
+def test_bilateral_model_override_resumes_and_exports_resolved_readout(
+    tmp_path, monkeypatch, capsys
+):
+    args = [
+        "--variant",
+        "VO2",
+        "--seed",
+        "0",
+        "--host",
+        "4060",
+        "--device",
+        "cpu",
+        "--out",
+        str(tmp_path),
+        "--override",
+        "rounds.beta=[1.0]",
+        "envs_per_instance=2",
+        "rounds.env_steps_per_round=72",
+        "replay_ratio=0.25",
+        "batch_sequences=4",
+        "sequence.length=4",
+        "sequence.burn_in=2",
+        "held_out.sequences=4",
+    ]
+    overrides = {"speed_types": "bilateral", "gain_parameterization": "bounded"}
+    spec = read_yaml(ROOT / "configs/v2/model/readout_bilateral_dn.yaml")
+    expected_ids = {
+        row["type"]: {"left": [row["left_body_id"]], "right": [row["right_body_id"]]}
+        for row in spec["types"]
+    }
+    start_round = dagger.DAggerRun._start_round
+
+    def stop_after_collection(run, monitor, index):
+        assert run.policy.readout.speed_types == tuple(expected_ids)
+        assert run.policy.readout.speed_body_ids == expected_ids
+        assert run.policy.config.gain_parameterization == "bounded"
+        start_round(run, monitor, index)
+        (tmp_path / "STOP").touch()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dagger.DAggerRun, "_start_round", stop_after_collection)
+        assert main([*args, *(f"model.{key}={value}" for key, value in overrides.items())]) == 0
+    assert (tmp_path / "round_1/progress.pt").is_file()
+    (tmp_path / "STOP").unlink()
+    config_path = tmp_path / "config.json"
+    saved_config = config_path.read_text()
+    assert json.loads(saved_config)["model"] == overrides
+
+    with pytest.raises(SystemExit, match="2"):
+        main([*args, "model.speed_types=[DNp09]", "--resume"])
+    assert "Resume requires the same model overrides" in capsys.readouterr().err
+    assert main([*args, "--resume"]) in (0, 3)
+    assert config_path.read_text() == saved_config
+
+    card = json.loads((tmp_path / "final/model_card.json").read_text())
+    (stage,) = card["provenance"]["stages"]
+    assert stage["model"] == overrides
+    assert card["model_config"]["gain_parameterization"] == "bounded"
+    assert card["model_config"]["speed_types"] == list(expected_ids)
+    assert card["model_config"]["readout_body_ids"]["speed"] == expected_ids
+    assert load_policy(tmp_path / "final").readout.speed_body_ids == expected_ids
 
 
 @pytest.mark.slow
@@ -253,6 +431,11 @@ def test_stop_mid_round_resume_matches_uninterrupted_run_and_loads_export(tmp_pa
         assert row["episode_time_std_s"] == pytest.approx(std.item() * 0.05)
     loaded = load_policy(resumed / "final")
     assert loaded.input_norm.fitted
+    assert not (resumed / "round_1/readout_norm.json").exists()
+    assert not any(name.startswith("readout.rate_") for name in loaded.state_dict())
+    diagnostics = json.loads((resumed / "diagnostics.json").read_text())
+    assert "first_batch_core_gradients" not in diagnostics
+    assert not diagnostics["readout_drift"]
     for key, value in loaded.state_dict().items():
         assert torch.equal(value, continued["policy"][key]), key
     card = json.loads((resumed / "final/model_card.json").read_text())
@@ -262,6 +445,143 @@ def test_stop_mid_round_resume_matches_uninterrupted_run_and_loads_export(tmp_pa
     assert stage["host"] == "4060"
     assert stage["activation_checkpoint"] is False
     assert stage["desync_first_episode"] is True
+
+
+def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
+    def tiny_policy(variant, seed, *, activation_checkpoint, model_overrides):
+        config = ModelConfigV2(
+            init_seed=seed,
+            rest_settle_s=0.5,
+            rest_refresh_s=0.05,
+            activation_checkpoint=activation_checkpoint,
+            **model_overrides,
+        )
+        return build_policy(variant, config, graph=small_graph())
+
+    monkeypatch.setattr(dagger, "build_training_policy", tiny_policy)
+    create_optimizer = dagger.DAggerRun._create_optimizer
+
+    def create_after_fit(run):
+        assert run.policy.readout.rate_norm_fitted
+        create_optimizer(run)
+
+    monkeypatch.setattr(dagger.DAggerRun, "_create_optimizer", create_after_fit)
+    args = [
+        "--variant",
+        "VO2",
+        "--seed",
+        "0",
+        "--host",
+        "4060",
+        "--device",
+        "cpu",
+        "--override",
+        "rounds.beta=[1.0,0.5]",
+        "envs_per_instance=2",
+        "episode_seconds=0.8",
+        "rounds.env_steps_per_round=72",
+        "replay_ratio=0.25",
+        "batch_sequences=4",
+        "sequence.length=4",
+        "sequence.burn_in=2",
+        "held_out.sequences=4",
+        "held_out.every_updates=1",
+        "activation_checkpoint=true",
+    ]
+    full, resumed = tmp_path / "full", tmp_path / "resumed"
+    full_status = main([*args, "--out", str(full)])
+    assert full_status in (0, 3)
+    assert (full / "final").is_dir()
+
+    save = dagger.DAggerRun.save
+    resume_args = [*args, "--out", str(resumed)]
+    for fitted in (False, True):
+        with monkeypatch.context() as patch:
+
+            def interrupt_after_save(run, path, *, expected_fitted=fitted):
+                save(run, path)
+                if (
+                    path.name == "progress.pt"
+                    and bool(run.policy.readout.rate_norm_fitted) == expected_fitted
+                ):
+                    raise InterruptedError("test checkpoint interruption")
+
+            patch.setattr(dagger.DAggerRun, "save", interrupt_after_save)
+            with pytest.raises(SystemExit, match="2"):
+                main(resume_args)
+        checkpoint = torch.load(resumed / "round_1/progress.pt", weights_only=True)
+        assert checkpoint["progress"]["updates"] == 0
+        assert bool(checkpoint["policy"]["readout.rate_norm_fitted"]) is fitted
+        assert (checkpoint["optimizer"] is not None) is fitted
+        resume_args = [*args, "--out", str(resumed), "--resume"]
+
+    def unexpected_fit(*_args):
+        pytest.fail("Fitted checkpoint must skip normalization fitting")
+
+    monkeypatch.setattr(ConnectomePolicyV2, "fit_readout_norm", unexpected_fit)
+    assert main(resume_args) == full_status
+
+    for name in ("round_1/readout_norm.json", "diagnostics.json"):
+        assert (full / name).read_bytes() == (resumed / name).read_bytes()
+    baseline = torch.load(full / "round_2/checkpoint.pt", weights_only=True)
+    continued = torch.load(resumed / "round_2/checkpoint.pt", weights_only=True)
+    for key in (
+        "progress",
+        "policy",
+        "optimizer",
+        "scheduler",
+        "collector",
+        "train_rng",
+        "held_rng",
+    ):
+        torch.testing.assert_close(baseline[key], continued[key], rtol=0, atol=0, equal_nan=True)
+
+    # Independently replay the initial network on all rows and recover exactly the fit samples.
+    replay = torch.load(full / "round_1/replay.pt", weights_only=True)
+    policy = tiny_policy("VO2", 0, activation_checkpoint=False, model_overrides={})
+    initial = replay["states"][0]
+    state, sampled = initial, []
+    with torch.no_grad():
+        for tick, (code, reset) in enumerate(
+            zip(replay["steps"]["code"], replay["steps"]["reset"], strict=True)
+        ):
+            step = policy.forward_code(code, state)
+            if tick % 4 == 0:
+                sampled.append(step.aux["dn_rates"][~replay["held_out"]])
+            state = reset_rows(step.central_state, initial, reset)
+    rates = torch.cat(sampled)
+    assert torch.equal(replay["readout_rates"], rates)
+    norm = json.loads((full / "round_1/readout_norm.json").read_text())
+    assert norm["n_samples"] == len(rates)
+    torch.testing.assert_close(torch.tensor(norm["rate_mean"]), rates.mean(0))
+
+    diagnostics = json.loads((full / "diagnostics.json").read_text())
+    gradients = diagnostics["first_batch_core_gradients"]
+    assert set(gradients) == {"normalized", "unnormalized"}
+    for condition in gradients.values():
+        assert set(condition) == {"g", "tau", "bias", "lc_rf", "missing_bias", "total"}
+        total = condition["total"]
+        assert total["speed"] > 0 and total["turn"] > 0
+        assert total["speed_to_turn"] == pytest.approx(total["speed"] / total["turn"])
+    assert gradients["normalized"] != gradients["unnormalized"]
+    assert [row["round"] for row in diagnostics["readout_drift"]] == [1, 2]
+    for row in diagnostics["readout_drift"]:
+        assert len(row["max_abs_per_dn"]) == len(norm["body_ids"])
+        assert row["max_abs"] == max(row["max_abs_per_dn"].values())
+        assert 0 <= row["mean_abs"] <= row["max_abs"]
+    for row in diagnostics["nll"]:
+        for prefix in ("", "held_out_"):
+            assert row[prefix + "nll"] == pytest.approx(
+                row[prefix + "nll_speed"] + row[prefix + "nll_turn"], abs=1e-6
+            )
+    records = [json.loads(line) for line in (resumed / "monitor.jsonl").read_text().splitlines()]
+    events = [row for row in records if row.get("readout_norm_fitted")]
+    assert len(events) == 1 and events[0]["update"] == 0
+    first_update = next(row for row in records if row.get("update") == 1)
+    assert (
+        first_update["first_batch_core_grad_normalized_total_speed_to_turn"]
+        == (gradients["normalized"]["total"]["speed_to_turn"])
+    )
 
 
 @pytest.mark.parametrize("silent_round", [None, 1, 4])
@@ -317,6 +637,19 @@ def test_round_health_warning_and_stage_failure(tmp_path, monkeypatch, silent_ro
     assert [row["update"] for row in round_ends] == [row["update"] for row in updates]
     assert all("health_odor_swap_delta_omega" in row for row in round_ends)
     assert [row["health_failure"] for row in round_ends] == [0] * (len(expected_rounds) - 1) + [1]
+
+    contract = dagger.SensorContractV2.from_json(dagger.ROOT / "configs/v2/sensor_contract.json")
+    v_max, omega_max = contract.v_max, contract.omega_max
+    for record in round_ends:
+        replay = torch.load(tmp_path / f"round_{int(record['round'])}/replay.pt", weights_only=True)
+        action = replay["steps"]["action"].reshape(-1, 2)
+        labels = shrink_labels(action, v_max, omega_max, SETTINGS.label_margin)
+        latent = unsquash(labels, v_max, omega_max).double()
+        quantiles = latent.new_tensor([0.001, 0.01, 0.5, 0.99, 0.999])
+        expected = torch.quantile(latent, quantiles, dim=0).T.tolist()
+        for name, values in zip(("speed", "turn"), expected, strict=True):
+            for suffix, value in zip(("001", "010", "500", "990", "999"), values, strict=True):
+                assert record[f"label_latent_{name}_p{suffix}"] == pytest.approx(value)
 
     failure = json.loads((tmp_path / "failure/reason.json").read_text())
     assert failure["metrics"] == round_ends[-1]

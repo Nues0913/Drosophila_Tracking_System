@@ -256,6 +256,84 @@ def test_readout_resting_speed_direction_and_sided_means(frontend, main_graph):
         DNReadoutV2(small_graph(), replace(CONFIG, steer_types=("relay",)), CONTRACT)
 
 
+@pytest.mark.parametrize("variant", ["VO2", "V2", "O2", "RW2", "ER2"])
+@torch.no_grad()
+def test_readout_norm_fit(frontend, variant):
+    config = replace(
+        CONFIG,
+        initial_state="bias",
+        structure_seed=3,
+        rest_settle_s=0.2,
+        rest_refresh_s=0.05,
+        readout_init_weight=-1.0,
+    )
+    policy = build_policy(variant, config, graph=small_graph(), frontend=frontend)
+    readout = policy.readout
+    parameter_counts = parameter_table(policy)
+    generator = torch.Generator().manual_seed(37)
+    rates = 0.08 + torch.randn(64, 5, generator=generator) * 0.01
+    rates[:, 0] = 0.08 + (rates[:, 0] - 0.08) * 1e-4
+
+    def old_forward(rates):
+        return torch.stack(
+            (
+                (rates @ readout.speed_means) @ readout.speed_weight + readout.speed_bias,
+                (rates @ readout.steer_means) @ readout.steer_weight + readout.turn_bias,
+            ),
+            dim=1,
+        )
+
+    assert not readout.rate_norm_fitted
+    assert torch.equal(readout(rates).view(torch.int32), old_forward(rates).view(torch.int32))
+
+    # The turn features cancel exactly, while all per-DN scales are positive.
+    same = torch.linspace(0, 1, 64)[:, None].expand_as(rates)
+    with pytest.raises(ValueError, match="latent standard deviation"):
+        policy.fit_readout_norm(same)
+    assert not readout.rate_norm_fitted
+    assert torch.equal(readout(rates).view(torch.int32), old_forward(rates).view(torch.int32))
+
+    fitted = policy.fit_readout_norm(rates)
+    mean = rates.mean(0)
+    std = rates.std(0, correction=0)
+    floor = 0.1 * np.median(std.numpy())
+    scale = std.clamp_min(float(floor))
+    assert readout.rate_norm_fitted
+    assert fitted["floored_nodes"] == 1
+    assert fitted["scale_floor"] == pytest.approx(floor)
+    assert fitted["speed_weight"] < 0 and fitted["steer_weight"] < 0
+    torch.testing.assert_close(readout.rate_mean, mean)
+    torch.testing.assert_close(readout.rate_scale, scale)
+    torch.testing.assert_close(torch.tensor(fitted["rate_std"]), std)
+    normalized = (rates - mean) / scale
+    latents = readout(rates)
+    torch.testing.assert_close(latents, old_forward(normalized))
+    torch.testing.assert_close(
+        latents.std(0, correction=0), torch.full((2,), 0.1), atol=1e-4, rtol=0
+    )
+    mode = policy._distribution(policy._readout_mean(policy.rest_state())).mode()
+    torch.testing.assert_close(mode, torch.tensor([[0.2, 0.0]]), atol=1e-5, rtol=0)
+    assert parameter_table(policy) == parameter_counts
+    with pytest.raises(ValueError, match="already fitted"):
+        policy.fit_readout_norm(rates)
+
+
+def test_strict_readout_load_defaults_only_for_old_state_dict():
+    readout = DNReadoutV2(small_graph(), CONFIG, CONTRACT)
+    saved = readout.state_dict()
+    old = {key: value for key, value in saved.items() if not key.startswith("rate_")}
+    readout.rate_mean.fill_(0.5)
+    readout.rate_scale.fill_(2.0)
+    readout.rate_norm_fitted.fill_(True)
+    readout.load_state_dict(old, strict=True)
+    assert not readout.rate_mean.any()
+    assert torch.equal(readout.rate_scale, torch.ones_like(readout.rate_scale))
+    assert not readout.rate_norm_fitted
+    del saved["rate_norm_fitted"]
+    with pytest.raises(RuntimeError, match="rate_norm_fitted"):
+        readout.load_state_dict(saved, strict=True)
+
+
 @pytest.mark.parametrize(
     ("variant", "speed_types"), [("VO2", None), ("VO2", "bilateral"), ("GRU2", None)]
 )

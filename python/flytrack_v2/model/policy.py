@@ -128,8 +128,10 @@ class _PolicyV2(nn.Module):
         return self._cached_rest_state().to(device).expand(batch_size, -1).clone()
 
     @torch.no_grad()
-    def _calibrate_readout(self, speed_bias: Tensor, turn_bias: Tensor) -> None:
-        if self.config.initial_state == "rest":
+    def _calibrate_readout(
+        self, speed_bias: Tensor, turn_bias: Tensor, *, force_rest: bool = False
+    ) -> None:
+        if force_rest or self.config.initial_state == "rest":
             mean = self._readout_mean(self._cached_rest_state())
             speed_bias.add_(initial_speed_latent(self.config, self.contract) - mean[0, 0])
             turn_bias.sub_(mean[0, 1])
@@ -185,6 +187,57 @@ class ConnectomePolicyV2(_PolicyV2):
     def _readout_mean(self, state: Tensor) -> Tensor:
         rates = self.core.rates(state).index_select(1, self.readout.node_indices)
         return self.readout(rates)
+
+    @torch.no_grad()
+    def fit_readout_norm(self, dn_rates: Tensor) -> dict:
+        """Fit once on the initial teacher rollout and recalibrate at neutral rest.
+
+        Following D3 (#104), keep the fitted coordinate system fixed through training.
+        """
+        readout = self.readout
+        if bool(readout.rate_norm_fitted):
+            raise ValueError("DN readout normalization is already fitted")
+        if (
+            dn_rates.ndim != 2
+            or dn_rates.shape[1] != len(readout.node_indices)
+            or not dn_rates.numel()
+        ):
+            raise ValueError("Expected a nonempty [samples, readout nodes] tensor")
+        dn_rates = dn_rates.to(readout.rate_mean)
+        std, mean = torch.std_mean(dn_rates, dim=0, correction=0)
+        floor = 0.1 * std.quantile(0.5)
+        scale = std.clamp_min(floor)
+        if not bool(torch.isfinite(mean).all() & torch.isfinite(scale).all() & (scale > 0).all()):
+            raise ValueError("DN readout normalization requires finite rates and positive scales")
+        normalized = (dn_rates - mean) / scale
+        speed_std = (normalized @ readout.speed_means).sum(1).std(correction=0)
+        steer_std = (normalized @ readout.steer_means).sum(1).std(correction=0)
+        stds = torch.stack((speed_std, steer_std))
+        if not bool((torch.isfinite(stds) & (stds >= 1e-8)).all()):
+            raise ValueError("DN readout latent standard deviation is below 1e-8 or non-finite")
+        speed_weight, steer_weight = (
+            math.copysign(0.1, self.config.readout_init_weight) / stds
+        ).tolist()
+
+        readout.rate_mean.copy_(mean)
+        readout.rate_scale.copy_(scale)
+        readout.speed_weight.fill_(speed_weight)
+        readout.steer_weight.fill_(steer_weight)
+        readout.speed_bias.zero_()
+        readout.turn_bias.zero_()
+        self._calibrate_readout(readout.speed_bias, readout.turn_bias, force_rest=True)
+        readout.rate_norm_fitted.fill_(True)
+        return {
+            "body_ids": self.graph.node_ids[readout.node_indices.cpu().numpy()].tolist(),
+            "n_samples": len(dn_rates),
+            "rate_mean": mean.tolist(),
+            "rate_std": std.tolist(),
+            "rate_scale": scale.tolist(),
+            "scale_floor": floor.item(),
+            "floored_nodes": int((std < floor).sum()),
+            "speed_weight": speed_weight,
+            "steer_weight": steer_weight,
+        }
 
     def forward_code(
         self, code: Tensor, central_state: Tensor, *, non_readout_activity: bool = False

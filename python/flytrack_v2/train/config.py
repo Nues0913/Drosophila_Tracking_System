@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from fractions import Fraction
 from pathlib import Path
 
 import yaml
+
+from flytrack_v2.model.config import ModelConfigV2
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG_DIR = ROOT / "configs/v2/train"
@@ -16,6 +19,8 @@ MOTION_NAMES = ("curved", "wander")
 SCENARIO_NAMES = ("normal", "occlusion", "noise", "conflict")
 STATE_STRIDE = 16
 STOP_INTERVAL = 50
+_TRAINER_MODEL_FIELDS = {"init_seed", "structure_seed", "activation_checkpoint"}
+_MODEL_FIELDS = {field.name for field in fields(ModelConfigV2)}
 
 
 def read_yaml(path: Path) -> dict:
@@ -66,9 +71,27 @@ def plan_rounds(config: dict) -> list[RoundPlan]:
     return plans
 
 
+def _validate_model_key(key: str) -> None:
+    if key in _TRAINER_MODEL_FIELDS:
+        raise ValueError(f"model.{key} is controlled by the trainer")
+    if key not in _MODEL_FIELDS:
+        raise ValueError(f"Unknown model config key {key!r}")
+
+
+def validate_model_overrides(model: Mapping) -> None:
+    if not isinstance(model, Mapping):
+        raise ValueError("DAgger setting model must be a mapping")
+    for key in model:
+        _validate_model_key(key)
+
+
 def _override(config: dict, expression: str) -> None:
     key, separator, raw = expression.partition("=")
     parts = key.split(".")
+    if separator and len(parts) == 2 and parts[0] == "model":
+        _validate_model_key(parts[1])
+        config["model"][parts[1]] = yaml.safe_load(raw)
+        return
     node = config
     for part in parts[:-1]:
         if not isinstance(node.get(part), dict):
@@ -97,13 +120,18 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     defaults = read_yaml(CONFIG_DIR / "dagger.yaml")
     config = read_yaml(path)
     config.setdefault("desync_first_episode", False)
+    config.setdefault("readout_normalization", defaults["readout_normalization"])
+    config.setdefault("model", {})
     if set(config) != set(defaults):
         raise ValueError("DAgger config must have the same keys as dagger.yaml")
     for key, default in defaults.items():
-        if isinstance(default, dict) and (
-            not isinstance(config[key], dict) or set(config[key]) != set(default)
+        if (
+            key != "model"
+            and isinstance(default, dict)
+            and (not isinstance(config[key], dict) or set(config[key]) != set(default))
         ):
             raise ValueError(f"DAgger setting {key} must have keys {', '.join(default)}")
+    validate_model_overrides(config["model"])
     for expression in overrides or ():
         _override(config, expression)
 
@@ -135,10 +163,12 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
         raise ValueError("optimizer.lr_final must be <= optimizer.lr")
     _number(config["activity_coef"], "activity_coef", 0, math.inf, inclusive=True)
     _number(config["label_margin"], "label_margin", 0, 1)
+    if config["label_margin"] > 0.5:
+        raise ValueError("label_margin must be <= 0.5 to leave a valid speed interval")
     _integer(config["held_out"]["every_updates"], "held_out.every_updates")
     _integer(config["held_out"]["sequences"], "held_out.sequences")
     _number(config["held_out"]["fraction"], "held_out.fraction", 0, 1)
-    for key in ("activation_checkpoint", "desync_first_episode"):
+    for key in ("activation_checkpoint", "desync_first_episode", "readout_normalization"):
         if type(config[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
 

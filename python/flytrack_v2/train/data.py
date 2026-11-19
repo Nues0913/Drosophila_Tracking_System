@@ -31,6 +31,7 @@ from .config import (
 
 EPISODE_SEED_BIT = 1 << 40
 _TRANSFER_TICKS = 32
+_READOUT_SAMPLE_STRIDE = 4
 _TEACHER_KEYS = ("agent_pose", "agent_velocity", "target_pose", "target_velocity", "occluded")
 
 
@@ -101,9 +102,13 @@ class ReplayShard:
     tags: Tensor  # [envs, 3], indices into WORLD_NAMES, MOTION_NAMES, SCENARIO_NAMES
     held_out: Tensor  # [envs], fixed throughout the run
     first_snapshot: int
+    readout_rates: Tensor | None = None  # [samples, DNs], only for the first fit
 
     def checkpoint(self) -> dict:
-        return {**vars(self), "steps": self.steps._asdict()}
+        saved = {**vars(self), "steps": self.steps._asdict()}
+        if self.readout_rates is None:
+            del saved["readout_rates"]
+        return saved
 
     @classmethod
     def restore(cls, saved: dict) -> ReplayShard:
@@ -244,10 +249,18 @@ class RolloutCollector:
 
     @torch.no_grad()
     def step(
-        self, beta: float, initial: Tensor, *, episode_steps: Tensor | None = None
+        self,
+        beta: float,
+        initial: Tensor,
+        *,
+        episode_steps: Tensor | None = None,
+        readout_sample: tuple[Tensor, Tensor] | None = None,
     ) -> StepData:
         code, self.sensory = self.policy.sense(self.obs, self.sensory)
         student = self.policy.forward_code(code, self.central)
+        if readout_sample is not None:
+            rows, output = readout_sample
+            torch.index_select(student.aux["dn_rates"], 0, rows, out=output)
         privileged = _concatenate([world.privileged() for world in self.worlds], _TEACHER_KEYS)
         label, self.teacher_state = self.teacher.act(
             privileged, self.obs, privileged["agent_velocity"], self.teacher_state
@@ -284,7 +297,9 @@ class RolloutCollector:
         return StepData(code, label, reset, privileged["occluded"])
 
     @torch.no_grad()
-    def collect(self, plan: RoundPlan) -> tuple[ReplayShard, dict[str, float]]:
+    def collect(
+        self, plan: RoundPlan, *, sample_readout_rates: bool = False
+    ) -> tuple[ReplayShard, dict[str, float]]:
         start = time.perf_counter()
         steps = _allocate_steps(plan.ticks, self.rows, self.policy.code_size, "cpu")
         episode_steps = torch.empty(plan.ticks, self.rows, dtype=torch.int64, device=self.device)
@@ -294,6 +309,17 @@ class RolloutCollector:
         )
         initial = self.policy.initial_central_state(self.rows, self.device)
         is_cuda = self.device.type == "cuda"
+        readout_rates = None
+        if sample_readout_rates:
+            train_rows = torch.where(~self.held_out)[0]
+            if self.tags[train_rows, 0].unique().numel() != len(WORLD_NAMES):
+                raise ValueError("DN readout normalization requires training rows from both worlds")
+            train_rows = train_rows.to(self.device)
+            readout_rates = self.policy.readout.rate_mean.new_empty(
+                math.ceil(plan.ticks / _READOUT_SAMPLE_STRIDE),
+                len(train_rows),
+                self.policy.readout.rate_mean.numel(),
+            )
         if is_cuda:
             staging = _allocate_steps(
                 _TRANSFER_TICKS, self.rows, self.policy.code_size, self.device
@@ -313,7 +339,12 @@ class RolloutCollector:
                     staged_states[slot].copy_(self.central)
                     next_snapshot += 1
                 slot = tick - start_tick if is_cuda else tick
-                data = self.step(plan.beta, initial, episode_steps=episode_steps[tick])
+                sample = None
+                if readout_rates is not None and tick % _READOUT_SAMPLE_STRIDE == 0:
+                    sample = train_rows, readout_rates[tick // _READOUT_SAMPLE_STRIDE]
+                data = self.step(
+                    plan.beta, initial, episode_steps=episode_steps[tick], readout_sample=sample
+                )
                 for buffer, value in zip(staging, data, strict=True):
                     buffer[slot].copy_(value)
             if is_cuda:
@@ -334,7 +365,11 @@ class RolloutCollector:
             "episode_time_mean_s": (mean.item() - 1) * dt,
             "episode_time_std_s": std.item() * dt,
         }
-        return ReplayShard(steps, states, self.tags, self.held_out, plan.first_snapshot), metrics
+        samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
+        return (
+            ReplayShard(steps, states, self.tags, self.held_out, plan.first_snapshot, samples),
+            metrics,
+        )
 
 
 class Replay:

@@ -5,6 +5,7 @@ scenarios: {normal: 0.40, occlusion: 0.25, noise: 0.20, conflict: 0.15}
 envs_per_instance: 256
 episode_seconds: 60
 desync_first_episode: true
+readout_normalization: true
 plume_model: puff
 rounds: {beta: [1.0, 0.5, 0.25, 0.0], env_steps_per_round: 750000}
 replay_ratio: 4
@@ -15,3 +16,4 @@ activity_coef: 1.0e-4
 label_margin: 1.0e-3
 held_out: {every_updates: 50, sequences: 256, fraction: 0.05}
 activation_checkpoint: false
+model: {}

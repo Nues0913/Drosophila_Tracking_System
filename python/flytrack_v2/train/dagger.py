@@ -10,8 +10,9 @@ import math
 import os
 import time
 import warnings
-from collections.abc import Sequence
-from dataclasses import asdict, dataclass, replace
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -20,6 +21,7 @@ from flytrack_core.contracts import file_sha256
 from flytrack_v2.artifacts import VARIANTS
 from flytrack_v2.contracts import SensorContractV2
 from flytrack_v2.model import (
+    ConnectomePolicyV2,
     InputNorm,
     ModelConfigV2,
     build_policy,
@@ -28,9 +30,25 @@ from flytrack_v2.model import (
 )
 from flytrack_v2.monitor import EngineeringFailure, RunMonitor
 
-from .config import CONFIG_DIR, ROOT, STOP_INTERVAL, load_config, plan_rounds, read_yaml
+from .config import (
+    CONFIG_DIR,
+    ROOT,
+    STOP_INTERVAL,
+    load_config,
+    plan_rounds,
+    read_yaml,
+    validate_model_overrides,
+)
 from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch, normalization_stats
-from .update import LossSettings, batch_metrics, health_metrics, make_scheduler, train_update
+from .update import (
+    LossSettings,
+    batch_metrics,
+    first_batch_gradient_norms,
+    health_metrics,
+    label_latent_quantiles,
+    make_scheduler,
+    train_update,
+)
 
 _INPUT_NORM = "artifacts/input_norm_v2/input_norm.npz"
 _MIN_SPEED_STD_M_S = 0.02
@@ -45,14 +63,24 @@ def _normalize_device(value: str) -> torch.device:
     return device
 
 
-def build_training_policy(variant: str, seed: int, *, activation_checkpoint: bool):
-    config = ModelConfigV2.from_dict(read_yaml(ROOT / "configs/v2/model/default.yaml"))
-    config = replace(
-        config,
+def build_training_policy(
+    variant: str,
+    seed: int,
+    *,
+    activation_checkpoint: bool,
+    model_overrides: Mapping | None = None,
+):
+    if model_overrides is None:
+        model_overrides = {}
+    validate_model_overrides(model_overrides)
+    values = read_yaml(ROOT / "configs/v2/model/default.yaml")
+    values.update(model_overrides)
+    values.update(
         init_seed=seed,
-        structure_seed=seed if variant in ("RW2", "ER2") else config.structure_seed,
+        structure_seed=seed if variant in ("RW2", "ER2") else values.get("structure_seed"),
         activation_checkpoint=activation_checkpoint,
     )
+    config = ModelConfigV2.from_dict(values)
     contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
     norm = InputNorm.load(ROOT / _INPUT_NORM, config.norm_std_floor)
     if not norm.fitted:
@@ -68,6 +96,12 @@ def _atomic_save(value: dict, path: Path) -> None:
 
 def _load(path: Path, *, mmap: bool = False) -> dict:
     return torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
+
+
+def _atomic_json(value: dict, path: Path) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 @dataclass
@@ -86,7 +120,10 @@ class DAggerRun:
         self.log_path = out / "monitor.jsonl"
         self.config, self.plans = config, plan_rounds(config)
         self.policy = build_training_policy(
-            variant, seed, activation_checkpoint=config["activation_checkpoint"]
+            variant,
+            seed,
+            activation_checkpoint=config["activation_checkpoint"],
+            model_overrides=config["model"],
         ).to(device)
         self.seed = seed
         self.resolved = {
@@ -94,7 +131,7 @@ class DAggerRun:
             "variant": variant,
             "seed": seed,
             "device": str(device),
-            "model": self.policy.config.to_dict(),
+            "model_config": self.policy.config.to_dict(),
             "sensor_contract_sha256": self.policy.contract.sha256(),
             "input_norm": _INPUT_NORM,
             "input_norm_sha256": file_sha256(ROOT / _INPUT_NORM),
@@ -104,9 +141,17 @@ class DAggerRun:
             json.dumps(self.resolved, indent=2, sort_keys=True, allow_nan=False) + "\n"
         )
         self.config_sha256 = hashlib.sha256(self.config_text.encode()).hexdigest()
-        optim = config["optimizer"]
-        self.optimizer = torch.optim.Adam(parameter_groups(self.policy, optim["lr"]))
-        self.scheduler = make_scheduler(self.optimizer, optim, sum(p.updates for p in self.plans))
+        self.normalize_readout = isinstance(self.policy, ConnectomePolicyV2) and config.get(
+            "readout_normalization", False
+        )
+        if self.normalize_readout and self.plans[0].beta != 1.0:
+            raise ValueError("DN readout normalization requires rounds.beta[0] = 1")
+        self.optimizer = self.scheduler = None
+        if not self.normalize_readout:
+            self._create_optimizer()
+        self.readout_norm: dict | None = None
+        self.original_readout: dict | None = None
+        self.diagnostics: dict = {"nll": [], "readout_drift": []}
         self.train_rng = torch.Generator().manual_seed(seed ^ 0xD466E2)
         self.held_rng = torch.Generator().manual_seed(seed ^ 0xAE1D)
         self.progress = Progress()
@@ -119,24 +164,37 @@ class DAggerRun:
         self.failure_batch: SequenceBatch | None = None
         self.stage_health: dict | None = None
 
+    def _create_optimizer(self) -> None:
+        optim = self.config["optimizer"]
+        self.optimizer = torch.optim.Adam(parameter_groups(self.policy, optim["lr"]))
+        self.scheduler = make_scheduler(self.optimizer, optim, sum(p.updates for p in self.plans))
+
     def round_dir(self, index: int) -> Path:
         return self.out / f"round_{index + 1}"
 
-    def prepare(self, resume: bool) -> None:
+    def prepare(self, saved_text: str | None) -> None:
         config_path = self.out / "config.json"
         metrics_path = self.out / "metrics.jsonl"
+        resume = saved_text is not None
         if resume:
-            saved_text = config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
             if saved_text != self.config_text:
                 legacy_config = self.resolved.copy()
-                if legacy_config.pop("desync_first_episode") is False and saved_text == (
-                    json.dumps(legacy_config, indent=2, sort_keys=True, allow_nan=False) + "\n"
+                saved_keys = json.loads(saved_text)
+                if "model_config" not in saved_keys and not self.config["model"]:
+                    legacy_config["model"] = legacy_config.pop("model_config")
+                if "readout_normalization" not in saved_keys and not self.normalize_readout:
+                    legacy_config.pop("readout_normalization", None)
+                if (
+                    "desync_first_episode" not in saved_keys
+                    and legacy_config.get("desync_first_episode") is False
                 ):
-                    self.config_sha256 = hashlib.sha256(saved_text.encode()).hexdigest()
-                else:
+                    legacy_config.pop("desync_first_episode")
+                legacy_text = json.dumps(legacy_config, indent=2, sort_keys=True, allow_nan=False)
+                if saved_text != legacy_text + "\n":
                     raise ValueError(
                         "Resume requires the same resolved config, host, seed and device"
                     )
+                self.config_sha256 = hashlib.sha256(saved_text.encode()).hexdigest()
         else:
             if any(path.name != ".lock" for path in self.out.iterdir()):
                 raise ValueError(
@@ -157,11 +215,17 @@ class DAggerRun:
         self._restore_log(saved["monitor_offset"])
         self.progress = Progress(**saved["progress"])
         self.stage_health = saved.get("stage_health")
+        self.readout_norm = saved.get("readout_norm")
+        self.original_readout = saved.get("original_readout")
+        self.diagnostics = saved.get("diagnostics", self.diagnostics)
         self.policy.load_state_dict(saved["policy"])
         if saved["rest_state"] is not None:
             self.policy.restore_rest_state(saved["rest_state"])
-        self.optimizer.load_state_dict(saved["optimizer"])
-        self.scheduler.load_state_dict(saved["scheduler"])
+        if saved["optimizer"] is not None:
+            if self.optimizer is None:
+                self._create_optimizer()
+            self.optimizer.load_state_dict(saved["optimizer"])
+            self.scheduler.load_state_dict(saved["scheduler"])
         self.train_rng.set_state(saved["train_rng"])
         self.held_rng.set_state(saved["held_rng"])
         self.collector = RolloutCollector(
@@ -170,6 +234,7 @@ class DAggerRun:
         torch.set_rng_state(saved["torch_rng"])
         if self.device.type == "cuda":
             torch.cuda.set_rng_state(saved["cuda_rng"], self.device)
+        self._write_diagnostics()
 
     def _resume_state(self) -> dict | None:
         path = self.out / "initial.pt"
@@ -209,8 +274,11 @@ class DAggerRun:
                 "stage_health": self.stage_health,
                 "policy": self.policy.state_dict(),
                 "rest_state": rest,
-                "optimizer": self.optimizer.state_dict(),
-                "scheduler": self.scheduler.state_dict(),
+                "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
+                "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+                "readout_norm": self.readout_norm,
+                "original_readout": self.original_readout,
+                "diagnostics": self.diagnostics,
                 "collector": self.collector.checkpoint(),
                 "train_rng": self.train_rng.get_state(),
                 "held_rng": self.held_rng.get_state(),
@@ -222,6 +290,13 @@ class DAggerRun:
             },
             path,
         )
+        self._write_diagnostics()
+
+    def _write_diagnostics(self) -> None:
+        if self.readout_norm is not None:
+            _atomic_json(self.readout_norm, self.round_dir(0) / "readout_norm.json")
+        if any(self.diagnostics.values()):
+            _atomic_json(self.diagnostics, self.out / "diagnostics.json")
 
     def on_failure(self, reason: str, record: dict) -> None:
         directory = self.out / "failure"
@@ -257,7 +332,9 @@ class DAggerRun:
         plan = self.plans[index]
         directory = self.round_dir(index)
         directory.mkdir(exist_ok=True)
-        shard, rollout_metrics = self.collector.collect(plan)
+        shard, rollout_metrics = self.collector.collect(
+            plan, sample_readout_rates=self.normalize_readout and index == 0
+        )
         self.progress.env_steps += plan.ticks * self.collector.rows
         stats = normalization_stats(shard, self.policy.input_norm)
         replay_path = directory / "replay.pt"
@@ -284,12 +361,30 @@ class DAggerRun:
             self.on_failure(reason, record)
             raise EngineeringFailure(reason)
 
+    def _fit_readout(self, monitor: RunMonitor) -> None:
+        rates = self.replay.shards[0].readout_rates
+        if rates is None:
+            raise ValueError("First-round replay is missing DN readout samples")
+        self.original_readout = deepcopy(self.policy.readout.state_dict())
+        norm = self.policy.fit_readout_norm(rates)
+        self.readout_norm = norm
+        self._create_optimizer()
+        scalars = {"round": 1, "beta": 1.0, "readout_norm_fitted": 1}
+        for key in ("n_samples", "scale_floor", "floored_nodes", "speed_weight", "steer_weight"):
+            scalars[f"readout_norm_{key}"] = norm[key]
+        for key in ("rate_mean", "rate_std", "rate_scale"):
+            for body_id, value in zip(norm["body_ids"], norm[key], strict=True):
+                scalars[f"readout_norm_{key}_dn_{body_id}"] = value
+        monitor.log_update(self.progress.updates, self.progress.env_steps, scalars)
+
     def _check_round_health(self, monitor: RunMonitor, index: int) -> None:
         final_round = index == len(self.plans) - 1
         self.failure_batch = self._held_sample()
         measured = health_metrics(
             self.policy, self.failure_batch, self.settings.burn_in, self.micro_batch
         )
+        drift_maxima = measured.pop("readout_drift_max_abs_per_dn", None)
+        drift_mean = measured.pop("readout_drift_mean_abs", None)
         health = dict(zip(measured, torch.stack(list(measured.values())).tolist(), strict=True))
         silent = health.get("health_dn_silent", 0) > 0
         low_speed = health["health_speed_std_m_s"] <= _MIN_SPEED_STD_M_S
@@ -303,11 +398,45 @@ class DAggerRun:
         if final_round and low_speed:
             failures.append(speed_reason)
         reason = f"round {index + 1}: {', '.join(failures)}" if failures else None
+        drift_scalars = {}
+        if drift_maxima is not None:
+            maximum, mean, *maxima = torch.cat(
+                (drift_maxima.amax()[None], drift_mean[None], drift_maxima)
+            ).tolist()
+            per_dn = dict(zip(self.readout_norm["body_ids"], maxima, strict=True))
+            drift_scalars = {
+                "readout_drift_mean_abs": mean,
+                "readout_drift_max_abs": maximum,
+                **{
+                    f"readout_drift_max_abs_dn_{body_id}": value
+                    for body_id, value in per_dn.items()
+                },
+            }
+            self.diagnostics["readout_drift"].append(
+                {
+                    "round": index + 1,
+                    "mean_abs": mean if math.isfinite(mean) else None,
+                    "max_abs": maximum if math.isfinite(maximum) else None,
+                    "max_abs_per_dn": {
+                        str(body_id): value if math.isfinite(value) else None
+                        for body_id, value in per_dn.items()
+                    },
+                }
+            )
+        contract = self.policy.contract
+        label_quantiles = label_latent_quantiles(
+            self.replay.shards[index].steps.action,
+            contract.v_max,
+            contract.omega_max,
+            self.settings.label_margin,
+        )
         record = monitor.log_update(
             self.progress.updates,
             self.progress.env_steps,
             {
                 **health,
+                **drift_scalars,
+                **label_quantiles,
                 "round": index + 1,
                 "beta": self.plans[index].beta,
                 "round_end": 1,
@@ -342,19 +471,36 @@ class DAggerRun:
             if update % self.config["held_out"]["every_updates"] == 0:
                 self.failure_batch = self._held_sample()
                 with torch.no_grad():
-                    nll = batch_metrics(
+                    held = batch_metrics(
                         self.policy,
                         self.failure_batch,
                         self.settings,
                         self.micro_batch,
                         backward=False,
-                    )["nll"]
-                if not bool(nll.isfinite()):
-                    monitor.log_update(update, progress.env_steps, {**scalars, "held_out_nll": nll})
-                scalars["held_out_nll"] = nll
+                    )
+                held = {f"held_out_{key}": held[key] for key in ("nll", "nll_speed", "nll_turn")}
+                scalars.update(held)
+                if not bool(held["held_out_nll"].isfinite()):
+                    monitor.log_update(update, progress.env_steps, scalars)
 
             start = time.perf_counter()
             self.failure_batch = self.replay.sample(self.config["batch_sequences"], self.train_rng)
+            if update == 1 and self.original_readout is not None:
+                gradients = first_batch_gradient_norms(
+                    self.policy,
+                    self.original_readout,
+                    self.failure_batch,
+                    self.settings,
+                    self.micro_batch,
+                )
+                self.diagnostics["first_batch_core_gradients"] = gradients
+                for condition, groups in gradients.items():
+                    for group, values in groups.items():
+                        for key, value in values.items():
+                            if value is not None:
+                                scalars[f"first_batch_core_grad_{condition}_{group}_{key}"] = value
+                self.original_readout = None
+                start = time.perf_counter()
             scalars.update(
                 train_update(
                     self.policy,
@@ -367,7 +513,18 @@ class DAggerRun:
                 )
             )
             scalars["updates_per_s"] = 1 / (time.perf_counter() - start)
-            monitor.log_update(update, progress.env_steps, scalars)
+            record = monitor.log_update(update, progress.env_steps, scalars)
+            self.diagnostics["nll"].append(
+                {
+                    "update": update,
+                    "round": index + 1,
+                    **{
+                        key: value
+                        for key, value in record.items()
+                        if key.startswith(("nll", "held_out_nll"))
+                    },
+                }
+            )
             progress.updates = update
             progress.round_updates = step + 1
             self.failure_batch = None
@@ -393,6 +550,19 @@ class DAggerRun:
                     return
                 if progress.round_metrics is None:
                     self._start_round(monitor, index)
+                    if self.normalize_readout and index == 0:
+                        self.save(self.round_dir(index) / "progress.pt")
+                        if self.should_stop(in_round=True):
+                            return
+                if (
+                    self.normalize_readout
+                    and index == 0
+                    and not bool(self.policy.readout.rate_norm_fitted)
+                ):
+                    self._fit_readout(monitor)
+                    self.save(self.round_dir(index) / "progress.pt")
+                    if self.should_stop(in_round=True):
+                        return
                 if not self._train_round(monitor, index):
                     return
                 progress.round_index = index + 1
@@ -453,8 +623,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.out.mkdir(parents=True, exist_ok=True)
         with (args.out / ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            saved_text = None
+            if args.resume:
+                saved_text = (args.out / "config.json").read_text(encoding="utf-8")
+                saved = json.loads(saved_text)
+                # Older runs used "model" for the full model configuration only.
+                saved_model = saved["model"] if "model_config" in saved else {}
+                validate_model_overrides(saved_model)
+                requested = config["model"]
+                if any(
+                    key not in saved_model or value != saved_model[key]
+                    for key, value in requested.items()
+                ):
+                    raise ValueError("Resume requires the same model overrides as config.json")
+                config["model"] = {**saved_model, **requested}
             run = DAggerRun(config, args.variant, args.seed, device, args.out)
-            run.prepare(args.resume)
+            run.prepare(saved_text)
             run.run()
     except EngineeringFailure as error:
         print(f"Engineering failure: {error}", flush=True)

@@ -32,6 +32,9 @@ def test_scenarios_host_and_round_plan():
         load_config(path, "4060", ["batch_sequences=200"])
     with pytest.raises(ValueError, match="desync_first_episode must be boolean"):
         load_config(path, "4060", ["desync_first_episode=1"])
+    with pytest.raises(ValueError, match="label_margin must be <= 0.5"):
+        load_config(path, "4060", ["label_margin=0.5001"])
+    assert load_config(path, "4060", ["label_margin=0.5"])["label_margin"] == 0.5
     small = load_config(
         path, "4060", ["batch_sequences=8", "envs_per_instance=2", "rounds.env_steps_per_round=400"]
     )

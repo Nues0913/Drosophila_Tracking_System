@@ -214,4 +214,6 @@ class Teacher(Protocol):
         obs: dict[str, Tensor],
         previous_action: Tensor,
         state: Tensor,
+        *,
+        limit_acceleration: bool = True,
     ) -> tuple[Tensor, Tensor]: ...

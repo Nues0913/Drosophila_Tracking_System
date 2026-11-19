@@ -40,6 +40,7 @@ episode_seeds:
   pilot_held_out: {base: 1500000000, per_train_seed: 100000}  # selection, the stage 2 rule
   world_audit: {start: 1620000000}  # flytrack_train.audit.AUDIT_SEED_START
   teacher_tuning: {start: 1630000000}  # #169
+  reward_tests: {start: 1640000000}  # #181, scripts/v2/track_v2_trajectories.py
   v1_actor_audit: {base: 1800000000, per_train_seed: 100000}  # #170
   input_norm_fit: {start: 1900000000}  # #171
   v1_formal_evaluation: {base: 1700000000, per_train_seed: 100000}  # formal-v1, read only
@@ -135,10 +136,16 @@ comparisons:
       reacquisition, and after reacquisition
     A3 speed: >-
       deterministic actions (mode); per seed, the slope of the commanded speed on the
-      distance seen before acting; and the actor with its speed held at 0.20 m/s on paired
-      episodes. "The speed problem is solved" needs a positive slope on at least 4 of 5
-      seeds and lower normal success with the speed held. Formal-v1's actors have slopes of
-      about 0 (#170 audit)
+      distance seen before acting, over the steps whose bearing seen before acting is within
+      45 degrees (the success rule's bearing; the aligned slope) and over all steps (reported
+      beside it); and the actor with its speed held at 0.20 m/s on paired episodes. "The
+      speed problem is solved" needs a positive aligned slope on at least 4 of 5 seeds and
+      lower normal success with the speed held. The aligned slope decides because the
+      teacher's speed is 0.7 max(d - 1, 0) max(cos bearing, 0): a policy that imitates it
+      slows down whenever it is not facing the target, so its unrestricted slope can be zero
+      or negative (#184 Decision, made before any aligned slope was measured). Formal-v1's
+      actors have unrestricted slopes of about 0 (#170 audit); both slopes are recomputed for
+      them
     noise sensitivity: every gate's comparison at noise scales 0.5 and 1.0, reported only
 reacquisition:
   report: censored fraction and the restricted mean time; never the uncensored mean alone

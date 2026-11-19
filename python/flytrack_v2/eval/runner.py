@@ -20,6 +20,7 @@ from typing import Any, Protocol
 import torch
 from torch import Tensor
 
+from flytrack_v2.contracts import SUCCESS_RULE
 from flytrack_v2.interfaces import BatchedWorld, Policy, policy_step
 
 EPISODE_KEYS = (
@@ -152,7 +153,10 @@ class EpisodeResult:
     values: dict[str, list]  # EPISODE_KEYS -> one value per row
     # #161 A3, per row: n, slope (commanded m/s per m of the distance seen before acting),
     # mean_speed_m_s, mean_distance_m. Commanded: the actor's action, before the world clips it
-    # to the acceleration limit; the record's mean_speed_m_s is the applied speed.
+    # to the acceleration limit; the record's mean_speed_m_s is the applied speed. The same four
+    # with an aligned_ prefix use only the steps whose bearing seen before acting is within the
+    # success rule's 45 degrees (#184 Decision): the teacher's speed is
+    # 0.7 max(d - 1, 0) max(cos bearing, 0), so the unrestricted slope mixes distance with heading.
     speed_distance: dict[str, list[float]]
     # #161 E1, per row: tracking fraction and steps in each occlusion phase (OCCLUSION_PHASES)
     occlusion_phases: dict[str, list[float]]
@@ -162,6 +166,30 @@ class EpisodeResult:
 # reacquisition rule); after reacquisition
 OCCLUSION_PHASES = ("before", "during", "gap", "after")
 REACQUIRE_RAD = math.radians(15)
+
+
+def _speed_distance(sums: Mapping[str, Tensor], batch: int) -> dict[str, list[float]]:
+    """Per row: the step count, the least-squares slope of speed on distance, and the means."""
+    s = {key: value.cpu().tolist() for key, value in sums.items()}
+    slopes, mean_v, mean_d = [], [], []
+    for i in range(batch):
+        n = s["n"][i]
+        if n < 2:
+            slopes.append(math.nan)
+            mean_v.append(math.nan)
+            mean_d.append(math.nan)
+            continue
+        cov = s["dv"][i] / n - (s["d"][i] / n) * (s["v"][i] / n)
+        var = s["dd"][i] / n - (s["d"][i] / n) ** 2
+        slopes.append(cov / var if var > 1e-12 else math.nan)
+        mean_v.append(s["v"][i] / n)
+        mean_d.append(s["d"][i] / n)
+    return {
+        "n": s["n"],
+        "slope_m_s_per_m": slopes,
+        "mean_speed_m_s": mean_v,
+        "mean_distance_m": mean_d,
+    }
 
 
 def run_episodes(
@@ -186,9 +214,12 @@ def run_episodes(
     done = zeros(torch.bool)
     saved = {key: zeros() for key in EPISODE_KEYS}
     sums = {k: zeros() for k in ("n", "d", "v", "dv", "dd", "vv")}
+    aligned_sums = {k: zeros() for k in sums}
+    aligned_rad = math.radians(SUCCESS_RULE.bearing_deg)
     phase_steps = {k: zeros() for k in OCCLUSION_PHASES}
     phase_tracked = {k: zeros() for k in OCCLUSION_PHASES}
     seen_before = torch.full((batch,), math.nan, dtype=torch.float64, device=device)
+    bearing_before = torch.full((batch,), math.nan, dtype=torch.float64, device=device)
     occluded_before, ended_occlusion, reacquired = (
         zeros(torch.bool),
         zeros(torch.bool),
@@ -202,16 +233,20 @@ def run_episodes(
         # The speed responds to the distance the actor saw; the distance after this step
         # already moved with this step's speed and would bias the slope downwards.
         speed = action[:, 0].to(torch.float64)
-        weight = (live & seen_before.isfinite()).to(torch.float64)
+        seen = live & seen_before.isfinite()
+        aligned = seen & (bearing_before.abs() < aligned_rad)
         d = torch.nan_to_num(seen_before)
-        sums["n"] += weight
-        sums["d"] += weight * d
-        sums["v"] += weight * speed
-        sums["dv"] += weight * d * speed
-        sums["dd"] += weight * d * d
-        sums["vv"] += weight * speed * speed
+        for target, mask in ((sums, seen), (aligned_sums, aligned)):
+            weight = mask.to(torch.float64)
+            target["n"] += weight
+            target["d"] += weight * d
+            target["v"] += weight * speed
+            target["dv"] += weight * d * speed
+            target["dd"] += weight * d * d
+            target["vv"] += weight * speed * speed
         info = result.info
         seen_before = info["distance_m"].to(torch.float64)
+        bearing_before = info["bearing_rad"].to(torch.float64)
         occluded = info["occluded"]
         ended_occlusion |= occluded_before & ~occluded
         reacquired |= ended_occlusion & (info["bearing_rad"].abs() < REACQUIRE_RAD)
@@ -238,25 +273,9 @@ def run_episodes(
     if not bool(done.all()):
         raise RuntimeError(f"{int((~done).sum())} rows did not finish within {max_steps} steps")
     host = {key: value.cpu().tolist() for key, value in saved.items()}
-    s = {key: value.cpu().tolist() for key, value in sums.items()}
-    slopes, mean_v, mean_d = [], [], []
-    for i in range(batch):
-        n = s["n"][i]
-        if n < 2:
-            slopes.append(math.nan)
-            mean_v.append(math.nan)
-            mean_d.append(math.nan)
-            continue
-        cov = s["dv"][i] / n - (s["d"][i] / n) * (s["v"][i] / n)
-        var = s["dd"][i] / n - (s["d"][i] / n) ** 2
-        slopes.append(cov / var if var > 1e-12 else math.nan)
-        mean_v.append(s["v"][i] / n)
-        mean_d.append(s["d"][i] / n)
     speed_distance = {
-        "n": s["n"],
-        "slope_m_s_per_m": slopes,
-        "mean_speed_m_s": mean_v,
-        "mean_distance_m": mean_d,
+        **_speed_distance(sums, batch),
+        **{f"aligned_{k}": v for k, v in _speed_distance(aligned_sums, batch).items()},
     }
     occlusion_phases = {}
     for name in OCCLUSION_PHASES:

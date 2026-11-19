@@ -84,6 +84,27 @@ def test_each_row_keeps_only_its_first_episode():
     assert result.speed_distance["n"] == [2.0, 3.0, 4.0, 3.0]
 
 
+class _HeadingActor(_Actor):
+    """Speeds up with distance only on the steps after facing the target (even steps)."""
+
+    def act(self, obs, reset_mask):
+        action = super().act(obs, reset_mask)
+        action[:, 0] = torch.where(self.t % 2 == 0, action[:, 0], torch.zeros_like(self.t))
+        return action
+
+
+def test_aligned_slope_uses_only_steps_after_facing_the_target():
+    # The world reports bearing 0 after odd steps and pi after even ones, so the actor's even
+    # steps follow a bearing within 45 degrees; only they speed up with distance (#184).
+    world = _World(2, bearing=lambda t: torch.where(t % 2 == 1, 0.0, math.pi))
+    result = run_episodes(world, _HeadingActor(), [3, 2], max_steps=20, sync_every=1)
+    sd = result.speed_distance
+    assert sd["aligned_n"] == [3.0, 2.0]  # steps 2, 4, 6 and steps 2, 4
+    assert sd["aligned_slope_m_s_per_m"] == pytest.approx([0.5, 0.5])
+    assert sd["n"] == [5.0, 4.0]
+    assert sd["slope_m_s_per_m"][0] != pytest.approx(0.5)
+
+
 def test_rows_that_never_finish_raise():
     with pytest.raises(RuntimeError, match="did not finish"):
         run_episodes(_World(2), _Actor(), [0, 1], max_steps=2)

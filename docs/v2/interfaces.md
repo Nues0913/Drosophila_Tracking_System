@@ -155,7 +155,8 @@ VO2、V2、O2、RW2、ER2、GRU2 共用這個介面。
 
 - **介面**：
   - `initial_state(B, device) -> [B, state_size]`，`state_size` 可以是 0；
-  - `act(privileged, obs, previous_action, state) -> (action, state)`，輸出在動作上限內。
+  - `act(privileged, obs, previous_action, state, *, limit_acceleration=True) -> (action, state)`，輸出在動作上限內；
+  - `limit_acceleration=True`（預設，和 v1 相同）：再依 `previous_action` 套用加速度限制。`False`：只套用上下限，標籤是 teacher「想要」的動作，執行時由世界套用加速度限制。DAgger 的標籤用 `False`（#184）。
 - **為什麼要狀態**：遮蔽期間要維持遮蔽前的速度，橫風搜尋也要計時或記方向，這些都放在 teacher 的狀態裡。
 - **重設**：世界自動重設的列（`terminated | truncated`），由呼叫端用 `reset_rows` 重設 teacher 的狀態，和 policy 的中央狀態一樣。
 - **限制**：

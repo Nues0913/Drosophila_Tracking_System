@@ -159,3 +159,81 @@ def test_occlusion_teacher_holds_speed_and_uses_odor_and_wind(contract_v2):
     obs["valid"][:, 3] = 0
     no_wind, _ = teacher.act(privileged, obs, straight, state)
     torch.testing.assert_close(no_wind, action)
+
+
+# ------------------------------------------------------------------------------------------
+# limit_acceleration (#184): DAgger labels within the bounds only
+
+
+def _privileged(count=400, seed=0):
+    agent, target, velocity, previous, odor, valid, occluded = _states(count, seed)
+    privileged = {
+        "agent_pose": torch.as_tensor(agent),
+        "target_pose": torch.as_tensor(target),
+        "target_velocity": torch.as_tensor(velocity),
+        "occluded": torch.as_tensor(occluded),
+    }
+    obs = {"odor": torch.as_tensor(odor), "valid": torch.as_tensor(valid)}
+    return privileged, obs, torch.as_tensor(previous)
+
+
+@pytest.mark.parametrize("gain", [None, 8.0])
+def test_unlimited_label_is_the_bounded_request(contract, gain):
+    teacher = PrivilegedTeacher(contract, occlusion_odor_gain=gain)
+    privileged, obs, previous = _privileged()
+    state = teacher.initial_state(400, "cpu")
+    default, _ = teacher.act(privileged, obs, previous, state)
+    limited, _ = teacher.act(privileged, obs, previous, state, limit_acceleration=True)
+    torch.testing.assert_close(limited, default, rtol=0, atol=0)
+    free, _ = teacher.act(privileged, obs, previous, state, limit_acceleration=False)
+    assert free.dtype == torch.float32
+    lim = teacher.limits
+    assert bool((free[:, 0] >= 0).all() and (free[:, 0] <= lim.v_max).all())
+    assert bool((free[:, 1].abs() <= lim.omega_max).all())
+    # Independent of the previous action, and the acceleration limit of it gives the default.
+    other, _ = teacher.act(privileged, obs, previous.flip(0), state, limit_acceleration=False)
+    torch.testing.assert_close(other, free, rtol=0, atol=0)
+    torch.testing.assert_close(teacher._clip(free, previous), default, rtol=0, atol=1e-7)
+    # The anchoring #184 found: far from the previous action, the default label is not.
+    delta = contract.control_dt * torch.tensor([lim.linear_accel_max, lim.angular_accel_max])
+    assert bool(((default - previous).abs() <= delta + 1e-6).all())
+    assert bool(((free - previous).abs() > delta + 1e-6).any(0).all())
+
+
+def test_unlimited_label_reaches_the_speed_bound_far_away(contract):
+    teacher = PrivilegedTeacher(contract)
+    privileged = {
+        "agent_pose": torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64),
+        "target_pose": torch.tensor([[3.0, 0.0, 0.0]], dtype=torch.float64),
+        "target_velocity": torch.zeros(1, 2, dtype=torch.float64),
+        "occluded": torch.zeros(1, dtype=torch.bool),
+    }
+    obs = {"odor": torch.zeros(1, 2), "valid": torch.ones(1, 4)}
+    slow = torch.tensor([[0.05, 0.0]])
+    state = teacher.initial_state(1, "cpu")
+    free, _ = teacher.act(privileged, obs, slow, state, limit_acceleration=False)
+    limited, _ = teacher.act(privileged, obs, slow, state)
+    assert float(free[0, 0]) == pytest.approx(teacher.limits.v_max)
+    step = contract.control_dt * teacher.limits.linear_accel_max
+    assert float(limited[0, 0]) == pytest.approx(0.05 + step)
+
+
+@pytest.mark.parametrize("occluded", [True, False])
+def test_occlusion_teacher_passes_the_option_through(contract_v2, occluded):
+    teacher = OcclusionTeacher(PrivilegedTeacher(contract_v2), walls=(-5.0, -5.0, 5.0, 5.0))
+    privileged, obs, previous = _occlusion_inputs(occluded=occluded)
+    state = teacher.initial_state(64, "cpu")
+    _, state = teacher.act(privileged, obs, previous, state)  # hold the pre-occlusion action
+    default, default_state = teacher.act(privileged, obs, previous, state)
+    free, free_state = teacher.act(privileged, obs, previous, state, limit_acceleration=False)
+    # The teacher state does not depend on the option.
+    torch.testing.assert_close(free_state, default_state, rtol=0, atol=0)
+    torch.testing.assert_close(teacher.privileged._clip(free, previous), default, rtol=0, atol=1e-7)
+    lim = teacher.privileged.limits
+    assert bool((free[:, 0] >= 0).all() and (free[:, 0] <= lim.v_max).all())
+    assert bool((free[:, 1].abs() <= lim.omega_max).all())
+    if not occluded:
+        expected, _ = teacher.privileged.act(
+            privileged, obs, previous, state[:, :0], limit_acceleration=False
+        )
+        torch.testing.assert_close(free, expected, rtol=0, atol=0)

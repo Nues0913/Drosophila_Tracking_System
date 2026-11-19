@@ -8,10 +8,18 @@ The same rule as ``flytrack_sim.teacher.teacher_action``, on [B] tensors:
 - a target that turns back into the stand-off is evaded sideways (v1's evasion rule);
 - optionally (v1's #33 option, ``occlusion_odor_gain``), during occlusion the turn comes from
   the student's own raw odor reading, never from plume truth;
-- the label is clipped to the contract's speed and acceleration limits around the previous
-  applied action, as v1 does. Under DAgger with beta < 1 that previous action is the
-  student's, so the label for one state depends on what the student just did: the teacher
-  only demonstrates actions reachable from there (#165 review).
+- the label is clipped to the contract's speed and turn-rate bounds and, by default
+  (``limit_acceleration=True``, as v1 does), to the acceleration limits around the previous
+  applied action. ``limit_acceleration=False`` keeps the bounds only: the label is the action
+  the teacher wants, and the world applies the acceleration limits when it is executed.
+
+Why DAgger labels use ``limit_acceleration=False`` (#184): with beta < 1 the previous action
+is the student's, so an acceleration-limited label stays within one step's change (0.05 m/s,
+0.15 rad/s) of what the student just did. The label then teaches "keep doing what you do":
+a student that is too slow or turning the wrong way is never shown the speed or turn the
+teacher wants. (#165 had kept the limits so the teacher only demonstrates reachable actions;
+the #184 measurements showed the anchoring instead.) The default stays True for v1 parity,
+the world audit (which executes the teacher, so the world limits it anyway) and v1-style use.
 
 The teacher keeps no state (width 0). Labels are training targets, never observations.
 """
@@ -62,6 +70,8 @@ class PrivilegedTeacher:
         obs: dict[str, Tensor],
         previous_action: Tensor,
         state: Tensor,
+        *,
+        limit_acceleration: bool = True,
     ) -> tuple[Tensor, Tensor]:
         f64 = torch.float64
         agent = privileged["agent_pose"].to(f64)
@@ -95,7 +105,7 @@ class PrivilegedTeacher:
             omega = self._odor_turn(obs).clamp(-self.limits.omega_max, self.limits.omega_max)
             occluded = privileged["occluded"].to(torch.bool)
             requested[:, 1] = torch.where(occluded, omega.to(torch.float32), requested[:, 1])
-        return self._clip(requested, previous_action), state
+        return self._clip(requested, previous_action, limit_acceleration), state
 
     def _odor_turn(self, obs: dict[str, Tensor]) -> Tensor:
         """gain * (L - R) / (L + R) from the student's raw odor; 0 without a valid reading."""
@@ -107,12 +117,15 @@ class PrivilegedTeacher:
         turn = self.odor_gain * (left - right) / torch.where(usable, left + right, 1.0)
         return torch.where(usable, turn, 0.0)
 
-    def _clip(self, requested: Tensor, previous: Tensor) -> Tensor:
-        """ActionLimits.clip (bounds in float32, the acceleration limit in float64)."""
+    def _clip(self, requested: Tensor, previous: Tensor, limit_acceleration: bool = True) -> Tensor:
+        """ActionLimits.clip (bounds in float32, the acceleration limit in float64); without
+        ``limit_acceleration``, the bounds only."""
         lim, dt = self.limits, self.contract.control_dt
         device = requested.device
         low = torch.tensor([0.0, -lim.omega_max], device=device)
         high = torch.tensor([lim.v_max, lim.omega_max], device=device)
+        if not limit_acceleration:
+            return torch.minimum(torch.maximum(requested, low), high).to(torch.float32)
         delta = dt * torch.tensor(
             [lim.linear_accel_max, lim.angular_accel_max], dtype=torch.float64, device=device
         )
@@ -185,10 +198,17 @@ class OcclusionTeacher:
         obs: dict[str, Tensor],
         previous_action: Tensor,
         state: Tensor,
+        *,
+        limit_acceleration: bool = True,
     ) -> tuple[Tensor, Tensor]:
+        """``limit_acceleration`` as in ``PrivilegedTeacher.act``: False gives DAgger labels
+        within the bounds only (#184). The held speed and turn still come from the applied
+        action before the occlusion: that is the rule's memory, not a limit."""
         from flytrack_v2.world.wind import upwind_angle
 
-        label, _ = self.privileged.act(privileged, obs, previous_action, state[:, :0])
+        label, _ = self.privileged.act(
+            privileged, obs, previous_action, state[:, :0], limit_acceleration=limit_acceleration
+        )
         occluded = privileged["occluded"].to(torch.bool)
         dt = self.contract.control_dt
         f64 = torch.float64
@@ -237,7 +257,7 @@ class OcclusionTeacher:
         approach = held_v * (1 - strength / self.near).clamp(0, 1)
         speed = torch.where(present, approach, self.lost_speed_scale * held_v)
         requested = torch.stack((speed, turn), -1).to(torch.float32)
-        odor_label = self.privileged._clip(requested, previous_action)
+        odor_label = self.privileged._clip(requested, previous_action, limit_acceleration)
         action = torch.where(occluded[:, None], odor_label, label)
         state = torch.stack((held_v, held_w, lost, side), -1).to(state.dtype)
         return action, state

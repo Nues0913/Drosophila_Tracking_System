@@ -216,3 +216,41 @@ def test_v2_actor_refreshes_the_full_rest_state_before_evaluating():
     policy = _Policy()
     V2Actor(policy).reset(2, torch.device("cpu"))
     assert policy.calls == [True]
+
+
+class _Recorder:
+    """Records whether each step's vision was transformed (set to 1)."""
+
+    def reset(self, batch, device):
+        self.seen = []
+
+    def act(self, obs, reset_mask):
+        self.seen.append(obs["vision"][:, 0, 0].clone())
+        return torch.zeros(len(obs["vision"]), 2)
+
+
+def test_a_windowed_ablation_changes_only_the_window_and_restarts_each_episode():
+    """#192 R5: the transform applies at episode times in [0.10, 0.25) s (dt 0.05), so steps 2-4
+    of each episode; before the window the actor saw exactly the unablated observation."""
+
+    def ones(obs):
+        return {**obs, "vision": torch.ones_like(obs["vision"])}
+
+    recorder = _Recorder()
+    actor = ObservationAblation(recorder, ones, window=(0.10, 0.25), control_dt=0.05)
+    world = _World(1)
+    # row 0 has seed 3: its first episode is 6 steps; run past it into the second episode
+    run_episodes(world, actor, [3], max_steps=20, sync_every=20)
+    seen = torch.stack(recorder.seen)[:, 0].tolist()
+    assert seen[:6] == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+    assert seen[6:12] == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0]  # the clock restarts after the reset
+    with pytest.raises(ValueError, match="window needs control_dt"):
+        ObservationAblation(recorder, ones, window=(0.1, 0.2))
+
+
+def test_a_snapshot_records_each_row_before_the_chosen_action():
+    world = _World(2)
+    world.privileged = lambda: {"agent_pose": torch.stack((world.t, -world.t, world.t), -1)}
+    result = run_episodes(world, _Actor(), [3, 2], max_steps=20, sync_every=1, snapshot_step=2)
+    assert result.snapshot_xy == [[2.0, -2.0], [2.0, -2.0]]
+    assert run_episodes(_World(1), _Actor(), [3], max_steps=20).snapshot_xy is None

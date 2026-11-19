@@ -8,8 +8,16 @@
   The run is timed at two lengths, and the difference gives steps per second without
   start-up time (item d).
 
+``python scripts/v2/bench.py v2 --host-label 2060`` measures the v2 rollout on this host:
+
+- rollout: one batched world per world kind (v1compat, and wind at the protocol's U), the
+  four scenarios mixed and both motions, the VO2 policy step (sense + core, no gradient,
+  deterministic action) and DAgger's teacher label (OcclusionTeacher) every step; batched
+  environment steps per second at each batch size. Training's backward pass and optimiser
+  come with WP4a, so this bounds the end-to-end rate from above (#161 F).
+
 The JSON written to runs/bench/ is the baseline every hot-path v2 PR is compared against. It
-identifies the host only by --host-label, never by its name. v2 modes come with the v2 code.
+identifies the host only by --host-label, never by its name.
 """
 
 from __future__ import annotations
@@ -164,17 +172,109 @@ def bench_ppo(device: str, short: int = 2, long: int = 6) -> dict:
     }
 
 
+def _time_rollout(world, teacher, policy, batch, device, warmup, steps) -> float:
+    from flytrack_v2.interfaces import policy_step
+
+    with torch.no_grad():
+        obs = world.reset()
+        sensory = policy.initial_sensory_state(batch, device)
+        central = policy.initial_central_state(batch, device)
+        label_state = teacher.initial_state(batch, device)
+        reset = None
+        wall = 0.0
+        for index in range(warmup + steps):
+            if index == warmup:
+                if device.startswith("cuda"):
+                    torch.cuda.synchronize()
+                started = time.perf_counter()
+            step, sensory, _ = policy_step(policy, obs, sensory, central, reset)
+            central = step.central_state
+            privileged = world.privileged()
+            _, label_state = teacher.act(privileged, obs, privileged["agent_velocity"], label_state)
+            result = world.step(step.dist.mode())
+            reset = result.terminated | result.truncated
+            obs = result.obs
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        wall = time.perf_counter() - started
+    return wall
+
+
+def bench_rollout_v2(
+    device: str, batches: list[int], worlds: list[str], warmup: int = 20, steps: int = 100
+) -> dict:
+    """Batched v2 rollout steps per second: world step + VO2 policy step + teacher label."""
+    from flytrack_v2.contracts import SensorContractV2
+    from flytrack_v2.model import InputNorm, ModelConfigV2, build_policy
+    from flytrack_v2.world.teacher import OcclusionTeacher, PrivilegedTeacher
+    from flytrack_v2.world.v1compat import V1CompatWorld
+    from flytrack_v2.world.wind import WindConfig
+
+    contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
+    protocol = yaml.safe_load(
+        (ROOT / "configs/v2/evaluation_protocol.yaml").read_text(encoding="utf-8")
+    )
+    wind_speed = protocol.get("tuning", {}).get("wind_speed_m_s", 0.5)
+    if not isinstance(wind_speed, (int, float)):
+        wind_speed = 0.5
+    norm_path = ROOT / "artifacts/input_norm_v2/input_norm.npz"
+    norm = InputNorm.load(norm_path) if norm_path.exists() else None
+    policy = build_policy("VO2", ModelConfigV2(), input_norm=norm).to(device).eval()
+    scenarios = ("normal", "occlusion", "noise", "conflict")
+    configs = {
+        name: yaml.safe_load((ROOT / f"configs/scenarios/{name}.yaml").read_text(encoding="utf-8"))
+        for name in scenarios
+    }
+    results = {}
+    for kind in worlds:
+        for batch in batches:
+            world = V1CompatWorld(
+                contract,
+                batch,
+                scenarios=[scenarios[i % 4] for i in range(batch)],
+                options={"episode_seconds": 60, "target_motion": "curved", "plume_model": "puff"},
+                scenario_configs=configs,
+                device=device,
+                wind=WindConfig(speed_m_s=float(wind_speed)) if kind == "wind" else None,
+            )
+            teacher = OcclusionTeacher(PrivilegedTeacher(contract), walls=world.walls)
+            wall = _time_rollout(world, teacher, policy, batch, device, warmup, steps)
+            results[f"{kind}/{batch}"] = {
+                "ms_per_batched_step": 1000 * wall / steps,
+                "env_steps_per_s": batch * steps / wall,
+            }
+            print(f"rollout {kind} B={batch}: {results[f'{kind}/{batch}']}", flush=True)
+            del world
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
+    return {
+        "worlds": worlds,
+        "input_norm": str(norm_path.relative_to(ROOT)) if norm is not None else None,
+        "steps_timed": steps,
+        "results": results,
+        "peak_memory_mib": (
+            torch.cuda.max_memory_allocated() / 2**20 if device.startswith("cuda") else None
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("pipeline", choices=["v1"])
+    parser.add_argument("pipeline", choices=["v1", "v2"])
     parser.add_argument("--host-label", required=True, help="2060, 4060 or 4070")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batches", default="1,8,256,1024")
     parser.add_argument("--skip", default="", help="comma list of env, policy, ppo")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--worlds", default="v1compat,wind", help="v2 rollout worlds")
     args = parser.parse_args(argv)
     skip = {item for item in args.skip.split(",") if item}
     result = {"pipeline": args.pipeline, **environment(args.host_label, args.device)}
+    if args.pipeline == "v2":
+        batches = [int(batch) for batch in args.batches.split(",")]
+        worlds = [item for item in args.worlds.split(",") if item]
+        result["rollout"] = bench_rollout_v2(args.device, batches, worlds)
+        skip |= {"env", "policy", "ppo"}
     if "env" not in skip:
         result["env"] = bench_env()
     if "policy" not in skip:

@@ -112,3 +112,79 @@
 - 預期平均：每一步至少有一列重設的機率是 1 − exp(−B / 1200)。
 - 計劃書 3.3 的目標是「1,024 個環境每步 ≤ 5 ms」。normal 剛好在邊界上，四種混合超過約 1 ms；混合比較慢，主要因為 conflict 情境有兩個氣味源，所有列的 puff 槽都要加倍。
 - 對照 v1：一個 `FlyTrackEnv` 在一個 CPU 執行緒上是每秒 343 步（4070，#139）。
+
+## 6. Teacher 和 world audit（#132 第 3 部分）
+
+- **`PrivilegedTeacher`**（`world/teacher.py`）：v1 `teacher_action` 的整批版本，實作 `interfaces.Teacher`，狀態寬度是 0。
+  - 前進速度 = 0.7 ×（距離 − 1 m），乘上 max(0, cos 方位)，不倒退；轉向 = 2 × 方位。
+  - 目標掉頭衝向 agent 時，照 v1 的規則往側邊閃避。
+  - 可選 `occlusion_odor_gain`（v1 #33 的選項）：遮蔽時改用學生自己收到的原始氣味轉向，不用 plume 的真值。
+  - 標籤照契約的速度和加速度上限，對前一個實際動作做 clip，和 v1 一樣。
+  - 和 v1 比對：
+    - 400 個隨機狀態（含閃避、遮蔽、沒有氣味或氣味失效），開關氣味選項都測，誤差 ≤ 1e-6；
+    - parity 測試裡，每一步的 teacher 標籤也和 v1 env 的 `info["teacher_action"]` 比對。
+- **world audit**（`world/audit.py`、`scripts/v2/audit_world.py`）：v1 `audit.py` 的 v2 版本。
+  - 特權 teacher 的成功率要 ≥ 0.9；blind 策略（8 個固定動作，加上 teacher 實際動作的平均）都要 ≤ 0.1。
+  - 和 v1 的差別：每個情境都檢查（計劃書 3.3），感測是開著的；每個策略的回合在同一批裡跑，所有策略用同一組回合 seed（配對）。
+  - **4070 實測**（commit `5b2f1d5`，dirty = false，每格 100 回合、60 s；JSON 在本機 `runs/audit/world_4070_5b2f1d5.json`）：
+
+| 運動 | 情境 | teacher 成功率 | 碰撞 | 方位誤差 | 最好的 blind 策略 |
+| --- | --- | --- | --- | --- | --- |
+| curved | 四種都一樣 | 1.00 | 0 | 2.23° | `left_0.05` 0.02 |
+| wander | 四種都一樣 | 1.00 | 0 | 2.78° | 0.00 |
+
+  - 四種情境的結果相同。原因是特權 teacher 和 blind 策略都不讀感測，情境只改變感測；noise 情境要三路同時失效才會觸發緊急停車，這 100 回合裡沒有發生。
+
+## 7. `wind` 世界（WP2b，#133）
+
+`V1CompatWorld(..., wind=WindConfig(...))` 就是 `wind` 世界。它和 `v1compat` 共用整個步進、事件、render 和 CUDA graph，只在下面幾處不同（`world/wind.py`）。
+
+- **風**：均勻的風場，速度 U（預設 0.5 m/s；試跑的候選是 0.3、0.5）。
+  - 風向每回合隨機。之後每個 plume tick（0.01 s）做一步 OU：平穩標準差 20°，相關時間 10 s。
+- **filament plume**（Farrell 2002，2D）：
+  - 目標每 0.1 s 釋放一個 filament；conflict 情境的 decoy 也會釋放。
+  - filament 隨當下的風平流、做亂流隨機漫步，寬度 σ² = σ0² + 2 D age。
+  - 壽命 20 s。每個環境最多 256 個，滿了就丟掉最舊的。
+  - 預設不衰減。濃度是各 filament 2D 高斯的總和，形式和 v1 的 puff 相同。
+- **觸角**：照介面契約，左 = (U/U_ref)·cos(θ − α)、右 = (U/U_ref)·cos(θ + α)，加上雜訊（標準差 0.05）。
+  - θ 是風「吹來的方向」相對頭向的角度，左為正。
+  - 取樣用氣味的時鐘（`wind_hz` = `odor_hz` = 50 Hz）；noise 情境的 dropout 和氣味相同。
+  - 觀測放在 `wind[2]`、`valid[:, 3]`；特權的 `wind_velocity` 是當下的風。
+- **雜湊的 seed**：回合 seed 限制在 2⁵² 以下（`rng.SEED_BITS`）。這樣一個 double 就能精確裝下 seed，融合的 plume kernel 才能帶著每列的風，又不超過 jiterator 8 個輸入的上限。
+- **測試**（`test_v2_world_wind.py`）：
+  - 觸角：正前、正左、正右、正後四個方向的讀值（#161 C1）、左右鏡像對稱，以及讀值反推 θ；
+  - 世界的觀測和特權欄位一致；
+  - 沒有亂流時，filament 每個 tick 剛好移動 wind·dt，而且在目標的下風處；
+  - 不衰減時，濃度在平面上的積分等於 filament 數 × 質量（相對誤差 ≤ 1e-3）；
+  - CUDA 上 fused 和 eager 一致。
+
+### 只看觀測的遮蔽 teacher（`OcclusionTeacher`）
+
+DAgger 在遮蔽期間用它的標籤（#133、#161 D4）；遮蔽以外則是特權 teacher。
+
+- **遮蔽期間的規則**：
+  - **有氣味**：逆風（觸角算出的角度 × 0.5），加上左右氣味差 × 4·(L − R)/(L + R)；氣味越強越慢，到平均濃度 2 時停下，避免撞上氣味源。
+  - **沒有氣味**：維持遮蔽前一刻的轉向速度（dead reckoning）。
+  - **速度**：遮蔽前一刻的實際速度。
+  - **撞牆**：前方 0.8 m 的點如果離開安全範圍，就轉向場地中心。這只用 agent 自己的姿態，不用目標。
+  - **v1compat（風無效）**：只剩氣味轉向。
+- **不偷看目標**（#161 C3）：測試中，可觀測的歷史和前一個動作都相同，只改目標的位置和速度，連續 10 步的標籤和狀態都完全相同。
+- **參數怎麼選**：
+  - 調參只用 seed 1,630,000,000 起的回合，不碰 audit 的 seed（1,620,000,000 起）；
+  - 每種目標運動 100 回合、U = 0.5。
+  - 先試純氣味＋橫風搜尋：只有 0.06–0.09，碰撞 19–22%。之後加了記憶、近源減速和避牆。
+- **audit**（`scripts/v2/audit_world.py --worlds wind`；4070，每格 100 回合、60 s，用 audit 的 seed）：
+
+| U | 運動 | 遮蔽 teacher | 只有記憶（不看氣味、風） |
+| --- | --- | --- | --- |
+| 0.5 | curved | **0.83** | 0.51 |
+| 0.5 | wander | **0.66** | 0.05 |
+| 0.3 | curved | 0.64 | 0.51 |
+| 0.3 | wander | 0.50 | 0.05 |
+
+- 協定的門檻是 ≥ 0.5（`odor_teacher_min_occlusion_success`），U = 0.5 兩種運動都通過。
+- **比較**：curved 的目標曲率固定，只靠記憶就有 0.51；wander 只靠記憶只有 0.05，加上氣味後是 0.66。這個世界裡，氣味對遮蔽中的追蹤確實有用。
+- U = 0.3 時 wander 剛好落在門檻上（teacher 的參數是在 U = 0.5 調的）。
+- 其他情境：特權 teacher 都是 1.00，最好的 blind 策略 ≤ 0.02，結果和 `v1compat` 相同。
+
+**速度**（4070，`bench_world.py --worlds wind`）：B = 1,024，normal 沒有重設的步 5.48 ms、預期平均 5.99 ms；四種混合 6.57 ms。比 `v1compat` 慢約 0.9 ms，原因是 filament 比較多（203 對 163 個），而且每個 tick 都要更新風。

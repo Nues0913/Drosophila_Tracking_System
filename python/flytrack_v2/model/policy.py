@@ -151,14 +151,18 @@ class ConnectomePolicyV2(_PolicyV2):
         encoder: SensoryEncoderV2,
         input_norm: InputNorm,
         graph: GraphV2,
+        *,
+        from_artifact: bool = False,
+        readout_body_ids: Mapping | None = None,
     ):
         super().__init__(variant, config, encoder, input_norm)
         self.graph = graph
         self.central_state_size = graph.n_nodes
         self.core = ConnectomeCoreV2(graph, config, self.contract)
         self.projection = SeedProjection(graph, encoder.layout, enable_vision=variant != "O2")
-        self.readout = DNReadoutV2(graph, config, self.contract)
-        self._calibrate_readout(self.readout.speed_bias, self.readout.turn_bias)
+        self.readout = DNReadoutV2(graph, config, self.contract, body_ids=readout_body_ids)
+        if not from_artifact:
+            self._calibrate_readout(self.readout.speed_bias, self.readout.turn_bias)
 
     def _bias_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.core.initial_state(batch_size, device)
@@ -201,7 +205,14 @@ class ConnectomePolicyV2(_PolicyV2):
 
 class GRUPolicyV2(_PolicyV2):
     @torch.inference_mode(False)
-    def __init__(self, config: ModelConfigV2, encoder: SensoryEncoderV2, input_norm: InputNorm):
+    def __init__(
+        self,
+        config: ModelConfigV2,
+        encoder: SensoryEncoderV2,
+        input_norm: InputNorm,
+        *,
+        from_artifact: bool = False,
+    ):
         super().__init__("GRU2", config, encoder, input_norm)
         if config.budget_target is None:
             raise ValueError("GRU2 requires a resolved budget_target")
@@ -217,7 +228,8 @@ class GRUPolicyV2(_PolicyV2):
             self.readout.bias.copy_(
                 torch.tensor([initial_speed_latent(config, self.contract), 0.0])
             )
-            self._calibrate_readout(self.readout.bias[0], self.readout.bias[1])
+            if not from_artifact:
+                self._calibrate_readout(self.readout.bias[0], self.readout.bias[1])
 
     def _bias_state(self, batch_size: int, device: torch.device | str) -> Tensor:
         return self.log_std.new_zeros((batch_size, self.central_state_size), device=device)
@@ -260,8 +272,14 @@ def build_policy(
     input_norm: InputNorm | None = None,
     structure_seed: int | None = None,
     budget_target: int | None = None,
+    from_artifact: bool = False,
+    readout_body_ids: Mapping | None = None,
 ) -> ConnectomePolicyV2 | GRUPolicyV2:
-    """Build a v2 actor. Relative config paths are resolved from the repository root."""
+    """Build a v2 actor. Relative config paths are resolved from the repository root.
+
+    ``from_artifact`` is for ``load_policy``. It uses the supplied components and resolved
+    DN body IDs or GRU2 budget, skipping rewiring and initial readout calibration.
+    """
     if variant not in VARIANTS:
         raise ValueError(f"Unknown v2 variant {variant}; choose {VARIANTS}")
     if config is None:
@@ -274,6 +292,16 @@ def build_policy(
         config = replace(config, budget_target=budget_target)
     if variant in ("RW2", "ER2") and config.structure_seed is None:
         raise ValueError(f"{variant} requires an explicit structure_seed")
+    if from_artifact:
+        if contract is None or frontend is None or input_norm is None:
+            raise ValueError("Artifact construction requires contract, frontend and input_norm")
+        if variant == "GRU2":
+            if config.budget_target is None:
+                raise ValueError("GRU2 artifact requires a resolved budget_target")
+        elif graph is None or readout_body_ids is None:
+            raise ValueError("Graph artifact requires graph and readout_body_ids")
+    elif readout_body_ids is not None:
+        raise ValueError("readout_body_ids requires from_artifact")
     contract = SensorContractV2() if contract is None else contract
     if frontend is None:
         frontend = NodeMajorFlyvis(_ROOT / config.frontend_path, contract, config.visual_bins)
@@ -283,9 +311,19 @@ def build_policy(
     if input_norm.layout != encoder.layout or input_norm.std_floor != config.norm_std_floor:
         raise ValueError("input_norm layout and std_floor must match the model config")
     if variant == "GRU2" and config.budget_target is not None:
-        return GRUPolicyV2(config, encoder, input_norm)
+        return GRUPolicyV2(config, encoder, input_norm, from_artifact=from_artifact)
     if graph is None:
         graph = GraphV2.load(_ROOT / config.graph_path)
+    if from_artifact:
+        return ConnectomePolicyV2(
+            variant,
+            config,
+            encoder,
+            input_norm,
+            graph,
+            from_artifact=True,
+            readout_body_ids=readout_body_ids,
+        )
     if variant == "RW2":
         graph = rewire_rw2(graph, config.structure_seed)
     elif variant == "ER2":

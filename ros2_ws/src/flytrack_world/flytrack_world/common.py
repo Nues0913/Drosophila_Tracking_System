@@ -6,11 +6,12 @@ from dataclasses import fields
 from pathlib import Path
 
 import rclpy
-from flytrack_core.contracts import SensorContract
 from flytrack_core.world import ScenarioSpec
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from .contract import load_required_contract
 
 SENSOR_QOS = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
 CAMERA_QOS = QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -64,12 +65,7 @@ def param(node: Node, name: str, default):
 class WorldNode(Node):
     def __init__(self, name: str):
         super().__init__(name)
-        path = param(self, "sensor_contract_json", "")
-        self.contract = (
-            SensorContract.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
-            if path
-            else SensorContract()
-        )
+        self.contract = load_required_contract(param(self, "sensor_contract_json", ""))
         self.scenario_name = param(self, "scenario", "normal")
         self.base_seed = int(param(self, "seed", 0))
         self.episode_seconds = float(param(self, "episode_seconds", 30.0))

@@ -1,5 +1,7 @@
 """Record-set checks before aggregation (#161 C5)."""
 
+from pathlib import Path
+
 import pytest
 from flytrack_v2.eval.records import check_records, expected_grid
 
@@ -137,7 +139,8 @@ def test_episode_numbers_stay_inside_their_registered_range():
     import yaml
     from flytrack_v2.eval.records import episode_numbers
 
-    protocol = yaml.safe_load(open("configs/v2/evaluation_protocol.yaml"))
+    root = Path(__file__).resolve().parents[3]
+    protocol = yaml.safe_load((root / "configs/v2/evaluation_protocol.yaml").read_text())
     assert episode_numbers(protocol, "pilot_held_out", 101, 100) == range(
         1_510_100_000, 1_510_100_100
     )

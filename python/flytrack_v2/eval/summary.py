@@ -69,12 +69,23 @@ class ComparisonSpec:
 def selection_seed_means(
     records: Sequence[Mapping], selection: Mapping[str, object], metric: str
 ) -> dict[int, float]:
-    """{train_seed: mean of metric over the seed's records matching every selection field}."""
+    """{train_seed: mean of metric over the seed's records matching every selection field}.
+
+    A selection may pool motions or worlds on purpose (G-B pools both motions), but never
+    variants: records of two variants under one selection raise (#172 review).
+    """
     values: dict[int, list[float]] = defaultdict(list)
+    variants = set()
     for record in records:
         if all(record[key] == value for key, value in selection.items()):
+            variants.add(record["variant"])
             if record[metric] is not None:
                 values[int(record["train_seed"])].append(float(record[metric]))
+    if len(variants) > 1:
+        raise ValueError(
+            f"{dict(selection)} matches the records of several variants {sorted(variants)}; "
+            "name the variant in the selection"
+        )
     if not values:
         raise ValueError(f"no records match {dict(selection)} with a value for {metric}")
     return {seed: float(np.mean(v)) for seed, v in sorted(values.items())}

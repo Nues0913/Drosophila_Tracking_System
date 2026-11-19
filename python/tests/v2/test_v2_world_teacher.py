@@ -161,6 +161,49 @@ def test_occlusion_teacher_holds_speed_and_uses_odor_and_wind(contract_v2):
     torch.testing.assert_close(no_wind, action)
 
 
+def _lost_odor(obs, count):
+    obs["odor"] = torch.zeros(count, 2)  # odor lost: the memory rule holds speed and turn
+    obs["valid"][:, 3] = 0
+    return obs
+
+
+def test_occlusion_teacher_holds_the_last_visible_steps_action(contract_v2):
+    """#137 F19: the held speed and turn are the action applied on the last visible step (the
+    first occluded call's previous_action), not the one applied a control tick before it."""
+    teacher = OcclusionTeacher(PrivilegedTeacher(contract_v2))
+    privileged, obs, _ = _occlusion_inputs(count=4)
+    obs = _lost_odor(obs, 4)
+    state = teacher.initial_state(4, "cpu")
+    privileged["occluded"][:] = False
+    _, state = teacher.act(privileged, obs, torch.tensor([[0.20, 0.30]] * 4), state)
+    privileged["occluded"][:] = True
+    last_visible = torch.tensor([[0.25, 0.45]] * 4)
+    action, state = teacher.act(privileged, obs, last_visible, state, limit_acceleration=False)
+    torch.testing.assert_close(state[:, :2], last_visible)
+    torch.testing.assert_close(action, last_visible)
+    # Later occluded calls keep holding it, whatever was applied since.
+    action, state = teacher.act(
+        privileged, obs, torch.tensor([[0.1, -0.2]] * 4), state, limit_acceleration=False
+    )
+    torch.testing.assert_close(action, last_visible)
+    assert bool((state[:, 4] == 1).all())
+
+
+def test_occlusion_teacher_reads_a_four_column_state(contract_v2):
+    """A Stage 1 checkpoint written before F19 stores [B,4]: its first call keeps the stored
+    hold (the old rule) and returns the [B,5] state."""
+    teacher = OcclusionTeacher(PrivilegedTeacher(contract_v2))
+    privileged, obs, _ = _occlusion_inputs(count=4)
+    obs = _lost_odor(obs, 4)
+    privileged["occluded"][:] = True
+    old = torch.tensor([[0.15, 0.2, 0.0, 1.0]] * 4)
+    action, state = teacher.act(
+        privileged, obs, torch.tensor([[0.3, -0.4]] * 4), old, limit_acceleration=False
+    )
+    assert state.shape == (4, 5)
+    torch.testing.assert_close(action, torch.tensor([[0.15, 0.2]] * 4))
+
+
 # ------------------------------------------------------------------------------------------
 # limit_acceleration (#184): DAgger labels within the bounds only
 

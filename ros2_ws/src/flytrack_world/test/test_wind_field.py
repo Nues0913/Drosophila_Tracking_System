@@ -50,8 +50,8 @@ def test_plume_settings_are_the_2d_wind_worlds():
     assert (one.wind_x, one.wind_y) == (0.0, 0.0)
     assert one.emission_hz == w.emission_hz and one.lifetime_s == w.lifetime_s
     assert one.decay_tau_s == 1e30
-    # v1compat.py: min(sources * (lifetime * emission + 3), capacity)
-    assert one.max_puffs == 203 and two.max_puffs == w.capacity
+    # v1compat.py, per source (#192 R6): sources * min(lifetime * emission + 3, capacity)
+    assert one.max_puffs == 203 and two.max_puffs == 2 * 203
 
 
 def test_without_meander_it_is_v1s_puff_plume_in_a_fixed_wind():

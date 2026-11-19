@@ -153,7 +153,8 @@
 - **filament plume**（Farrell 2002，2D）：
   - 目標每 0.1 s 釋放一個 filament；conflict 情境的 decoy 也會釋放。
   - filament 隨當下的風平流、做亂流隨機漫步，寬度 σ² = σ0² + 2 D age。
-  - 壽命 20 s。每個環境最多 256 個，滿了就丟掉最舊的。
+  - 壽命 20 s。每個來源最多 256 個（conflict 的 decoy 有自己的槽，#192 R6），滿了就丟掉該來源最舊的。目前壽命 × 釋放率 = 200，所以 normal 和 conflict 的目標尾流都是 200 個、最老約 19.9 s。
+    - #192 R6 之前是每個環境共用 256 個：conflict 時目標只剩約 128 個、最老約 12.7 s。改成每個來源各自的槽之後，wind 世界有 conflict 的 batch 每列 406 個槽（B = 1024 時 plume 狀態約 13.3 MB，原本 8.4 MB）。
   - 預設不衰減。濃度是各 filament 2D 高斯的總和，形式和 v1 的 puff 相同。
 - **觸角**：照介面契約，左 = (U/U_ref)·cos(θ − α)、右 = (U/U_ref)·cos(θ + α)，加上雜訊（標準差 0.05）。
   - θ 是風「吹來的方向」相對頭向的角度，左為正。
@@ -166,6 +167,7 @@
   - 沒有亂流時，filament 每個 tick 剛好移動 wind·dt，而且在目標的下風處；
   - 不衰減時，濃度在平面上的積分等於 filament 數 × 質量（相對誤差 ≤ 1e-3）；
   - CUDA 上 fused 和 eager 一致。
+  - conflict 的目標尾流和 normal 一樣長（200 個，decoy 另外 200 個，#192 R6）；Gazebo 的 `wind_field.py` 和 2D 的槽數相同。
 
 ### 只看觀測的遮蔽 teacher（`OcclusionTeacher`）
 
@@ -208,7 +210,7 @@ ROS／Gazebo 端用 numpy 照第 7 節的模型實作同一個世界，給 v2 �
 
 **模型**（`flytrack_world/wind_field.py`）
 - 風：速度 U，方向每回合均勻抽，偏移是 OU（初始值從穩態分布抽）。每個 plume tick 先走一步 OU，再照 v1 的 puff 順序：變老、隨當下的風平移、湍流、丟掉超過壽命的、釋放。
-- 絲狀 plume 的設定取自 `WindConfig`，容量是 min(來源數 × (壽命 × 釋放率 + 3), `capacity`)，和 2D 相同。
+- 絲狀 plume 的設定取自 `WindConfig`，容量是 來源數 × min(壽命 × 釋放率 + 3, `capacity`)，和 2D 相同（#192 R6）。
 - 觸角讀數在 odor 的 tick 取樣（wind_hz = odor_hz），用當下的頭向，加上 `antenna_noise_std` 的雜訊，發布到 `/sim/wind`。
 - 干擾節點把 `/sim/wind` 轉成 `/fly/wind`：noise 情境的 odor dropout 機率另外抽一次，不加額外雜訊（#169 的 Decision）。
 

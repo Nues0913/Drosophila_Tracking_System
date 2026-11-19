@@ -31,6 +31,8 @@ def initial_speed_latent(config: ModelConfigV2, contract: SensorContractV2) -> f
 class DNReadoutV2(nn.Module):
     """Read out (speed, turn) latents. With a positive steer weight, left > right raises turn."""
 
+    _version = 2
+
     def __init__(
         self,
         graph: GraphV2,
@@ -55,6 +57,9 @@ class DNReadoutV2(nn.Module):
         self.steer_body_ids = _body_ids(graph, steer_groups)
         self.speed_body_ids = _body_ids(graph, speed_groups)
         self.register_buffer("node_indices", torch.from_numpy(ids), persistent=False)
+        self.register_buffer("rate_mean", torch.zeros(len(ids)))
+        self.register_buffer("rate_scale", torch.ones(len(ids)))
+        self.register_buffer("rate_norm_fitted", torch.tensor(False))
         for name, values in (("steer_means", steer_means), ("speed_means", speed_means)):
             self.register_buffer(
                 name, torch.as_tensor(values, dtype=torch.float32), persistent=False
@@ -72,7 +77,25 @@ class DNReadoutV2(nn.Module):
             torch.tensor(initial_speed_latent(config, contract) - float(resting_drive))
         )
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        # Artifacts written before DN normalization used the identity transform.
+        names = [prefix + name for name in ("rate_mean", "rate_scale", "rate_norm_fitted")]
+        if local_metadata.get("version", 1) < 2 and all(name not in state_dict for name in names):
+            mean, scale, fitted = names
+            state_dict[mean] = torch.zeros_like(self.rate_mean)
+            state_dict[scale] = torch.ones_like(self.rate_scale)
+            state_dict[fitted] = torch.zeros_like(self.rate_norm_fitted)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+
+    def normalize_rates(self, dn_rates: Tensor) -> Tensor:
+        return (dn_rates - self.rate_mean) / self.rate_scale
+
     def forward(self, dn_rates: Tensor) -> Tensor:
+        dn_rates = self.normalize_rates(dn_rates)
         steer = (dn_rates @ self.steer_means) @ self.steer_weight + self.turn_bias
         speed = (dn_rates @ self.speed_means) @ self.speed_weight + self.speed_bias
         return torch.stack((speed, steer), dim=1)

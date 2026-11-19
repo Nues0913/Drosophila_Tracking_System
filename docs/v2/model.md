@@ -43,16 +43,20 @@ WP4a 採用 micro-batch 累積梯度。關閉 checkpoint 後，以兩個 128 的
 
 ## DN 讀出
 
-主圖預設從萃取時標記的 turn／forward 群選擇轉向讀出，包括成對的 DNa01、DNa02、DNa03、DNb05、DNp09，速度讀出採用 forward 群的 DNp09。先按型別和側別計算活動平均，再對轉向取左減右，對速度取左加右。`steer_types` 和 `speed_types` 可指定型別清單，轉向型別必須左右成對。
+主圖預設從萃取時標記的 turn／forward 群選擇轉向讀出，包括成對的 DNa01、DNa02、DNa03、DNb05、DNp09，速度讀出採用 forward 群的 DNp09。先對每顆 DN 的速率做正規化，再按型別和側別計算平均。轉向取左減右，速度取左加右。`steer_types` 和 `speed_types` 可指定型別清單，轉向型別必須左右成對。
 
 ```text
-z_ω = Σ_k a_k · (r̄_k,L − r̄_k,R) + c
-z_v = Σ_m b_m · (r̄_m,L + r̄_m,R) + d
+σ̃_i = max(σ_i, 0.1 · median_j(σ_j))
+r̃_i = (r_i − μ_i) / σ̃_i
+z_ω = Σ_k a_k · (mean(r̃_k,L) − mean(r̃_k,R)) + c
+z_v = Σ_m b_m · (mean(r̃_m,L) + mean(r̃_m,R)) + d
 v = v_max · sigmoid(z_v)
 ω = ω_max · tanh(z_ω)
 ```
 
-`a_k` 和 `b_m` 預設初始化為 1，所以左側活動增加會提高轉向 latent。動作潛在變數採用 `(speed, turn)` 順序，兩維的 `log_std` 都是可學、與狀態無關的參數，初值為 −0.5。
+未擬合時，`μ_i = 0`、`σ̃_i = 1`，`a_k` 和 `b_m` 預設初始化為 1，所以左側活動增加會提高轉向 latent。圖變體的每條訓練鏈用自己的初始 policy 及首輪 teacher 軌跡估計各 DN 的平均與母體標準差，以反映該鏈的感覺遮罩、核心結構和初始化。擬合後，轉向各型使用同一初始權重，速度各型也使用同一初始權重，兩維各自縮放至擬合樣本上的 latent 母體標準差為 0.1，沿用原始讀出權重的符號。擬合只做一次，讓核心後續學習時始終使用固定的讀出座標。平均、尺度及擬合旗標以 persistent buffer 保存在 `weights.pt`。GRU2 沿用線性讀出。 [#137 Decision](https://github.com/Nues0913/Drosophila_Tracking_System/issues/137)
+
+動作潛在變數採用 `(speed, turn)` 順序，兩維的 `log_std` 都是可學、與狀態無關的參數，初值為 −0.5。
 
 ### 靜息狀態與讀出校準
 
@@ -64,7 +68,7 @@ v = v_max · sigmoid(z_v)
 
 評估與匯出前呼叫 `refresh_rest_state(full=True)`，從核心偏置狀態完整重算並更新快取，使結果與訓練歷史無關。4060 上 VO2 完整重算的 160 步曾量得 194 ms，batch 為 1 的序列演化受 GPU kernel launch 開銷限制。增量更新把每次參數更新後的演化縮短到預設約 20 步。
 
-讀出偏置在建構時校準一次，訓練中照常學習。對照設定 `initial_state: bias` 沿用原先的核心偏置狀態，並以該狀態校準讀出。
+初始讀出偏置依模型的初始狀態設定建構。圖變體擬合讀出正規化後，依 #168 在中性輸入的靜息狀態重新校準 `c`、`d`，使動作眾數回到 `(0.20 m/s, 0 rad/s)`。之後偏置與權重照常學習，載入權重時沿用已儲存的偏置。
 
 ### 雙側 DN 群體讀出
 

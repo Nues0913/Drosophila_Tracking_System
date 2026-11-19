@@ -28,12 +28,16 @@ PROVENANCE = {"git_sha": "a" * 40, "dirty": False, "config_sha256": "b" * 64, "s
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("variant", "speed_types"),
-    [*((variant, None) for variant in VARIANTS), ("VO2", "bilateral")],
-    ids=[*VARIANTS, "VO2-bilateral"],
+    ("variant", "speed_types", "fit_readout"),
+    [
+        *((variant, None, False) for variant in VARIANTS),
+        ("VO2", "bilateral", False),
+        ("VO2", "bilateral", True),
+    ],
+    ids=[*VARIANTS, "VO2-bilateral", "VO2-bilateral-fitted"],
 )
 @torch.no_grad()
-def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types):
+def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types, fit_readout):
     start = perf_counter()
     contract = SensorContractV2()
     policy = build_policy(
@@ -49,6 +53,9 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types):
     fit_codes = torch.rand(12, policy.code_size, generator=generator)
     fit_codes[:, -4:] = 1.0
     policy.input_norm = fit_input_norm(fit_codes, policy.encoder.layout)
+    if fit_readout:
+        rates = torch.rand(64, len(policy.readout.node_indices), generator=generator)
+        policy.fit_readout_norm(0.05 + 0.01 * rates)
     frontend_source = policy.encoder.frontend.source_path
     artifact = export_policy(policy, tmp_path / "export", provenance=PROVENANCE)
     assert set(required_files(variant)) == {file.name for file in artifact.iterdir()}
@@ -71,6 +78,7 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types):
 
     if isinstance(policy, ConnectomePolicyV2):
         assert isinstance(restored, ConnectomePolicyV2)
+        assert bool(restored.readout.rate_norm_fitted) is fit_readout
         for field in fields(GraphV2):
             if field.name == "source_sha256":
                 continue
@@ -122,6 +130,8 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types):
             (actual.central_state, expected.central_state),
         ):
             torch.testing.assert_close(a, b, atol=1e-6, rtol=1e-5)
+        if fit_readout:
+            torch.testing.assert_close(actual.dist.mode(), expected.dist.mode(), atol=0, rtol=0)
         max_mean_error = max(
             max_mean_error, (actual.dist.mean - expected.dist.mean).abs().max().item()
         )

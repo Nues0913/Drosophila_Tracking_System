@@ -105,6 +105,7 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
   - teacher 是同一個 Stage 1 產物另外載入、凍結的一份，在 rollout 時用自己的中央狀態跑同樣的感覺碼；
   - KL 用兩個對角高斯的封閉形式；
   - λ 在 actor 更新的前 30% 從 1 線性降到 0，之後不再執行 teacher。
+  - λ > 0 的期間（包括只訓練 critic 的暖身）teacher 每次 rollout 都跟著推進，所以開始算 KL 時，它和學生帶著同樣的歷史；暖身期間只是不計算 KL（#192 R7）。
 - **其他**：
   - PPO clip 0.2、value 係數 0.5、entropy 0.001；
   - 活動正則 1e-4，算法和 Stage 1 相同；

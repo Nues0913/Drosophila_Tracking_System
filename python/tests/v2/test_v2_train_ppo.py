@@ -302,3 +302,31 @@ def test_ppo_runs_stops_resumes_and_exports(tmp_path):
     assert card["provenance"]["train_seed"] == 5
     policy = load_policy(out / "final")
     assert policy.variant == "VO2"
+
+
+@pytest.mark.slow
+def test_teacher_state_follows_the_student_through_the_warm_up(tmp_path):
+    """#192 R7: the frozen teacher steps during the critic-only warm-up. With the actor's
+    learning rate at 0 the student equals the teacher, so their recurrent states must agree."""
+    from flytrack_v2.model import build_policy, export_policy
+
+    init = export_policy(
+        build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05}),
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    overrides = [
+        "envs_per_instance=2", "rollout_steps=4", "minibatches=2", "total_env_steps=320",
+        "warmup.critic_only_updates=4", "warmup.actor_ramp_updates=1", "checkpoint_every=50",
+        "actor_lr=0.0",
+    ]  # fmt: skip
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
+    run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / "ppo")
+    run.prepare(resume=False)
+    collector = run.collector
+    for update in range(config["warmup"]["critic_only_updates"]):
+        plan = schedule(update, config)
+        assert not plan.actor_on and ppo.steps_teacher(plan)
+        collector.collect_ppo(config["rollout_steps"], kickstart=ppo.steps_teacher(plan))
+    torch.testing.assert_close(collector.teacher_central, collector.central, rtol=0, atol=1e-6)
+    assert not torch.equal(collector.central, collector.teacher_initial)

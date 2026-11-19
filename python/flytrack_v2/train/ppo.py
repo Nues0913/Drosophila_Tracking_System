@@ -118,6 +118,13 @@ def schedule(update: int, config: Mapping) -> Schedule:
     return Schedule(k >= 0, actor_lr, critic_lr, kick_lambda)
 
 
+def steps_teacher(plan: Schedule) -> bool:
+    """Run the frozen teacher in this update's rollout. While lambda > 0 it steps every
+    rollout, the critic-only warm-up included, so its recurrent state has the student's
+    history when the KL starts (#192 R7); the KL is only computed once the actor trains."""
+    return plan.kick_lambda > 0
+
+
 # ---------------------------------------------------------------------------------------------
 # Critic
 
@@ -625,7 +632,7 @@ class PPORun:
                 self._set_rates(plan)
                 started = time.perf_counter()
                 rollout, collected = self.collector.collect_ppo(
-                    config["rollout_steps"], kickstart=plan.actor_on and plan.kick_lambda > 0
+                    config["rollout_steps"], kickstart=steps_teacher(plan)
                 )
                 collect_s = time.perf_counter() - started
                 metrics = ppo_update(

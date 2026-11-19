@@ -39,13 +39,14 @@ from .config import (
     read_yaml,
     validate_model_overrides,
 )
-from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch, normalization_stats
+from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch
 from .update import (
     LossSettings,
     batch_metrics,
     first_batch_gradient_norms,
     health_metrics,
     label_latent_quantiles,
+    label_margins,
     make_scheduler,
     train_update,
 )
@@ -94,8 +95,8 @@ def _atomic_save(value: dict, path: Path) -> None:
     temporary.replace(path)
 
 
-def _load(path: Path, *, mmap: bool = False) -> dict:
-    return torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
+def _load(path: Path) -> dict:
+    return torch.load(path, map_location="cpu", weights_only=True)
 
 
 def _atomic_json(value: dict, path: Path) -> None:
@@ -158,7 +159,7 @@ class DAggerRun:
         sequence = config["sequence"]
         self.replay = Replay(sequence["burn_in"], sequence["length"])
         self.settings = LossSettings(
-            sequence["burn_in"], config["activity_coef"], config["label_margin"]
+            sequence["burn_in"], config["activity_coef"], label_margins(config)
         )
         self.micro_batch = config["micro_batch"]
         self.failure_batch: SequenceBatch | None = None
@@ -184,6 +185,16 @@ class DAggerRun:
                     legacy_config["model"] = legacy_config.pop("model_config")
                 if "readout_normalization" not in saved_keys and not self.normalize_readout:
                     legacy_config.pop("readout_normalization", None)
+                if (
+                    "label_latent_bound" not in saved_keys
+                    and legacy_config.get("label_latent_bound") is None
+                ):
+                    legacy_config.pop("label_latent_bound", None)
+                if (
+                    "teacher_limit_acceleration" not in saved_keys
+                    and legacy_config.get("teacher_limit_acceleration") is True
+                ):
+                    legacy_config.pop("teacher_limit_acceleration")
                 if (
                     "desync_first_episode" not in saved_keys
                     and legacy_config.get("desync_first_episode") is False
@@ -243,9 +254,7 @@ class DAggerRun:
             complete, partial = directory / "checkpoint.pt", directory / "progress.pt"
             if not complete.is_file() and not partial.is_file():
                 break
-            self.replay.shards.append(
-                ReplayShard.restore(_load(directory / "replay.pt", mmap=True))
-            )
+            self.replay.shards.append(ReplayShard.load(directory / "replay.pt"))
             path = complete if complete.is_file() else partial
             if path == partial:
                 break
@@ -332,14 +341,13 @@ class DAggerRun:
         plan = self.plans[index]
         directory = self.round_dir(index)
         directory.mkdir(exist_ok=True)
-        shard, rollout_metrics = self.collector.collect(
+        shard, rollout_metrics, stats = self.collector.collect(
             plan, sample_readout_rates=self.normalize_readout and index == 0
         )
         self.progress.env_steps += plan.ticks * self.collector.rows
-        stats = normalization_stats(shard, self.policy.input_norm)
         replay_path = directory / "replay.pt"
         _atomic_save(shard.checkpoint(), replay_path)
-        self.replay.shards.append(ReplayShard.restore(_load(replay_path, mmap=True)))
+        self.replay.shards.append(ReplayShard.load(replay_path))
         self.progress.round_metrics = {
             **stats,
             **rollout_metrics,
@@ -588,6 +596,8 @@ class DAggerRun:
                 "dirty": None,
                 "config_sha256": self.config_sha256,
                 "stages": [{"name": "dagger", **self.resolved}],
+                # Evaluation reads the episode numbers' training seed from here (#192 R3).
+                "train_seed": self.seed,
             },
         )
         if stage_health["reason"] is not None:

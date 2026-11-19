@@ -45,8 +45,28 @@ def test_episode_seeds_are_per_training_seed_and_shared_across_scenarios():
 def test_train_seed_comes_from_the_card_then_the_path(tmp_path):
     assert evaluate_v2.train_seed_of(tmp_path, {"provenance": {"train_seed": 4}}) == 4
     assert evaluate_v2.train_seed_of(tmp_path / "VO2" / "seed_2", {"provenance": {}}) == 2
-    with pytest.raises(ValueError, match="no train seed"):
+    with pytest.raises(ValueError, match="path has 0 seed_<n> parts"):
         evaluate_v2.train_seed_of(tmp_path / "VO2", {"provenance": {}})
+
+
+def test_a_path_never_overrides_or_guesses_the_training_seed(tmp_path):
+    """#192 R3: the review's path seed_4/archive/seed_0/final for a seed 0 model gave 4."""
+    nested = tmp_path / "seed_4" / "archive" / "seed_0" / "final"
+    with pytest.raises(ValueError, match="path has 2 seed_<n> parts"):
+        evaluate_v2.train_seed_of(nested, {"provenance": {}})
+    assert evaluate_v2.train_seed_of(nested, {"provenance": {"train_seed": 0}}) == 0
+    with pytest.raises(ValueError, match="contradicts the path"):
+        evaluate_v2.train_seed_of(tmp_path / "seed_4" / "final", {"provenance": {"train_seed": 0}})
+    with pytest.raises(ValueError, match="nonnegative int"):
+        evaluate_v2.train_seed_of(tmp_path, {"provenance": {"train_seed": "0"}})
+
+
+def test_secondary_lines_are_standard_json_with_nulls():
+    from flytrack_v2.eval.runner import json_line
+
+    line = json_line({"slope": float("nan"), "n": 0.0, "phases": [1.0, float("inf")], "ok": True})
+    assert json.loads(line) == {"slope": None, "n": 0.0, "phases": [1.0, None], "ok": True}
+    assert "NaN" not in line and "Infinity" not in line
 
 
 @pytest.mark.slow

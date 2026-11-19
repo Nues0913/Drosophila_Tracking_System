@@ -91,6 +91,36 @@ def selection_seed_means(
     return {seed: float(np.mean(v)) for seed, v in sorted(values.items())}
 
 
+_EPISODE = ("train_seed", "world", "scenario", "motion", "noise_scale", "episode_seed")
+
+
+def check_pairing(records: Sequence[Mapping], spec: ComparisonSpec) -> None:
+    """Refuse a comparison whose two sides do not cover the same episodes (#192 R1).
+
+    A paired test over seed means only pairs if both sides average the same episodes: with a
+    motion missing on one side, the seed means compare an easy motion with a hard one.
+    """
+
+    def covered(selection: Mapping) -> set[tuple]:
+        return {
+            tuple(r[key] for key in _EPISODE)
+            for r in records
+            if all(r[key] == value for key, value in selection.items())
+        }
+
+    candidate, reference = covered(spec.candidate), covered(spec.reference)
+    if candidate != reference:
+        only_c, only_r = (
+            sorted(candidate - reference, key=str),
+            sorted(reference - candidate, key=str),
+        )
+        example = dict(zip(_EPISODE, (only_c or only_r)[0], strict=True))
+        raise ValueError(
+            f"{spec.name}: the two sides do not cover the same episodes ({len(only_c)} only in "
+            f"the candidate, {len(only_r)} only in the reference, e.g. {example})"
+        )
+
+
 def t_interval(values: Sequence[float], confidence: float = 0.95) -> tuple[float, float] | None:
     values = np.asarray(values, dtype=np.float64)
     if len(values) < 2:
@@ -164,15 +194,18 @@ def build_summary(
     protocol_seed: int,
     protocol_sha256: str,
     expected_episode_seeds: Sequence[int] | None = None,
+    expected: Mapping[tuple, Iterable[int]] | None = None,
     alpha: float = 0.05,
     draws: int = 10000,
 ) -> dict:
-    records = check_records(records, expected_episode_seeds)
+    """The summary JSON. The formal summary passes ``expected`` (records.expected_grid)."""
+    records = check_records(records, expected_episode_seeds, grid=expected)
     names = [spec.name for spec in specs]
     if len(set(names)) != len(names):
         raise ValueError("comparison names must be unique")
     by_family: dict[str, list[tuple[ComparisonSpec, Comparison]]] = defaultdict(list)
     for spec in specs:
+        check_pairing(records, spec)
         candidate = selection_seed_means(records, spec.candidate, spec.metric)
         reference = selection_seed_means(records, spec.reference, spec.metric)
         comparison = paired_comparison(

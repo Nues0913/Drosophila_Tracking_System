@@ -4,13 +4,21 @@ from copy import deepcopy
 import pytest
 import torch
 from flytrack_v2.model import ModelConfigV2, build_policy
-from flytrack_v2.train.config import CONFIG_DIR, load_config, plan_rounds, scenario_rows
+from flytrack_v2.train.config import (
+    CONFIG_DIR,
+    STATE_STRIDE,
+    load_config,
+    plan_rounds,
+    scenario_rows,
+)
 from flytrack_v2.train.data import (
     EPISODE_SEED_BIT,
     Replay,
     ReplayShard,
     RolloutCollector,
+    SequenceBatch,
     StepData,
+    _env_major,
     mix_actions,
 )
 from flytrack_v2.train.update import burn_in_state
@@ -197,8 +205,13 @@ def test_replay_starts_at_saved_state_and_resets_inside_sequence():
     reset[4, 0] = reset[20, 0] = True
     state = torch.arange(2 * rows, dtype=code.dtype).reshape(2, rows, 1) + 1
     shard = ReplayShard(
-        StepData(code, torch.zeros(ticks, rows, 2), reset, torch.zeros_like(reset)),
-        state.expand(-1, -1, policy.central_state_size),
+        StepData(
+            _env_major(code, torch.float16),
+            torch.zeros(rows, ticks, 2),
+            _env_major(reset, torch.bool),
+            torch.zeros(rows, ticks, dtype=torch.bool),
+        ),
+        _env_major(state.expand(-1, -1, policy.central_state_size), torch.float16),
         torch.arange(rows)[:, None].expand(-1, 3),
         torch.tensor([True, False, False, False]),
         first_snapshot,
@@ -211,8 +224,160 @@ def test_replay_starts_at_saved_state_and_resets_inside_sequence():
     assert set(held.code[0, :, 0].tolist()) == {3.0, 19.0}
     assert torch.equal(held.tags, torch.zeros_like(held.tags))
     assert (train.tags[:, 0] > 0).all()
-    snapshot = (held.code[0, :, 0].long() - first_snapshot) // 16
-    torch.testing.assert_close(held.initial, shard.states[snapshot, 0])
+    snapshot = (held.code[0, :, 0].long() - first_snapshot) // STATE_STRIDE
+    torch.testing.assert_close(held.initial, shard.states[0, snapshot].float())
     initial = policy.initial_central_state(2, "cpu")
     state = burn_in_state(policy, held.code[:2], held.reset[:2], held.initial, initial)
     torch.testing.assert_close(state, initial, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("limit", [True, False])
+def test_labels_follow_the_teacher_acceleration_setting(limit):
+    """#184: with the student driving, a limited label stays within one step's change of the
+    student's applied action; an unlimited label is the action the teacher wants."""
+    overrides = ["envs_per_instance=4", "desync_first_episode=false"]
+    config = load_config(
+        CONFIG_DIR / "dagger.yaml", "4060", [*overrides, f"teacher_limit_acceleration={limit}"]
+    )
+    assert config["teacher_limit_acceleration"] is limit
+    policy = build_policy("VO2", ModelConfigV2(initial_state="bias"), graph=small_graph())
+    collector = RolloutCollector(policy, config, seed=3, device=torch.device("cpu"))
+    initial = policy.initial_central_state(collector.rows, "cpu")
+    contract, dt = policy.contract, policy.contract.control_dt
+    step_limit = torch.tensor([contract.linear_accel_max, contract.angular_accel_max]) * dt
+    largest = torch.zeros(2)
+    for _ in range(20):
+        applied = torch.cat([world.privileged()["agent_velocity"] for world in collector.worlds])
+        label = collector.step(0.0, initial).action
+        largest = torch.maximum(largest, (label - applied).abs().amax(0))
+    if limit:
+        assert (largest <= step_limit + 1e-5).all()
+    else:
+        assert (largest > step_limit + 1e-3).any()
+
+
+def test_configs_without_the_setting_keep_v1_labels(tmp_path):
+    import yaml
+
+    values = yaml.safe_load((CONFIG_DIR / "dagger.yaml").read_text())
+    del values["teacher_limit_acceleration"]
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(values))
+    assert load_config(path, "4060")["teacher_limit_acceleration"] is True
+    assert load_config(CONFIG_DIR / "dagger.yaml", "4060")["teacher_limit_acceleration"] is False
+
+
+def test_label_latent_bound_keeps_every_label_within_three():
+    import math
+
+    from flytrack_v2.interfaces import unsquash
+    from flytrack_v2.train.update import label_margins, shrink_labels
+
+    config = load_config(CONFIG_DIR / "dagger.yaml", "4060")
+    assert config["label_latent_bound"] == 3.0
+    margins = label_margins(config)
+    assert margins == pytest.approx((1 / (1 + math.exp(3)), 1 - math.tanh(3)))
+    extremes = torch.tensor([[0.0, -1.5], [0.5, 1.5], [0.25, 0.0]])
+    latent = unsquash(shrink_labels(extremes, 0.5, 1.5, margins), 0.5, 1.5)
+    assert latent[:2].abs().amax() == pytest.approx(3.0, abs=1e-4)
+    assert latent[2].abs().amax() < 1e-5
+    legacy = load_config(CONFIG_DIR / "dagger.yaml", "4060", ["label_latent_bound=null"])
+    assert label_margins(legacy) == (1e-3, 1e-3)
+    with pytest.raises(ValueError, match="label_latent_bound"):
+        load_config(CONFIG_DIR / "dagger.yaml", "4060", ["label_latent_bound=0"])
+
+
+def test_replay_round_trip_preserves_draw_order(tmp_path):
+    rng = torch.Generator().manual_seed(42)
+    replay = Replay(burn_in=2, length=4)
+    originals = []
+    for index, (rows, ticks, first) in enumerate(((67, 41, 3), (4, 27, 5))):
+        n_snapshots = len(range(first, ticks, STATE_STRIDE))
+        steps = StepData(
+            torch.randn(ticks, rows, 7, generator=rng),
+            torch.randn(ticks, rows, 2, generator=rng),
+            torch.rand(ticks, rows, generator=rng) < 0.1,
+            torch.rand(ticks, rows, generator=rng) < 0.3,
+        )
+        states = torch.randn(n_snapshots, rows, 9, generator=rng)
+        tags = torch.stack((torch.full((rows,), index), torch.arange(rows)), dim=-1)
+        held_out = tags[:, 1] % 3 == 0
+        shard = ReplayShard(
+            StepData(
+                _env_major(steps.code, torch.float16),
+                *(_env_major(value, value.dtype) for value in steps[1:]),
+            ),
+            _env_major(states, torch.float16),
+            tags,
+            held_out,
+            first,
+        )
+        path = tmp_path / f"replay-{index}.pt"
+        torch.save(shard.checkpoint(), path)
+        saved = torch.load(path, weights_only=True)
+        assert saved["layout"] == "env_major_f16"
+        loaded = ReplayShard.load(path)
+        assert all(tensor.is_contiguous() for tensor in (*loaded.steps, loaded.states))
+        assert loaded.steps.code.dtype == loaded.states.dtype == torch.float16
+        replay.shards.append(loaded)
+        originals.append((steps, states, tags, held_out, first))
+
+    for held_out in (False, True):
+        # The old flat population enumerated starts first and rows second within each shard.
+        population = [
+            (steps, states, tags, row, snap, tick)
+            for steps, states, tags, split, first in originals
+            for snap, tick in enumerate(
+                range(first, steps.code.size(0) - replay.window + 1, STATE_STRIDE)
+            )
+            for row in torch.where(split == held_out)[0].tolist()
+        ]
+        size, seed = 256, 19
+        draw_rng = torch.Generator().manual_seed(seed)
+        if held_out:
+            indices = torch.randperm(len(population), generator=draw_rng)[:size]
+        else:
+            indices = torch.randint(len(population), (size,), generator=draw_rng)
+            assert len(indices.unique()) < size
+        picked = [population[i] for i in indices.tolist()]
+        code, action, reset, occluded = (
+            torch.stack(
+                [
+                    steps[field][tick : tick + replay.window, row]
+                    for steps, _, _, row, _, tick in picked
+                ],
+                dim=1,
+            )
+            for field in range(len(StepData._fields))
+        )
+        initial = torch.stack([states[snap, row] for _, states, _, row, snap, _ in picked])
+        tags = torch.stack([tags[row] for _, _, tags, row, _, _ in picked])
+        expected = SequenceBatch(
+            code.half().float(), action, reset, initial.half().float(), tags, occluded
+        )
+        sample_rng = torch.Generator().manual_seed(seed)
+        batch = replay.sample(size, sample_rng, held_out=held_out)
+        torch.testing.assert_close(batch, expected, rtol=0, atol=0)
+        assert torch.equal(sample_rng.get_state(), draw_rng.get_state())
+
+
+def test_restore_rejects_legacy_time_major_replay(tmp_path):
+    code = torch.zeros(16, 2, 3)
+    path = tmp_path / "legacy.pt"
+    torch.save(
+        {
+            "steps": StepData(
+                code,
+                torch.zeros(16, 2, 2),
+                torch.zeros(16, 2, dtype=torch.bool),
+                torch.zeros(16, 2, dtype=torch.bool),
+            )._asdict(),
+            "states": torch.zeros(1, 2, 4),
+            "tags": torch.zeros(2, 3, dtype=torch.uint8),
+            "held_out": torch.tensor([False, True]),
+            "first_snapshot": 0,
+        },
+        path,
+    )
+    with pytest.raises(ValueError, match=r"legacy time-major float32.*Start a new DAgger run"):
+        ReplayShard.load(path)

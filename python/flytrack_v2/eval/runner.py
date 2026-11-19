@@ -12,6 +12,7 @@ per-episode sums of distance and commanded speed, so the speed-distance slope co
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -199,6 +200,26 @@ class EpisodeResult:
 # reacquisition rule); after reacquisition
 OCCLUSION_PHASES = ("before", "during", "gap", "after")
 REACQUIRE_RAD = math.radians(15)
+
+
+def jsonable(value):
+    """``value`` with every NaN or infinite float replaced by None, recursively (#192 R4).
+
+    A secondary value that has no data (no occlusion phase in a normal episode, a slope over
+    fewer than two steps) is missing, not zero; standard JSON has no NaN, so it is written as
+    null and the step counts beside it say how much data there was.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {key: jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    return value
+
+
+def json_line(value) -> str:
+    return json.dumps(jsonable(value), allow_nan=False) + "\n"
 
 
 def _speed_distance(sums: Mapping[str, Tensor], batch: int) -> dict[str, list[float]]:

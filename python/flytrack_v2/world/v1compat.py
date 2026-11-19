@@ -116,6 +116,11 @@ class V1CompatWorld:
     - fused, graph: on CUDA with hash draws, the hot loops run as fused kernels (kernels.py)
       and each step replays two CUDA graphs (physics, then the automatic reset when a row
       ended; one host sync decides). fused=False keeps the eager torch reference on CUDA.
+    - env_index_offset, episode_seed_namespace (#137): the derived seed of episode k of row i
+      is ``episode_seed(seed, i + env_index_offset, k) | episode_seed_namespace``. The offset
+      lets several worlds share one global row numbering (e.g. one world per motion); the
+      namespace keeps a range of seeds apart (training uses ``2**40``). Explicit
+      ``episode_seeds`` are used as given.
     """
 
     def __init__(
@@ -135,7 +140,21 @@ class V1CompatWorld:
         reward: str = "track_v2",
         occlusion_view: str = "hide_target",
         wind: WindConfig | dict | None = None,
+        env_index_offset: int = 0,
+        episode_seed_namespace: int = 0,
     ):
+        def is_int(value):
+            return isinstance(value, int) and not isinstance(value, bool)
+
+        if not is_int(env_index_offset) or env_index_offset < 0:
+            raise ValueError("env_index_offset must be a nonnegative int")
+        if (
+            not is_int(episode_seed_namespace)
+            or not 0 <= episode_seed_namespace < 1 << rng.SEED_BITS
+        ):
+            raise ValueError("episode_seed_namespace must be an int in [0, 2**52)")
+        self.env_index_offset = env_index_offset
+        self.episode_seed_namespace = episode_seed_namespace
         if reward not in ("track_v2", "v1"):
             raise ValueError("reward must be track_v2 or v1")
         if occlusion_view not in ("hide_target", "blackout"):
@@ -254,6 +273,7 @@ class V1CompatWorld:
             self.puff_capacity = min(self.puff_capacity, self.wind.capacity)
         self.sources = sources
         self.env_index = torch.arange(self.num_envs, device=self.device)
+        self._seed_rows = self.env_index + self.env_index_offset
         self._path_slots = torch.arange(PATH_SLOTS, device=self.device)
         self._puff_slots = torch.arange(self.puff_capacity, device=self.device)
         self._event_slots = torch.arange(max(VISION_SLOTS, ODOR_SLOTS), device=self.device)
@@ -764,11 +784,16 @@ class V1CompatWorld:
     def reset(
         self, mask: Tensor | None = None, episode_seeds: Tensor | None = None
     ) -> dict[str, Tensor]:
+        # The first reset starts episode 0 everywhere. A later one starts the next episode on
+        # the masked rows, like the automatic reset, unless explicit seeds are given (#137).
         if not self._state:
             self._state = self._new_state()
             mask = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        elif mask is None:
-            mask = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            if mask is None:
+                mask = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            if episode_seeds is None:
+                self.episode_index.add_(mask.to(self.device).long())
         static = self._begin()
         self._reset_rows(mask.to(self.device), episode_seeds)
         self._render_vision(self._state, torch.nonzero(mask).flatten())
@@ -778,7 +803,9 @@ class V1CompatWorld:
     def _reset_rows(self, mask: Tensor, episode_seeds: Tensor | None) -> None:
         s = self._state
         if episode_seeds is None:
-            seeds = rng.episode_seed(self.seed, self.env_index, self.episode_index)
+            seeds = rng.episode_seed(self.seed, self._seed_rows, self.episode_index)
+            if self.episode_seed_namespace:
+                seeds = seeds | self.episode_seed_namespace
         else:
             seeds = episode_seeds.to(self.device, torch.int64)
             if bool(((seeds < 0) | (seeds >= 1 << rng.SEED_BITS)).any()):
@@ -966,6 +993,13 @@ class V1CompatWorld:
             if value is not static[name]:
                 static[name].copy_(value)
         self._state = static
+
+    def release_rollout_graphs(self) -> None:
+        """Free the CUDA graphs and their memory pool; the state is kept, and the next step
+        captures them again."""
+        self._graph = None
+        for name in ("_reset_graph", "_graph_outputs", "_graph_action"):
+            self.__dict__.pop(name, None)
 
     def _capture(self, action: Tensor) -> None:
         """Record _physics and the automatic reset as two CUDA graphs. Warm-up runs mutate

@@ -58,7 +58,11 @@
 | `HashDraws` | 正式使用 | 以 (episode seed, 流, 計數) 做 SplitMix64 雜湊。不存狀態、不需要 host 同步，也和 agent 的動作、其他列都無關。 |
 | `V1Draws` | parity 測試 | 對同一個 episode seed，照 v1 的抽取順序重放它的 numpy 流（布局、軌跡相位、domain randomization、wander、puff 擾動、感測雜訊）。在 host 上逐列跑，只給測試用。 |
 
-- **回合 seed**：環境 i 的第 k 回合用 hash(seed, i, k)。`reset(episode_seeds=...)` 可以直接指定。
+- **回合 seed**：環境 i 的第 k 回合用 hash(seed, i + `env_index_offset`, k)，再 OR 上 `episode_seed_namespace`（#137）。`reset(episode_seeds=...)` 可以直接指定，指定的 seed 照原樣使用，不加 namespace。
+  - `env_index_offset`（預設 0）：好幾個世界共用一套全域的列編號，例如 DAgger 每種運動一個世界。
+  - `episode_seed_namespace`（預設 0，要在 [0, 2⁵²) 內）：把一段 seed 隔開。訓練用 2⁴⁰，所以訓練的回合 seed 都帶第 40 位元，和協定裡所有小於 2⁴⁰ 的明確 seed 不會重疊。
+- **回合編號**：第一次 `reset()` 是第 0 回合。之後每次重設（自動重設，或沒有給 `episode_seeds` 的 `reset(mask)`）都會讓被重設的列 `episode_index` 加 1，所以會開始新的回合，不會重播同一回合。給了 `episode_seeds` 時編號不變。要重播同一回合，就把 `privileged()["episode_seed"]` 傳回 `reset(episode_seeds=...)`。
+- **`release_rollout_graphs()`**：釋放 CUDA graph 和它的記憶體池，狀態保留；下一次 `step` 會重新 capture。
 - **v1 的一個特性**：用明確 seed 重設時，v1 的軌跡相位和 domain randomization 都從 `default_rng(seed)` 的第一個值開始抽，所以兩者相關。`V1Draws` 照樣重現，`HashDraws` 則用獨立的流。
 
 ## 4. 和 v1 的比對（parity）

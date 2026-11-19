@@ -88,6 +88,7 @@
   - PPO 遇到 `truncated` 的列，critic 用 `final_privileged` 做 bootstrap。
 - **回合 seed**：
   - 第 i 個環境的第 k 回合，seed 由 (seed, i, k) 推導；
+  - 第一次 `reset()` 是第 0 回合。之後自動重設和沒有給 `episode_seeds` 的 `reset(mask)`，都讓被重設的列 k 加 1，開始新的回合；給了 `episode_seeds` 時 k 不變（#137）；
   - 世界的隨機性（布局、目標路徑、plume、雜訊）**不能受 agent 的動作影響**，配對比較才能共用同一組抽樣；
   - 每一列有自己的隨機流，用 counter-based 的雜湊實作（#132）。
 - **parity 測試**（計劃書 4.2）：

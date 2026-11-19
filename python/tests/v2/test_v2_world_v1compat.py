@@ -16,6 +16,7 @@ from flytrack_core.contracts import SensorContract
 from flytrack_sim.env import FlyTrackEnv
 from flytrack_v2.contracts import PRIVILEGED_KEYS, SensorContractV2, validate_obs
 from flytrack_v2.interfaces import EPISODE_INFO_KEYS, STEP_INFO_KEYS
+from flytrack_v2.world.rng import episode_seed
 from flytrack_v2.world.teacher import PrivilegedTeacher
 from flytrack_v2.world.v1compat import V1CompatWorld, track_v2_reward
 from flytrack_v2.world.vision import BatchedRetina
@@ -342,3 +343,121 @@ def test_track_v2_reward(contracts):
         result.info["tracked"], distance, result.info["collision"], torch.zeros(6, 2), 1.0
     )
     torch.testing.assert_close(result.reward, manual.to(torch.float32))
+
+
+# ------------------------------------------------------------------------------------------
+# Episode numbering and seed options (#137)
+
+NAMESPACE = 1 << 40
+
+
+def _derived(world, rows, k):
+    return episode_seed(world.seed, rows + world.env_index_offset, k) | world.episode_seed_namespace
+
+
+def test_offset_and_namespace_shape_the_derived_seeds(contracts):
+    world = _world(contracts, env_index_offset=12, episode_seed_namespace=NAMESPACE)
+    rows = torch.arange(6)
+    world.reset()
+    seeds = world.privileged()["episode_seed"]
+    assert torch.equal(seeds, _derived(world, rows, torch.zeros(6, dtype=torch.int64)))
+    assert torch.all(seeds & NAMESPACE == NAMESPACE)
+    # Row i of a world with offset 12 draws what row i + 12 of an offset-free world would.
+    plain = _world(contracts, num_envs=18)
+    plain.reset()
+    assert torch.equal(seeds, plain.privileged()["episode_seed"][12:] | NAMESPACE)
+
+
+def test_masked_reset_starts_the_next_episode_on_masked_rows_only(contracts):
+    world = _world(contracts, env_index_offset=12, episode_seed_namespace=NAMESPACE)
+    world.reset()
+    before = world.privileged()["episode_seed"].clone()
+    mask = torch.tensor([True, False, True, False, False, True])
+    world.reset(mask)
+    assert torch.equal(world.episode_index, mask.long())
+    after = world.privileged()
+    assert torch.equal(after["episode_seed"][~mask], before[~mask])
+    assert torch.equal(after["episode_seed"], _derived(world, torch.arange(6), mask.long()))
+    assert torch.all(after["time_s"][mask] == 0)
+
+
+def test_full_reset_starts_a_new_episode_and_explicit_seeds_replay(contracts):
+    world = _world(contracts)
+    first = world.reset()
+    seeds = world.privileged()["episode_seed"].clone()
+    second = world.reset()
+    assert torch.all(world.episode_index == 1)
+    assert not torch.any(world.privileged()["episode_seed"] == seeds)
+    assert not torch.equal(first["vision"], second["vision"])
+    # Explicit seeds are used as given (no namespace) and leave the numbering alone.
+    replay = world.reset(episode_seeds=seeds)
+    assert torch.all(world.episode_index == 1)
+    assert torch.equal(world.privileged()["episode_seed"], seeds)
+    torch.testing.assert_close(replay["vision"], first["vision"], rtol=0, atol=0)
+    named = _world(contracts, episode_seed_namespace=NAMESPACE)
+    named.reset(episode_seeds=seeds)
+    assert torch.equal(named.privileged()["episode_seed"], seeds)
+
+
+def test_automatic_reset_uses_the_offset_and_namespace(contracts):
+    world = _world(contracts, env_index_offset=12, episode_seed_namespace=NAMESPACE)
+    world.reset()
+    for _ in range(40):  # 2 s episodes
+        result = world.step(torch.tensor([[0.2, 0.3]]).expand(6, 2))
+    assert bool(result.truncated.all())
+    assert torch.equal(
+        world.privileged()["episode_seed"], _derived(world, torch.arange(6), torch.ones(6).long())
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"env_index_offset": -1},
+        {"env_index_offset": 1.0},
+        {"env_index_offset": True},
+        {"episode_seed_namespace": -1},
+        {"episode_seed_namespace": 1 << 52},
+        {"episode_seed_namespace": True},
+    ],
+)
+def test_seed_options_are_validated(contracts, kwargs):
+    with pytest.raises(ValueError):
+        _world(contracts, **kwargs)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the CUDA graphs need CUDA")
+def test_graph_path_numbers_episodes_like_eager_and_recaptures(contracts):
+    def make(**kw):
+        return V1CompatWorld(
+            contracts[0],
+            64,
+            [SCENARIOS[i % 4] for i in range(64)],
+            {"episode_seconds": 2, "target_motion": ["curved", "wander"]},
+            seed=5,
+            device="cuda",
+            scenario_configs=_scenario_configs(occlusion_start_s=0.5),
+            env_index_offset=64,
+            episode_seed_namespace=NAMESPACE,
+            **kw,
+        )
+
+    fast, slow = make(), make(fused=False)
+    assert fast.graph
+    mask = (torch.arange(64, device="cuda") % 3) == 0
+    action = torch.tensor([[0.2, 0.3]], device="cuda").expand(64, 2)
+    for world in (fast, slow):
+        world.reset()
+    for step in range(100):
+        if step == 7:
+            for world in (fast, slow):
+                world.reset(mask)
+        if step == 50:
+            fast.release_rollout_graphs()
+            assert fast._graph is None
+        a, b = fast.step(action), slow.step(action)
+        assert torch.equal(a.info["episode_seed"], b.info["episode_seed"])
+    assert torch.equal(fast.episode_index, slow.episode_index)
+    assert torch.equal(fast.privileged()["episode_seed"], slow.privileged()["episode_seed"])
+    assert fast._graph is not None

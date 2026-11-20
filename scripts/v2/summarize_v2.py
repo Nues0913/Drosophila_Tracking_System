@@ -1,0 +1,434 @@
+"""Score a v2 evaluation against the registered protocol (WP10 #144; #192 R1, R2, R12, R13).
+
+Reads the episodes.jsonl, secondary.jsonl and manifest.json of one or more
+scripts/v2/evaluate_v2.py outputs (the formal evaluation may be split over hosts), and
+refuses to decide unless the records cover the protocol's full grid
+(records.expected_grid): every variant x training seed x world x scenario x motion x noise
+scale with that seed's own episode numbers, and, for G-D, formal-v1's reference actor in
+v1compat. Then:
+
+- the registered comparisons through summary.build_summary: the primary family (G-B, G-C for
+  each qualifying control, G-D) and the secondary families (G-C superiority, G-B by motion,
+  noise sensitivity);
+- G-A, a threshold gate on seed means; G-C's qualification (a control's normal success
+  >= 0.3, #161 E2);
+- A3 (the within-episode pooled aligned slope per seed, and the speed-held paired test) and E1
+  (the occlusion-window ablations against occlusion_baseline) from secondary.jsonl, each its
+  own secondary family; the reacquisition time with its censored fraction;
+- the registered wording of each negative result (protocol negative_results).
+
+G-E (throughput) comes from the bench, not from evaluation records.
+
+Usage: python scripts/v2/summarize_v2.py --runs DIR [DIR ...] --output report.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from collections import defaultdict
+from collections.abc import Sequence
+from pathlib import Path
+
+import numpy as np
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "python"))
+
+from flytrack_v2.eval.records import expected_grid  # noqa: E402
+from flytrack_v2.eval.runner import jsonable, pooled_slope  # noqa: E402
+from flytrack_v2.eval.stats import (  # noqa: E402
+    holm,
+    paired_comparison,
+    restricted_reacquisition,
+)
+from flytrack_v2.eval.summary import (  # noqa: E402
+    ComparisonSpec,
+    build_summary,
+    selection_seed_means,
+    t_interval,
+)
+from flytrack_v2.metrics import V1_REFERENCE_PREFIX  # noqa: E402
+
+CONTROLS = ("RW2", "ER2", "GRU2")
+G_A_THRESHOLD = 0.80  # gates.G-A
+G_B_MINIMUM = G_D_MINIMUM = 0.10  # gates.G-B, gates.G-D
+G_C_MARGIN = 0.05  # gates.G-C
+G_C_QUALIFY = 0.30  # a control below this normal success is not compared (#161 E2)
+A3_TEACHER_SLOPE = 0.257  # m/s per m, teacher driving, aligned (#184 (b))
+A3_POSITIVE_SEEDS = 4  # of 5
+E1_ABLATIONS = ("odor_swap_occlusion", "wind_rotate_90_occlusion")
+
+
+def read_runs(paths: Sequence[Path]) -> tuple[list[dict], list[dict], list[dict]]:
+    records, secondary, premise = [], [], []
+    for path in paths:
+        records += [json.loads(line) for line in (path / "episodes.jsonl").open()]
+        secondary += [json.loads(line) for line in (path / "secondary.jsonl").open()]
+        manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+        premise += manifest.get("e1_premise", [])
+    return records, secondary, premise
+
+
+def grid_for(protocol, use, variants, train_seeds, v1_variant, episodes, sensitivity):
+    """The protocol's full grid: the v2 variants in every world, and formal-v1's reference in
+    v1compat's main run only (evaluate_v2.py --v1-artifacts, #192 R2)."""
+    grid = expected_grid(
+        protocol, use, variants=variants, train_seeds=train_seeds,
+        sensitivity=sensitivity, episodes=episodes,
+    )  # fmt: skip
+    if v1_variant is not None:
+        grid.update(
+            expected_grid(
+                protocol,
+                use,
+                variants=[v1_variant],
+                train_seeds=train_seeds,
+                worlds=["v1compat"],
+                sensitivity=False,
+                episodes=episodes,
+            )  # fmt: skip
+        )
+    return grid
+
+
+def seed_mean(records, selection, metric="success") -> tuple[float, dict]:
+    by_seed = selection_seed_means(records, selection, metric)
+    return float(np.mean(list(by_seed.values()))), by_seed
+
+
+def qualifying_controls(records, variants) -> dict[str, dict]:
+    """G-C compares VO2 only with controls whose normal success (both worlds and motions) is at
+    least 0.3 (#161 E2)."""
+    out = {}
+    for control in CONTROLS:
+        if control in variants:
+            mean, by_seed = seed_mean(records, {"variant": control, "scenario": "normal"})
+            out[control] = {"normal_success": mean, "qualifies": mean >= G_C_QUALIFY}
+    return out
+
+
+def registered_specs(qualifying: Sequence[str], v1_variant: str | None, scales) -> list:
+    """The protocol's registered comparisons (comparisons: primary, secondary)."""
+    vo2 = {"variant": "VO2"}
+    g_b = ({**vo2, "world": "wind", "scenario": "occlusion"},
+           {"variant": "V2", "world": "wind", "scenario": "occlusion"})  # fmt: skip
+    specs = [ComparisonSpec("G-B", "primary", "superiority", *g_b, minimum_difference=G_B_MINIMUM)]
+    for control in qualifying:
+        specs.append(
+            ComparisonSpec(
+                f"G-C VO2 vs {control}",
+                "primary",
+                "noninferiority",
+                {**vo2, "scenario": "normal"},
+                {"variant": control, "scenario": "normal"},
+                margin=G_C_MARGIN,
+            )  # fmt: skip
+        )
+    g_d = {"world": "v1compat", "scenario": "normal", "motion": "curved"}
+    if v1_variant is not None:
+        specs.append(
+            ComparisonSpec(
+                "G-D",
+                "primary",
+                "superiority",
+                {**vo2, **g_d},
+                {"variant": v1_variant, **g_d},
+                minimum_difference=G_D_MINIMUM,
+            )  # fmt: skip
+        )
+    for control in qualifying:
+        specs.append(
+            ComparisonSpec(
+                f"G-C VO2 vs {control} superiority",
+                "G-C superiority",
+                "superiority",
+                {**vo2, "scenario": "normal"},
+                {"variant": control, "scenario": "normal"},
+                secondary=True,
+            )  # fmt: skip
+        )
+    for motion in ("curved", "wander"):
+        specs.append(
+            ComparisonSpec(
+                f"G-B {motion}",
+                "G-B by motion",
+                "superiority",
+                {**g_b[0], "motion": motion},
+                {**g_b[1], "motion": motion},
+                secondary=True,
+            )  # fmt: skip
+        )
+    # Noise sensitivity: G-B and G-C on the noise scenario at every scale; formal-v1 only runs
+    # the main scale, so G-D's noise comparison is at the main scale alone.
+    for scale in scales:
+        noise = {"scenario": "noise", "noise_scale": scale}
+        specs.append(
+            ComparisonSpec(
+                f"G-B noise {scale}",
+                "noise sensitivity",
+                "superiority",
+                {**vo2, "world": "wind", **noise},
+                {"variant": "V2", "world": "wind", **noise},
+                secondary=True,
+            )  # fmt: skip
+        )
+        for control in qualifying:
+            specs.append(
+                ComparisonSpec(
+                    f"G-C VO2 vs {control} noise {scale}",
+                    "noise sensitivity",
+                    "noninferiority",
+                    {**vo2, **noise},
+                    {"variant": control, **noise},
+                    margin=G_C_MARGIN,
+                    secondary=True,
+                )  # fmt: skip
+            )
+    if v1_variant is not None:
+        main = {"world": "v1compat", "motion": "curved", "scenario": "noise",
+                "noise_scale": scales[0]}  # fmt: skip
+        specs.append(
+            ComparisonSpec(
+                f"G-D noise {scales[0]}",
+                "noise sensitivity",
+                "superiority",
+                {**vo2, **main},
+                {"variant": v1_variant, **main},
+                secondary=True,
+            )  # fmt: skip
+        )
+    return specs
+
+
+def g_a(records) -> dict:
+    worlds = {}
+    for world in ("v1compat", "wind"):
+        selection = {"variant": "VO2", "world": world, "scenario": "normal", "motion": "curved"}
+        mean, by_seed = seed_mean(records, selection)
+        t = t_interval(list(by_seed.values()))
+        worlds[world] = {
+            "mean": mean,
+            "seeds": {str(s): v for s, v in by_seed.items()},
+            "t95": None if t is None else list(t),
+            "passed": mean >= G_A_THRESHOLD,
+        }
+    return {
+        "rule": "VO2 curved normal success >= 0.80 in v1compat and in wind (seed means)",
+        "worlds": worlds,
+        "passed": all(w["passed"] for w in worlds.values()),
+    }
+
+
+def _rows(secondary, **match) -> list[dict]:
+    return [r for r in secondary if all(r.get(k) == v for k, v in match.items())]
+
+
+def _paired_by_seed(name, candidate_rows, reference_rows, metric, protocol_seed):
+    """Seed means over the episodes both sides have a value for (same episode seeds)."""
+
+    def by_episode(rows):
+        return {(r["train_seed"], r["world"], r["motion"], r["episode_seed"]): r[metric]
+                for r in rows}  # fmt: skip
+
+    a, b = by_episode(candidate_rows), by_episode(reference_rows)
+    if set(a) != set(b):
+        raise ValueError(f"{name}: the two runs do not cover the same episodes")
+    seeds = defaultdict(lambda: ([], []))
+    for key in a:
+        if a[key] is not None and b[key] is not None:
+            seeds[key[0]][0].append(float(a[key]))
+            seeds[key[0]][1].append(float(b[key]))
+    cand = {s: float(np.mean(x)) for s, (x, _) in seeds.items()}
+    ref = {s: float(np.mean(y)) for s, (_, y) in seeds.items()}
+    return paired_comparison(name, cand, ref, "superiority", protocol_seed=protocol_seed)
+
+
+def _comparison_dict(c) -> dict:
+    return {
+        "name": c.name,
+        "mean_difference": c.difference.mean,
+        "t95": [c.difference.low, c.difference.high],
+        "p_value": c.p_value,
+        "p_holm": c.p_holm,
+        "significant": bool(c.passed),
+        "degenerate": c.degenerate,
+    }
+
+
+def a3(secondary, train_seeds, protocol_seed, alpha) -> dict:
+    """protocol comparisons.secondary.A3 speed: VO2, normal scenario, both worlds and motions."""
+    main = _rows(secondary, run="main", variant="VO2", scenario="normal")
+    clamp = _rows(secondary, run="speed_clamp", variant="VO2", scenario="normal")
+    if not main or "aligned_sxy" not in main[0]:
+        return {"status": "missing", "reason": "no main rows with the centered moments (#199)"}
+    seeds = {}
+    for seed in train_seeds:
+        rows = [r for r in main if r["train_seed"] == seed]
+        seeds[str(seed)] = {
+            "aligned_slope_m_s_per_m": pooled_slope(rows, "aligned_"),
+            "slope_m_s_per_m": pooled_slope(rows, ""),
+        }
+    positive = sum(1 for v in seeds.values() if (v["aligned_slope_m_s_per_m"] or 0.0) > 0)
+    out = {
+        "teacher_aligned_slope_m_s_per_m": A3_TEACHER_SLOPE,
+        "seeds": seeds,
+        "positive_aligned_seeds": positive,
+    }
+    if not clamp:
+        out.update(status="missing", reason="no speed_clamp rows (evaluate_v2.py --speed-clamp)")
+        return out
+    (test,) = holm([_paired_by_seed("A3 speed held", main, clamp, "success", protocol_seed)], alpha)
+    out["speed_held"] = _comparison_dict(test)
+    out["status"] = "decided"
+    out["speed_problem_solved"] = positive >= A3_POSITIVE_SEEDS and bool(test.passed)
+    return out
+
+
+def e1(secondary, premise, protocol_seed, alpha) -> dict:
+    """protocol comparisons.secondary.E1 attribution: occlusion-window ablations against the
+    unablated occlusion-only batch, tracking during the occlusion, Holm across the two."""
+    base = _rows(secondary, run="occlusion_baseline", variant="VO2")
+    if not base:
+        return {"status": "missing", "reason": "no occlusion_baseline rows (--ablations)"}
+    tests = []
+    for label in E1_ABLATIONS:
+        ablated = _rows(secondary, run=label, variant="VO2")
+        tests.append(
+            _paired_by_seed(f"E1 {label}", base, ablated, "during_tracking_fraction", protocol_seed)
+        )
+    adjusted = holm(tests, alpha)
+    worst = max((row["max_m"] for row in premise), default=None)
+    return {
+        "status": "decided",
+        "tests": [_comparison_dict(c) for c in adjusted],
+        "any_significant": any(c.passed for c in adjusted),
+        "premise": {"pairs": premise, "max_distance_m": worst},
+    }
+
+
+def reacquisition(records, bound_s) -> dict:
+    out = {}
+    for variant in ("VO2", "V2"):
+        selection = {"variant": variant, "world": "wind", "scenario": "occlusion"}
+        rows = restricted_reacquisition(
+            [r for r in records if all(r[k] == v for k, v in selection.items())], bound_s
+        )
+        timed = [r for r in rows if r["restricted_reacquisition_time_s"] is not None]
+        censored = [r for r in rows if r["reacquisition_censored"] is not None]
+        out[variant] = {
+            "restricted_mean_time_s": float(
+                np.mean([r["restricted_reacquisition_time_s"] for r in timed])
+            ) if timed else None,
+            "censored_fraction": float(np.mean([r["reacquisition_censored"] for r in censored]))
+            if censored else None,
+            "ended_during_occlusion": len(rows) - len(censored),
+        }  # fmt: skip
+    return {"bound_s": bound_s, "wind_occlusion": out}
+
+
+def conclusions(protocol, gates, a3_result, e1_result) -> list[str]:
+    """The registered wording of each negative result (protocol negative_results, #192 R13)."""
+    wording = protocol["negative_results"]
+    out = []
+    if a3_result.get("status") != "decided" or not a3_result["speed_problem_solved"]:
+        out.append(f"speed: {wording['speed'].split(chr(34))[1]}")
+    g_b = gates["G-B"]
+    if (
+        not g_b["passed"]
+        or e1_result.get("status") != "decided"
+        or not e1_result["any_significant"]
+    ):
+        out.append(f"occlusion: {wording['occlusion'].split(chr(34))[1]}")
+    if gates["G-C"]["status"] == "not testable":
+        out.append(f"structure: {wording['structure'].split(chr(34))[1]}")
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> dict:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--runs", nargs="+", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--protocol", type=Path, default=ROOT / "configs/v2/evaluation_protocol.yaml"
+    )
+    parser.add_argument("--seeds", choices=("formal_evaluation", "pilot_held_out"),
+                        default="formal_evaluation")  # fmt: skip
+    parser.add_argument("--variants", nargs="+", default=None)
+    parser.add_argument("--train-seeds", nargs="+", type=int, default=None)
+    parser.add_argument("--v1-reference", default="VO-late", help="'none' for no G-D")
+    parser.add_argument("--no-sensitivity", action="store_true")
+    parser.add_argument("--episodes", type=int, default=None, help="pilots and tests only")
+    args = parser.parse_args(argv)
+    protocol = yaml.safe_load(args.protocol.read_text(encoding="utf-8"))
+    variants = args.variants or protocol["model_variants"]
+    train_seeds = args.train_seeds or protocol["training_seeds"]
+    v1_variant = (
+        None if args.v1_reference == "none" else f"{V1_REFERENCE_PREFIX}{args.v1_reference}"
+    )
+    noise = protocol["scenarios"]["noise"]
+    scales = [noise["scale"], *([] if args.no_sensitivity else noise["sensitivity_scales"])]
+    alpha = 0.05
+    protocol_sha256 = hashlib.sha256(args.protocol.read_bytes()).hexdigest()
+    protocol_seed = int(protocol_sha256[:8], 16)
+
+    records, secondary, premise = read_runs(args.runs)
+    grid = grid_for(
+        protocol, args.seeds, variants, train_seeds, v1_variant, args.episodes,
+        not args.no_sensitivity,
+    )  # fmt: skip
+    controls = qualifying_controls(records, variants)
+    qualifying = [c for c, v in controls.items() if v["qualifies"]]
+    specs = registered_specs(qualifying, v1_variant, scales)
+    # build_summary refuses incomplete or unpaired records before computing anything.
+    summary = build_summary(
+        records, specs, protocol_seed=protocol_seed, protocol_sha256=protocol_sha256,
+        expected=grid, alpha=alpha,
+    )  # fmt: skip
+    rows = {row["name"]: row for row in summary["comparisons"]}
+    gates = {"G-A": g_a(records)}
+    gates["G-B"] = {"passed": bool(rows["G-B"]["gate_passed"]), "comparison": "G-B"}
+    if qualifying:
+        names = [f"G-C VO2 vs {c}" for c in qualifying]
+        gates["G-C"] = {
+            "status": "decided",
+            "controls": controls,
+            "passed": all(rows[name]["gate_passed"] for name in names),
+            "comparisons": names,
+        }
+    else:
+        gates["G-C"] = {"status": "not testable", "controls": controls, "passed": None}
+    gates["G-D"] = (
+        {"passed": bool(rows["G-D"]["gate_passed"]), "comparison": "G-D"}
+        if v1_variant is not None
+        else {"status": "not run"}
+    )
+    gates["G-E"] = {"status": "from the throughput bench, not evaluation records"}
+    a3_result = a3(secondary, train_seeds, protocol_seed, alpha)
+    e1_result = e1(secondary, premise, protocol_seed, alpha)
+    report = {
+        "protocol_sha256": protocol_sha256,
+        "seeds": args.seeds,
+        "runs": [str(p) for p in args.runs],
+        "variants": variants,
+        "train_seeds": train_seeds,
+        "v1_reference": v1_variant,
+        "gates": gates,
+        "a3": a3_result,
+        "e1": e1_result,
+        "reacquisition": reacquisition(records, protocol["reacquisition"]["restricted_bound_s"]),
+        "conclusions": conclusions(protocol, gates, a3_result, e1_result),
+        "summary": summary,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(jsonable(report), indent=1, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    return report
+
+
+if __name__ == "__main__":
+    main()

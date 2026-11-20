@@ -118,3 +118,10 @@ def test_e1_premise_measures_each_pair_against_the_baseline():
     (row,) = evaluate_v2.e1_premise(snapshots)
     assert row["run"] == "odor_swap_occlusion" and row["fraction_over_1cm"] == 0.5
     assert row["max_m"] == pytest.approx(0.02)
+
+
+def test_v1_reference_actors_need_the_formal_v1_layout(tmp_path):
+    """#192 R2: <variant>/seed_<n>/actor fixes the variant and the seed of a formal-v1 actor."""
+    for wrong in ("VO-late/seed_0/odor/actor", "VO-late/seed_x/actor", "VO-late/seed_0/final"):
+        with pytest.raises(ValueError, match="formal-v1 actor is"):
+            evaluate_v2.load_v1_artifact(tmp_path / wrong)

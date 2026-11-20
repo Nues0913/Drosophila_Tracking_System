@@ -497,11 +497,14 @@ def main(argv: Sequence[str] | None = None) -> dict:
         if "G-B" in rows
         else untested("G-B")
     )
+    # qualification first: a pilot most wants to know whether a control qualifies (#204 review)
     if not controls:
         gates["G-C"] = {"status": "not run", "controls": {}, "passed": None}
+    elif not qualifying:
+        gates["G-C"] = {"status": "not testable", "controls": controls, "passed": None}
     elif descriptive:
         gates["G-C"] = {"status": "descriptive (one seed)", "controls": controls, "passed": None}
-    elif qualifying:
+    else:
         names = [f"G-C VO2 vs {c}" for c in qualifying]
         gates["G-C"] = {
             "status": "decided",
@@ -509,8 +512,6 @@ def main(argv: Sequence[str] | None = None) -> dict:
             "passed": all(rows[name]["gate_passed"] for name in names),
             "comparisons": names,
         }
-    else:
-        gates["G-C"] = {"status": "not testable", "controls": controls, "passed": None}
     gates["G-D"] = (
         {"passed": bool(rows["G-D"]["gate_passed"]), "comparison": "G-D"}
         if "G-D" in rows
@@ -555,7 +556,10 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "a3": a3_result,
         "e1": e1_result,
         "reacquisition": reacquisition(records, protocol["reacquisition"]["restricted_bound_s"]),
-        "conclusions": conclusions(protocol, gates, a3_result, e1_result),
+        # one seed is a pilot's description: even a control's qualification is not a result yet
+        "conclusions": conclusions(protocol, gates, a3_result, e1_result)
+        if len(train_seeds) >= 2
+        else [],
         "summary": summary,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

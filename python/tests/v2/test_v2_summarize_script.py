@@ -337,6 +337,19 @@ def test_a_pilot_of_one_seed_reports_differences_without_tests(tmp_path):
     assert report["conclusions"] == []
 
 
+def test_a_pilot_of_one_seed_says_when_no_control_qualifies(tmp_path):
+    """G-B gives a seed difference, but G-C shows the qualification, which is what a control's
+    pilot is for; one seed still draws no conclusion from it."""
+    run = _write_run(tmp_path / "run", seeds=[0], controls_succeed=False)
+    argv = _args(tmp_path, [run])
+    argv[argv.index("--train-seeds") + 1 : argv.index("--episodes")] = ["0"]
+    report = summarize_v2.main(argv)
+    assert report["gates"]["G-B"]["status"] == "descriptive (one seed)"
+    assert report["gates"]["G-C"]["status"] == "not testable"
+    assert report["gates"]["G-C"]["controls"]["RW2"]["qualifies"] is False
+    assert report["conclusions"] == []
+
+
 def test_an_unmeasured_e1_premise_is_missing_not_failed(tmp_path):
     """#204 review: ablation rows without the manifest's e1_premise are incomplete."""
     run = _write_run(tmp_path / "run")

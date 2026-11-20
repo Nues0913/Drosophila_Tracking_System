@@ -6,8 +6,8 @@
 - Plume: the target (and the conflict decoy) releases one filament every 1 / emission_hz s.
   Filaments are advected by the wind, take a turbulent random walk, widen as
   sigma^2 = sigma0^2 + 2 D age, live ``lifetime_s`` and at most ``capacity`` exist per
-  environment (the oldest is dropped). Concentration is the sum of their Gaussians
-  (Farrell et al. 2002, in 2D), the same form as v1's puff plume.
+  source (the oldest is dropped; the conflict decoy has its own, #192 R6). Concentration is
+  the sum of their Gaussians (Farrell et al. 2002, in 2D), the same form as v1's puff plume.
 - Antennae (interfaces.md section 1): with theta the direction the wind comes from relative
   to the heading (left positive) and alpha the antenna angle,
   left = (U / U_ref) cos(theta - alpha), right = (U / U_ref) cos(theta + alpha), plus noise.
@@ -29,7 +29,7 @@ class WindConfig:
     direction_tau_s: float = 10.0
     emission_hz: float = 10.0
     lifetime_s: float = 20.0
-    capacity: int = 256
+    capacity: int = 256  # filaments per source (#192 R6), not per environment
     initial_sigma_m: float = 0.10
     diffusion_m2_s: float = 0.025  # filament widening
     turbulent_diffusion_m2_s: float = 0.015  # filament centre random walk

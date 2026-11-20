@@ -267,10 +267,14 @@ class V1CompatWorld:
         self._env_params(envs)
         # Puff slots: lifetime x emission rate per source, plus margin.
         sources = 2 if "conflict" in names else 1
-        self.puff_capacity = sources * (int(self.plume.lifetime_s * self.plume.emission_hz) + 3)
+        per_source = int(self.plume.lifetime_s * self.plume.emission_hz) + 3
         if self.wind is not None:
-            # At most `capacity` filaments per environment; the ring drops the oldest.
-            self.puff_capacity = min(self.puff_capacity, self.wind.capacity)
+            # At most `capacity` filaments per source (#192 R6): the conflict decoy gets its own
+            # slots, so the target's trail is as long as in normal. The sources emit alternately
+            # into one ring per environment, so a ring of sources x per_source slots drops each
+            # source's oldest filament.
+            per_source = min(per_source, self.wind.capacity)
+        self.puff_capacity = sources * per_source
         self.sources = sources
         self.env_index = torch.arange(self.num_envs, device=self.device)
         self._seed_rows = self.env_index + self.env_index_offset

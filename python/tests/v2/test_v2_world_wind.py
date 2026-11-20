@@ -165,3 +165,47 @@ def test_wind_world_fused_matches_eager_on_cuda(contract):
         torch.testing.assert_close(
             fast.final_privileged["wind_velocity"], slow.final_privileged["wind_velocity"]
         )
+
+
+def _target_trail(world, row, conflict):
+    """(count, oldest age) of the target's held filaments in ``row``: in conflict the target and
+    the decoy emit in turn (emission numbers even, odd), elsewhere every filament is the
+    target's."""
+    s = world._state
+    held = s["puff_seq"][row] >= 0
+    if conflict:
+        held &= s["puff_seq"][row] % 2 == 0
+    return int(held.sum()), float(s["puff_age"][row][held].max())
+
+
+def test_conflict_decoy_does_not_shorten_the_target_trail(contract):
+    """#192 R6: with 256 slots shared, the conflict target kept about 128 filaments (oldest
+    12.7 s) against normal's 200 (19.9 s). Each source now has its own slots."""
+    world = V1CompatWorld(
+        contract, 2, ["normal", "conflict"], {"episode_seconds": 60, "target_motion": "curved"},
+        seed=7, dtype=torch.float64, scenario_configs=_configs(), wind=WindConfig(),
+    )  # fmt: skip
+    per_source = int(world.plume.lifetime_s * world.plume.emission_hz) + 3
+    assert world.puff_capacity == 2 * min(per_source, WindConfig().capacity)
+    world.reset()
+    for _ in range(500):  # 25 s: past the 20 s lifetime, so the trails are full
+        world.step(torch.zeros(2, 2))
+    normal, conflict = _target_trail(world, 0, False), _target_trail(world, 1, True)
+    assert normal[0] == conflict[0] == 200
+    assert conflict[1] == pytest.approx(normal[1]) and normal[1] > 19.8
+    decoy = int(((world._state["puff_seq"][1] >= 0) & (world._state["puff_seq"][1] % 2 == 1)).sum())
+    assert decoy == 200
+
+
+@pytest.mark.parametrize("scenario,sources", [("normal", 1), ("conflict", 2)])
+def test_gazebo_wind_plume_has_the_2d_capacity(contract, scenario, sources):
+    """#140 / #192 R6: the Gazebo wind world (ros2_ws flytrack_world/wind_field.py) keeps as
+    many filaments per source as the 2D world."""
+    import importlib.util
+
+    path = ROOT / "ros2_ws/src/flytrack_world/flytrack_world/wind_field.py"
+    spec = importlib.util.spec_from_file_location("gazebo_wind_field", path)
+    gazebo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gazebo)
+    world = _world(contract, WindConfig(), num_envs=1, scenario=scenario)
+    assert gazebo.plume_config(WindConfig(), sources).max_puffs == world.puff_capacity

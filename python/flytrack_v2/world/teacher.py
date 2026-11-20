@@ -135,6 +135,9 @@ class PrivilegedTeacher:
         return torch.minimum(torch.maximum(value, low.double()), high.double()).to(torch.float32)
 
 
+STATE_COLUMNS = 5  # OcclusionTeacher state width (#137 F19 added the occlusion flag)
+
+
 class OcclusionTeacher:
     """DAgger labels with an observation-only rule during occlusion (#133; #161 D4).
 
@@ -157,8 +160,13 @@ class OcclusionTeacher:
     sees the walls in its images, so it can learn the same behaviour. Model cards that cite
     this teacher should say so (#169 review).
 
-    State [B,4]: held speed, held turn rate, seconds since odor was last present, cast side.
-    The occlusion flag is the scenario's timing, a label-side switch, never an observation.
+    State [B,5]: held speed, held turn rate, seconds since odor was last present, cast side,
+    and whether the previous call was occluded. The held speed and turn are the action applied
+    on the last visible step: the ``previous_action`` of the first occluded call (#137 F19;
+    before, the value stored one call earlier, one control tick stale). A [B,4] state from a
+    checkpoint written before F19 is read with that flag equal to the current occlusion, the
+    old rule, for its first call. The occlusion flag is the scenario's timing, a label-side
+    switch, never an observation.
     """
 
     def __init__(
@@ -188,7 +196,7 @@ class OcclusionTeacher:
         self.wall_margin_m, self.wall_gain = wall_margin_m, wall_gain
 
     def initial_state(self, batch_size: int, device: torch.device | str) -> Tensor:
-        state = torch.zeros(batch_size, 4, device=device)
+        state = torch.zeros(batch_size, STATE_COLUMNS, device=device)
         state[:, 3] = 1.0
         return state
 
@@ -214,8 +222,12 @@ class OcclusionTeacher:
         f64 = torch.float64
         held_v, held_w = state[:, 0].to(f64), state[:, 1].to(f64)
         lost, side = state[:, 2].to(f64), state[:, 3].to(f64)
-        held_v = torch.where(occluded, held_v, previous_action[:, 0].to(f64))
-        held_w = torch.where(occluded, held_w, previous_action[:, 1].to(f64))
+        was_occluded = state[:, 4] > 0 if state.shape[1] > 4 else occluded
+        # Hold from the first occluded call on: its previous_action is the action applied on
+        # the last visible step (#137 F19).
+        keep = occluded & was_occluded
+        held_v = torch.where(keep, held_v, previous_action[:, 0].to(f64))
+        held_w = torch.where(keep, held_w, previous_action[:, 1].to(f64))
         odor = obs["odor"].to(f64).clamp(min=0)
         present = (obs["valid"][:, 2] > 0) & (odor.max(-1).values > self.detect)
         left, right = odor.unbind(-1)
@@ -259,5 +271,6 @@ class OcclusionTeacher:
         requested = torch.stack((speed, turn), -1).to(torch.float32)
         odor_label = self.privileged._clip(requested, previous_action, limit_acceleration)
         action = torch.where(occluded[:, None], odor_label, label)
-        state = torch.stack((held_v, held_w, lost, side), -1).to(state.dtype)
+        flag = occluded.to(f64)
+        state = torch.stack((held_v, held_w, lost, side, flag), -1).to(state.dtype)
         return action, state

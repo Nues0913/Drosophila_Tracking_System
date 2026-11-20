@@ -43,7 +43,9 @@ def plume_config(wind_config, sources: int, base: PlumeConfig | None = None) -> 
     """The 2D wind world's plume: v1's puff settings with the wind config's filament values."""
     w = wind_config
     base = base or PlumeConfig()
-    slots = sources * (int(w.lifetime_s * w.emission_hz) + 3)
+    # Per source, as the 2D world (#192 R6): the conflict decoy does not shorten the target's
+    # trail. PuffPlume emits the sources in turn and keeps the newest max_puffs filaments.
+    per_source = min(int(w.lifetime_s * w.emission_hz) + 3, w.capacity)
     return PlumeConfig(
         wind_x=0.0,
         wind_y=0.0,
@@ -55,7 +57,7 @@ def plume_config(wind_config, sources: int, base: PlumeConfig | None = None) -> 
         lifetime_s=w.lifetime_s,
         decay_tau_s=w.decay_tau_s if math.isfinite(w.decay_tau_s) else NO_DECAY_TAU_S,
         integration_dt=base.integration_dt,
-        max_puffs=min(slots, w.capacity),  # the ring drops the oldest filament
+        max_puffs=sources * per_source,
         background=base.background,
     )
 

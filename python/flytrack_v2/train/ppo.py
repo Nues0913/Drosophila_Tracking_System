@@ -79,8 +79,10 @@ def load_ppo_config(path: Path, host: str, overrides: Sequence[str] = ()) -> dic
         raise ValueError("The minibatch must be divisible by the host micro-batch")
     warmup = config["warmup"]
     updates = math.ceil(config["total_env_steps"] / (rows * config["rollout_steps"]))
-    if updates <= warmup["critic_only_updates"] + warmup["actor_ramp_updates"]:
-        raise ValueError("total_env_steps leaves no actor updates after the warm-up")
+    # The actor trains during its learning-rate ramp already, so one update past the critic-only
+    # warm-up is enough (#188: 40 updates with a 20 + 20 warm-up were refused).
+    if updates <= warmup["critic_only_updates"]:
+        raise ValueError("total_env_steps leaves no actor updates after the critic warm-up")
     return {
         **config,
         "host": host,

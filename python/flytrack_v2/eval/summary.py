@@ -66,6 +66,15 @@ class ComparisonSpec:
     extra: dict = field(default_factory=dict)  # free-form notes copied to the output
 
 
+def matches(record: Mapping, selection: Mapping[str, object]) -> bool:
+    """Every selection field equals the record's, or, for a tuple, is one of its values: G-C
+    pools the four scenarios at the main noise scale with noise_scale (None, 0.75) (#203)."""
+    return all(
+        record[key] in value if isinstance(value, tuple) else record[key] == value
+        for key, value in selection.items()
+    )
+
+
 def selection_seed_means(
     records: Sequence[Mapping], selection: Mapping[str, object], metric: str
 ) -> dict[int, float]:
@@ -77,7 +86,7 @@ def selection_seed_means(
     values: dict[int, list[float]] = defaultdict(list)
     variants = set()
     for record in records:
-        if all(record[key] == value for key, value in selection.items()):
+        if matches(record, selection):
             variants.add(record["variant"])
             if record[metric] is not None:
                 values[int(record["train_seed"])].append(float(record[metric]))
@@ -102,11 +111,7 @@ def check_pairing(records: Sequence[Mapping], spec: ComparisonSpec) -> None:
     """
 
     def covered(selection: Mapping) -> set[tuple]:
-        return {
-            tuple(r[key] for key in _EPISODE)
-            for r in records
-            if all(r[key] == value for key, value in selection.items())
-        }
+        return {tuple(r[key] for key in _EPISODE) for r in records if matches(r, selection)}
 
     candidate, reference = covered(spec.candidate), covered(spec.reference)
     if candidate != reference:

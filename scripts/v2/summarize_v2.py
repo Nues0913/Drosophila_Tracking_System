@@ -38,6 +38,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 
+from flytrack_v2.contracts import SCENARIOS as SCENARIO_NAMES  # noqa: E402
 from flytrack_v2.eval.records import expected_grid  # noqa: E402
 from flytrack_v2.eval.runner import jsonable, pooled_slope  # noqa: E402
 from flytrack_v2.eval.stats import (  # noqa: E402
@@ -111,20 +112,26 @@ def qualifying_controls(records, variants) -> dict[str, dict]:
     return out
 
 
-def registered_specs(qualifying: Sequence[str], v1_variant: str | None, sensitivity) -> list:
+def registered_specs(
+    qualifying: Sequence[str], v1_variant: str | None, sensitivity, main_scale: float
+) -> list:
     """The protocol's registered comparisons (comparisons: primary, secondary)."""
     vo2 = {"variant": "VO2"}
     g_b = ({**vo2, "world": "wind", "scenario": "occlusion"},
            {"variant": "V2", "world": "wind", "scenario": "occlusion"})  # fmt: skip
     specs = [ComparisonSpec("G-B", "primary", "superiority", *g_b, minimum_difference=G_B_MINIMUM)]
+    # G-C: the four scenarios pooled, noise at the main scale, both worlds and motions, one
+    # mean per training seed (gates.G-C, the user's decision 2026-11-20, #203 review: normal
+    # alone sits at the ceiling after PPO).
+    pooled = {"noise_scale": (None, main_scale)}
     for control in qualifying:
         specs.append(
             ComparisonSpec(
                 f"G-C VO2 vs {control}",
                 "primary",
                 "noninferiority",
-                {**vo2, "scenario": "normal"},
-                {"variant": control, "scenario": "normal"},
+                {**vo2, **pooled},
+                {"variant": control, **pooled},
                 margin=G_C_MARGIN,
             )  # fmt: skip
         )
@@ -146,11 +153,25 @@ def registered_specs(qualifying: Sequence[str], v1_variant: str | None, sensitiv
                 f"G-C VO2 vs {control} superiority",
                 "G-C superiority",
                 "superiority",
-                {**vo2, "scenario": "normal"},
-                {"variant": control, "scenario": "normal"},
+                {**vo2, **pooled},
+                {"variant": control, **pooled},
                 secondary=True,
             )  # fmt: skip
         )
+        # each scenario on its own, as formal-v1 registered its structure comparison
+        for scenario in SCENARIO_NAMES:
+            one = {"scenario": scenario, "noise_scale": main_scale if scenario == "noise" else None}
+            specs.append(
+                ComparisonSpec(
+                    f"G-C VO2 vs {control} {scenario}",
+                    "G-C by scenario",
+                    "noninferiority",
+                    {**vo2, **one},
+                    {"variant": control, **one},
+                    margin=G_C_MARGIN,
+                    secondary=True,
+                )  # fmt: skip
+            )
     for motion in ("curved", "wander"):
         specs.append(
             ComparisonSpec(
@@ -290,8 +311,12 @@ def e1(secondary, premise, protocol_seed, alpha) -> dict:
         )
     adjusted = holm(tests, alpha)
     worst = max((row["max_m"] for row in premise), default=None)
+    # The premise (protocol E1 attribution, #203 review): every paired run's episodes within
+    # 1 cm of occlusion_baseline when the occlusion starts; otherwise E1 says nothing.
+    premise_ok = bool(premise) and all(row["fraction_over_1cm"] == 0 for row in premise)
     return {
-        "status": "decided",
+        "status": "decided" if premise_ok else "premise failed",
+        "premise_ok": premise_ok,
         "tests": [_comparison_dict(c) for c in adjusted],
         "any_significant": any(c.passed for c in adjusted),
         "premise": {"pairs": premise, "max_distance_m": worst},
@@ -373,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )  # fmt: skip
     controls = qualifying_controls(records, variants)
     qualifying = [c for c, v in controls.items() if v["qualifies"]]
-    specs = registered_specs(qualifying, v1_variant, sensitivity)
+    specs = registered_specs(qualifying, v1_variant, sensitivity, noise["scale"])
     # A pilot of some variants scores what it can: a comparison with a side that was not
     # evaluated is listed as skipped, and the report says it is not the formal decision (its
     # Holm families hold only the comparisons run).
@@ -428,7 +453,11 @@ def main(argv: Sequence[str] | None = None) -> dict:
     gates["G-E"] = {"status": "from the throughput bench, not evaluation records"}
     a3_result = a3(secondary, train_seeds, protocol_seed, alpha)
     e1_result = e1(secondary, premise, protocol_seed, alpha)
-    if not not_formal and {a3_result.get("status"), e1_result.get("status")} != {"decided"}:
+    # a failed E1 premise is a result (reported, no conclusion), a missing analysis is not
+    if not not_formal and (
+        a3_result.get("status") != "decided"
+        or e1_result.get("status") not in ("decided", "premise failed")
+    ):
         raise ValueError(
             "a formal summary needs A3 and E1 decided: evaluate with --speed-clamp and "
             f"--ablations (A3 {a3_result.get('status')}, E1 {e1_result.get('status')})"

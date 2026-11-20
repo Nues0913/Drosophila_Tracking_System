@@ -152,7 +152,16 @@ def test_a_complete_evaluation_gives_every_gate_and_the_secondary_analyses(tmp_p
     assert gates["G-D"]["passed"]
     names = {row["name"] for row in report["summary"]["comparisons"]}
     assert {"G-B curved", "G-B wander", "G-C VO2 vs RW2 superiority"} <= names
-    assert not any("noise" in name for name in names)  # --no-sensitivity: no noise family
+    families = {row["family"] for row in report["summary"]["comparisons"]}
+    assert "noise sensitivity" not in families  # --no-sensitivity: no noise family
+    by_scenario = {
+        r["name"] for r in report["summary"]["comparisons"] if r["family"] == "G-C by scenario"
+    }
+    assert by_scenario == {
+        f"G-C VO2 vs {c} {s}"
+        for c in ("RW2", "GRU2")
+        for s in ("normal", "occlusion", "noise", "conflict")
+    }
     assert set(report["reacquisition"]["worlds"]) == {"wind", "v1compat"}
     assert report["a3"]["positive_aligned_seeds"] == 3
     assert report["a3"]["speed_held"]["significant"]
@@ -276,10 +285,34 @@ def test_noise_sensitivity_is_every_gate_at_the_registered_scales_only(tmp_path)
     argv = _args(tmp_path, [run])
     argv.remove("--no-sensitivity")
     report = summarize_v2.main(argv)
-    noise = {row["name"] for row in report["summary"]["comparisons"] if "noise" in row["name"]}
+    rows = {row["name"]: row for row in report["summary"]["comparisons"]}
+    noise = {name for name, row in rows.items() if row["family"] == "noise sensitivity"}
     assert noise == {
         f"{gate} noise {scale}"
         for gate in ("G-B", "G-C VO2 vs RW2", "G-C VO2 vs GRU2")
         for scale in (0.5, 1.0)
     }
     assert report["noise_sensitivity"]["G-D"].startswith("not applicable")
+    # G-C pools the four scenarios at the main noise scale only: per seed VO2 - RW2 is
+    # 5/16, 6/16, 7/16 (the sensitivity cells would give 7/24, 6/24, 11/24)
+    assert rows["G-C VO2 vs RW2"]["mean"] == pytest.approx(6 / 16)
+    assert tuple(rows["G-C VO2 vs RW2"]["candidate"]["noise_scale"]) == (None, 0.75)
+    written = json.loads((tmp_path / "report.json").read_text())["summary"]["comparisons"]
+    assert next(r for r in written if r["name"] == "G-C VO2 vs RW2")["candidate"][
+        "noise_scale"
+    ] == [
+        None,
+        0.75,
+    ]
+
+
+def test_an_e1_premise_that_fails_gives_no_e1_conclusion(tmp_path):
+    """#203 review: ablated runs that already differ when the occlusion starts are not E1."""
+    run = _write_run(tmp_path / "run")
+    premise = [{"artifact": "a", "motion": "curved", "run": "odor_swap_occlusion",
+                "max_m": 0.03, "fraction_over_1cm": 0.25}]  # fmt: skip
+    (run / "manifest.json").write_text(json.dumps({"e1_premise": premise}))
+    report = summarize_v2.main(_args(tmp_path, [run]))
+    assert report["e1"]["status"] == "premise failed" and not report["e1"]["premise_ok"]
+    # G-B passes, and E1 cannot speak, so no occlusion conclusion
+    assert report["conclusions"] == ["speed: no effective speed control was established"]

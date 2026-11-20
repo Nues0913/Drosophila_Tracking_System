@@ -95,6 +95,7 @@ def test_driver_evaluates_an_exported_artifact_end_to_end(tmp_path, monkeypatch)
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["invalid_records"] == 0
     assert [run["run"] for run in manifest["runs"]] == ["main", "speed_clamp"]
+    assert manifest["occlusion_view"] == PROTOCOL["occlusion_view"]["v2"] == "hide_target"
 
 
 def test_e1_ablations_include_the_occlusion_window_runs():
@@ -118,3 +119,10 @@ def test_e1_premise_measures_each_pair_against_the_baseline():
     (row,) = evaluate_v2.e1_premise(snapshots)
     assert row["run"] == "odor_swap_occlusion" and row["fraction_over_1cm"] == 0.5
     assert row["max_m"] == pytest.approx(0.02)
+
+
+def test_v1_reference_actors_need_the_formal_v1_layout(tmp_path):
+    """#192 R2: <variant>/seed_<n>/actor fixes the variant and the seed of a formal-v1 actor."""
+    for wrong in ("VO-late/seed_0/odor/actor", "VO-late/seed_x/actor", "VO-late/seed_0/final"):
+        with pytest.raises(ValueError, match="formal-v1 actor is"):
+            evaluate_v2.load_v1_artifact(tmp_path / wrong)

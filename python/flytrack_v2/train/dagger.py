@@ -308,17 +308,29 @@ class DAggerRun:
             _atomic_json(self.diagnostics, self.out / "diagnostics.json")
 
     def on_failure(self, reason: str, record: dict) -> None:
-        directory = self.out / "failure"
-        self.save(directory / "checkpoint.pt")
-        if self.failure_batch is not None:
-            _atomic_save(self.failure_batch._asdict(), directory / "batch.pt")
-        self._write_failure_reason(reason, record)
+        checkpoint = self.out / "failure" / "checkpoint.pt"
+        self.save(checkpoint)
+        self._save_failure_batch()
+        self._write_failure_reason(reason, record, self._failure_checkpoint(checkpoint))
 
-    def _write_failure_reason(self, reason: str, record: dict) -> None:
+    def _save_failure_batch(self) -> None:
+        if self.failure_batch is not None:
+            path = self.out / "failure" / "batch.pt"
+            path.parent.mkdir(exist_ok=True)
+            _atomic_save(self.failure_batch._asdict(), path)
+
+    def _failure_checkpoint(self, path: Path) -> dict[str, str]:
+        return {
+            "checkpoint": os.path.relpath(path, self.out / "failure"),
+            "checkpoint_sha256": file_sha256(path),
+        }
+
+    def _write_failure_reason(self, reason: str, record: dict, checkpoint: dict[str, str]) -> None:
         path = self.out / "failure" / "reason.json"
         temporary = path.with_suffix(".tmp")
         temporary.write_text(
-            json.dumps({"reason": reason, "metrics": record}, indent=2) + "\n", encoding="utf-8"
+            json.dumps({"reason": reason, "metrics": record, **checkpoint}, indent=2) + "\n",
+            encoding="utf-8",
         )
         temporary.replace(path)
 
@@ -456,9 +468,11 @@ class DAggerRun:
             if reason is not None:
                 self.stage_health["metrics"] = record
         if reason is not None:
-            self.on_failure(reason, record)
             if not (final_round and (silent or low_speed)):
+                self.on_failure(reason, record)
                 raise EngineeringFailure(reason)
+            # The caller publishes the same state as the final round checkpoint.
+            self._save_failure_batch()
         elif low_speed and not self.progress.warned_low_speed_std:
             warnings.warn(f"round {index + 1}: {speed_reason}", stacklevel=2)
             self.progress.warned_low_speed_std = True
@@ -559,6 +573,7 @@ class DAggerRun:
                 if progress.round_metrics is None:
                     self._start_round(monitor, index)
                     if self.normalize_readout and index == 0:
+                        # An interrupted fit must resume from the collected replay.
                         self.save(self.round_dir(index) / "progress.pt")
                         if self.should_stop(in_round=True):
                             return
@@ -586,8 +601,14 @@ class DAggerRun:
                 self._check_round_health(monitor, index)
                 self.save(self.round_dir(index) / "checkpoint.pt")
             stage_health = self.stage_health
-            if stage_health["reason"] is None and self.should_stop():
+            reason = stage_health["reason"]
+            if reason is None and self.should_stop():
                 return
+        if reason is not None:
+            checkpoint = self._failure_checkpoint(
+                self.round_dir(len(self.plans) - 1) / "checkpoint.pt"
+            )
+            self._write_failure_reason(reason, stage_health["metrics"], checkpoint)
         export_policy(
             self.policy,
             self.out / "final",
@@ -600,9 +621,9 @@ class DAggerRun:
                 "train_seed": self.seed,
             },
         )
-        if stage_health["reason"] is not None:
-            reason = f"{stage_health['reason']}. Exported to final/. Stage 1 health check failed."
-            self._write_failure_reason(reason, stage_health["metrics"])
+        if reason is not None:
+            reason = f"{reason}. Exported to final/. Stage 1 health check failed."
+            self._write_failure_reason(reason, stage_health["metrics"], checkpoint)
             raise EngineeringFailure(reason)
         print(
             f"Finished {progress.updates} updates and {progress.env_steps} environment steps",

@@ -178,7 +178,11 @@ comparisons:
       or negative (#184 Decision, made before any aligned slope was measured). Formal-v1's
       actors have unrestricted slopes of about 0 (#170 audit); both slopes are recomputed for
       them
-    noise sensitivity: every gate's comparison at noise scales 0.5 and 1.0, reported only
+    noise sensitivity: >-
+      every gate's comparison on the noise scenario alone at noise scales 0.5 and 1.0 (G-B in
+      the wind world, G-C over both worlds; G-D has none, formal-v1 runs the main scale only),
+      not the pooled G-C recomputed; reported only. The main scale is never a sensitivity
+      scale (#204 review)
 # #192 R13, registered before M4: the wording of each negative result. Every training seed's
 # result is reported, so many episodes never hide the uncertainty across seeds.
 negative_results:

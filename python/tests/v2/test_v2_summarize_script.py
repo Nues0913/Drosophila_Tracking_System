@@ -87,9 +87,9 @@ def _secondary(record, run, success=None, during=None, slope=0.05):
     }  # fmt: skip
 
 
-def _write_run(path, v1=True, drop=None, controls_succeed=True, sensitivity=False):
+def _write_run(path, v1=True, drop=None, controls_succeed=True, sensitivity=False, seeds=SEEDS):
     grid = summarize_v2.grid_for(
-        PROTOCOL, "formal_evaluation", VARIANTS, SEEDS, V1 if v1 else None, EPISODES, sensitivity
+        PROTOCOL, "formal_evaluation", VARIANTS, seeds, V1 if v1 else None, EPISODES, sensitivity
     )
     records, secondary = [], []
     for (variant, seed, world, scenario, motion, scale), episodes in sorted(grid.items(), key=str):
@@ -191,7 +191,7 @@ def test_the_v1_reference_must_be_there_for_g_d(tmp_path):
     with pytest.raises(ValueError, match="expected cells have no records"):
         summarize_v2.main(_args(tmp_path, [run]))
     report = summarize_v2.main(_args(tmp_path, [run], "--v1-reference", "none"))
-    assert report["gates"]["G-D"] == {"status": "not run"}
+    assert report["gates"]["G-D"] == {"status": "not run", "passed": None}
 
 
 def test_runs_split_over_hosts_are_scored_together(tmp_path):
@@ -316,3 +316,42 @@ def test_an_e1_premise_that_fails_gives_no_e1_conclusion(tmp_path):
     assert report["e1"]["status"] == "premise failed" and not report["e1"]["premise_ok"]
     # G-B passes, and E1 cannot speak, so no occlusion conclusion
     assert report["conclusions"] == ["speed: no effective speed control was established"]
+
+
+def test_a_pilot_of_one_seed_reports_differences_without_tests(tmp_path):
+    """A paired t test needs two seeds: one seed gives the registered comparisons as seed
+    differences, and A3 and E1 as descriptive, with no conclusion drawn from them."""
+    run = _write_run(tmp_path / "run", seeds=[0])
+    argv = _args(tmp_path, [run])
+    argv[argv.index("--train-seeds") + 1 : argv.index("--episodes")] = ["0"]
+    report = summarize_v2.main(argv)
+    rows = {row["name"]: row for row in report["descriptive_comparisons"]}
+    assert rows["G-C VO2 vs RW2"]["mean_difference"] == pytest.approx(5 / 16)  # 13/16 - 8/16
+    assert rows["G-C VO2 vs RW2"]["p_value"] is None and report["summary"]["comparisons"] == []
+    assert (
+        report["gates"]["G-B"]["status"]
+        == report["gates"]["G-C"]["status"]
+        == ("descriptive (one seed)")
+    )
+    assert report["a3"]["status"] == "descriptive" and report["e1"]["status"] == "descriptive"
+    assert report["conclusions"] == []
+
+
+def test_an_unmeasured_e1_premise_is_missing_not_failed(tmp_path):
+    """#204 review: ablation rows without the manifest's e1_premise are incomplete."""
+    run = _write_run(tmp_path / "run")
+    (run / "manifest.json").write_text("{}")
+    report = summarize_v2.main(_args(tmp_path, [run]))
+    assert report["e1"]["status"] == "missing"
+
+
+def test_the_main_noise_scale_is_never_a_sensitivity_scale(tmp_path):
+    """#204 review: its episodes would be main and noise_sensitivity records, counted twice."""
+    protocol = {**PROTOCOL, "scenarios": {**PROTOCOL["scenarios"]}}
+    protocol["scenarios"]["noise"] = {**PROTOCOL["scenarios"]["noise"],
+                                      "sensitivity_scales": [0.5, 0.75, 1.0]}  # fmt: skip
+    path = tmp_path / "protocol.yaml"
+    path.write_text(yaml.safe_dump(protocol))
+    run = _write_run(tmp_path / "run")
+    with pytest.raises(ValueError, match="main noise scale must not be"):
+        summarize_v2.main([*_args(tmp_path, [run]), "--protocol", str(path)])

@@ -49,6 +49,7 @@ from flytrack_v2.eval.stats import (  # noqa: E402
 from flytrack_v2.eval.summary import (  # noqa: E402
     ComparisonSpec,
     build_summary,
+    check_pairing,
     selection_seed_means,
     t_interval,
 )
@@ -235,7 +236,7 @@ def _rows(secondary, **match) -> list[dict]:
     return [r for r in secondary if all(r.get(k) == v for k, v in match.items())]
 
 
-def _paired_by_seed(name, candidate_rows, reference_rows, metric, protocol_seed):
+def _paired_seed_means(name, candidate_rows, reference_rows, metric):
     """Seed means over the episodes both sides have a value for (same episode seeds)."""
 
     def by_episode(rows):
@@ -252,7 +253,25 @@ def _paired_by_seed(name, candidate_rows, reference_rows, metric, protocol_seed)
             seeds[key[0]][1].append(float(b[key]))
     cand = {s: float(np.mean(x)) for s, (x, _) in seeds.items()}
     ref = {s: float(np.mean(y)) for s, (_, y) in seeds.items()}
+    return cand, ref
+
+
+def _paired_by_seed(name, candidate_rows, reference_rows, metric, protocol_seed):
+    cand, ref = _paired_seed_means(name, candidate_rows, reference_rows, metric)
     return paired_comparison(name, cand, ref, "superiority", protocol_seed=protocol_seed)
+
+
+def _descriptive(name, cand: dict, ref: dict) -> dict:
+    """A pilot of one training seed: the seed differences, no test (a paired t needs two)."""
+    differences = {str(seed): cand[seed] - ref[seed] for seed in sorted(cand)}
+    return {
+        "name": name,
+        "mean_difference": float(np.mean(list(differences.values()))),
+        "seed_differences": differences,
+        "n_seeds": len(differences),
+        "p_value": None,
+        "significant": None,
+    }
 
 
 def _comparison_dict(c) -> dict:
@@ -290,6 +309,11 @@ def a3(secondary, train_seeds, protocol_seed, alpha) -> dict:
     if not clamp:
         out.update(status="missing", reason="no speed_clamp rows (evaluate_v2.py --speed-clamp)")
         return out
+    if len(train_seeds) < 2:
+        cand, ref = _paired_seed_means("A3 speed held", main, clamp, "success")
+        out["speed_held"] = _descriptive("A3 speed held", cand, ref)
+        out["status"] = "descriptive"
+        return out
     (test,) = holm([_paired_by_seed("A3 speed held", main, clamp, "success", protocol_seed)], alpha)
     out["speed_held"] = _comparison_dict(test)
     out["status"] = "decided"
@@ -297,12 +321,34 @@ def a3(secondary, train_seeds, protocol_seed, alpha) -> dict:
     return out
 
 
-def e1(secondary, premise, protocol_seed, alpha) -> dict:
+def e1(secondary, premise, protocol_seed, alpha, train_seeds) -> dict:
     """protocol comparisons.secondary.E1 attribution: occlusion-window ablations against the
     unablated occlusion-only batch, tracking during the occlusion, Holm across the two."""
     base = _rows(secondary, run="occlusion_baseline", variant="VO2")
     if not base:
         return {"status": "missing", "reason": "no occlusion_baseline rows (--ablations)"}
+    if not premise:  # #204 review: an unmeasured premise is missing data, not a failed one
+        return {"status": "missing", "reason": "no e1_premise in the runs' manifest.json"}
+    worst = max(row["max_m"] for row in premise)
+    # The premise (protocol E1 attribution, #203 review): every paired run's episodes within
+    # 1 cm of occlusion_baseline when the occlusion starts; otherwise E1 says nothing.
+    premise_ok = all(row["fraction_over_1cm"] == 0 for row in premise)
+    summary = {"premise_ok": premise_ok, "premise": {"pairs": premise, "max_distance_m": worst}}
+    if len(train_seeds) < 2:
+        tests = [
+            _descriptive(
+                f"E1 {label}",
+                *_paired_seed_means(
+                    f"E1 {label}",
+                    base,
+                    _rows(secondary, run=label, variant="VO2"),
+                    "during_tracking_fraction",
+                ),
+            )
+            for label in E1_ABLATIONS
+        ]
+        return {"status": "descriptive" if premise_ok else "premise failed", "tests": tests,
+                "any_significant": None, **summary}  # fmt: skip
     tests = []
     for label in E1_ABLATIONS:
         ablated = _rows(secondary, run=label, variant="VO2")
@@ -310,16 +356,11 @@ def e1(secondary, premise, protocol_seed, alpha) -> dict:
             _paired_by_seed(f"E1 {label}", base, ablated, "during_tracking_fraction", protocol_seed)
         )
     adjusted = holm(tests, alpha)
-    worst = max((row["max_m"] for row in premise), default=None)
-    # The premise (protocol E1 attribution, #203 review): every paired run's episodes within
-    # 1 cm of occlusion_baseline when the occlusion starts; otherwise E1 says nothing.
-    premise_ok = bool(premise) and all(row["fraction_over_1cm"] == 0 for row in premise)
     return {
         "status": "decided" if premise_ok else "premise failed",
-        "premise_ok": premise_ok,
         "tests": [_comparison_dict(c) for c in adjusted],
         "any_significant": any(c.passed for c in adjusted),
-        "premise": {"pairs": premise, "max_distance_m": worst},
+        **summary,
     }
 
 
@@ -387,6 +428,10 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )
     noise = protocol["scenarios"]["noise"]
     sensitivity = [] if args.no_sensitivity else list(noise["sensitivity_scales"])
+    if noise["scale"] in noise["sensitivity_scales"]:
+        # its episodes would be written as main and as noise_sensitivity, and G-C's pool
+        # would count them twice (#204 review)
+        raise ValueError("the main noise scale must not be one of the sensitivity scales")
     alpha = 0.05
     protocol_sha256 = hashlib.sha256(args.protocol.read_bytes()).hexdigest()
     protocol_seed = int(protocol_sha256[:8], 16)
@@ -407,6 +452,16 @@ def main(argv: Sequence[str] | None = None) -> dict:
         s.name for s in specs if not {s.candidate["variant"], s.reference["variant"]} <= known
     ]
     specs = [s for s in specs if s.name not in skipped]
+    descriptive = []
+    if len(train_seeds) < 2:
+        # one training seed: no paired test, the registered comparisons as seed differences
+        for spec in specs:
+            check_pairing(records, spec)
+            cand = selection_seed_means(records, spec.candidate, spec.metric)
+            ref = selection_seed_means(records, spec.reference, spec.metric)
+            descriptive.append({**_descriptive(spec.name, cand, ref), "family": spec.family})
+        skipped += [s.name for s in specs]
+        specs = []
     not_formal = [
         reason
         for reason, applies in (
@@ -428,13 +483,24 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )  # fmt: skip
     rows = {row["name"]: row for row in summary["comparisons"]}
     gates = {"G-A": g_a(records)}
+    described = {row["name"] for row in descriptive}
+
+    def untested(name):
+        return (
+            {"status": "descriptive (one seed)", "passed": None}
+            if name in described
+            else {"status": "not run", "passed": None}
+        )
+
     gates["G-B"] = (
         {"passed": bool(rows["G-B"]["gate_passed"]), "comparison": "G-B"}
         if "G-B" in rows
-        else {"status": "not run", "passed": None}
+        else untested("G-B")
     )
     if not controls:
         gates["G-C"] = {"status": "not run", "controls": {}, "passed": None}
+    elif descriptive:
+        gates["G-C"] = {"status": "descriptive (one seed)", "controls": controls, "passed": None}
     elif qualifying:
         names = [f"G-C VO2 vs {c}" for c in qualifying]
         gates["G-C"] = {
@@ -448,11 +514,11 @@ def main(argv: Sequence[str] | None = None) -> dict:
     gates["G-D"] = (
         {"passed": bool(rows["G-D"]["gate_passed"]), "comparison": "G-D"}
         if "G-D" in rows
-        else {"status": "not run"}
+        else untested("G-D")
     )
     gates["G-E"] = {"status": "from the throughput bench, not evaluation records"}
     a3_result = a3(secondary, train_seeds, protocol_seed, alpha)
-    e1_result = e1(secondary, premise, protocol_seed, alpha)
+    e1_result = e1(secondary, premise, protocol_seed, alpha, train_seeds)
     # a failed E1 premise is a result (reported, no conclusion), a missing analysis is not
     if not not_formal and (
         a3_result.get("status") != "decided"
@@ -480,6 +546,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "formal": not not_formal,
         "not_formal_because": not_formal,
         "skipped_comparisons": skipped,
+        "descriptive_comparisons": descriptive,
         "noise_sensitivity": {
             "scales": sensitivity,
             "G-D": "not applicable: formal-v1 is evaluated at the main noise scale only",

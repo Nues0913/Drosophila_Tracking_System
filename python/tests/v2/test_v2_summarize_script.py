@@ -87,9 +87,9 @@ def _secondary(record, run, success=None, during=None, slope=0.05):
     }  # fmt: skip
 
 
-def _write_run(path, v1=True, drop=None, controls_succeed=True):
+def _write_run(path, v1=True, drop=None, controls_succeed=True, sensitivity=False):
     grid = summarize_v2.grid_for(
-        PROTOCOL, "formal_evaluation", VARIANTS, SEEDS, V1 if v1 else None, EPISODES, False
+        PROTOCOL, "formal_evaluation", VARIANTS, SEEDS, V1 if v1 else None, EPISODES, sensitivity
     )
     records, secondary = [], []
     for (variant, seed, world, scenario, motion, scale), episodes in sorted(grid.items(), key=str):
@@ -151,7 +151,9 @@ def test_a_complete_evaluation_gives_every_gate_and_the_secondary_analyses(tmp_p
     assert set(gates["G-C"]["comparisons"]) == {"G-C VO2 vs RW2", "G-C VO2 vs GRU2"}
     assert gates["G-D"]["passed"]
     names = {row["name"] for row in report["summary"]["comparisons"]}
-    assert {"G-B curved", "G-B wander", "G-C VO2 vs RW2 superiority", "G-D noise 0.75"} <= names
+    assert {"G-B curved", "G-B wander", "G-C VO2 vs RW2 superiority"} <= names
+    assert not any("noise" in name for name in names)  # --no-sensitivity: no noise family
+    assert set(report["reacquisition"]["worlds"]) == {"wind", "v1compat"}
     assert report["a3"]["positive_aligned_seeds"] == 3
     assert report["a3"]["speed_held"]["significant"]
     assert report["a3"]["speed_problem_solved"] is False  # 3 positive seeds < 4 of 5
@@ -249,3 +251,35 @@ def test_a_formal_summary_needs_a3_and_e1(tmp_path):
     (run / "secondary.jsonl").write_text("".join(line + "\n" for line in kept))
     with pytest.raises(ValueError, match="formal summary needs A3 and E1"):
         summarize_v2.main(argv)
+    # every E1 value of one seed missing (e.g. all collided before the occlusion ended): that
+    # seed would drop out of the t test unnoticed, so the formal summary refuses it
+    (run / "secondary.jsonl").write_text(
+        "".join(line + "\n" for line in lines_seed2_missing(lines))
+    )
+    with pytest.raises(ValueError, match="lost training seeds"):
+        summarize_v2.main(argv)
+
+
+def lines_seed2_missing(lines):
+    out = []
+    for line in lines:
+        row = json.loads(line)
+        if row["run"] == "odor_swap_occlusion" and row["train_seed"] == 2:
+            row["during_tracking_fraction"] = None
+        out.append(json.dumps(row))
+    return out
+
+
+def test_noise_sensitivity_is_every_gate_at_the_registered_scales_only(tmp_path):
+    """#203 review: 0.5 and 1.0, not the main scale; G-D has no sensitivity comparison."""
+    run = _write_run(tmp_path / "run", sensitivity=True)
+    argv = _args(tmp_path, [run])
+    argv.remove("--no-sensitivity")
+    report = summarize_v2.main(argv)
+    noise = {row["name"] for row in report["summary"]["comparisons"] if "noise" in row["name"]}
+    assert noise == {
+        f"{gate} noise {scale}"
+        for gate in ("G-B", "G-C VO2 vs RW2", "G-C VO2 vs GRU2")
+        for scale in (0.5, 1.0)
+    }
+    assert report["noise_sensitivity"]["G-D"].startswith("not applicable")

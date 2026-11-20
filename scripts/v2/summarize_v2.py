@@ -111,7 +111,7 @@ def qualifying_controls(records, variants) -> dict[str, dict]:
     return out
 
 
-def registered_specs(qualifying: Sequence[str], v1_variant: str | None, scales) -> list:
+def registered_specs(qualifying: Sequence[str], v1_variant: str | None, sensitivity) -> list:
     """The protocol's registered comparisons (comparisons: primary, secondary)."""
     vo2 = {"variant": "VO2"}
     g_b = ({**vo2, "world": "wind", "scenario": "occlusion"},
@@ -162,9 +162,9 @@ def registered_specs(qualifying: Sequence[str], v1_variant: str | None, scales) 
                 secondary=True,
             )  # fmt: skip
         )
-    # Noise sensitivity: G-B and G-C on the noise scenario at every scale; formal-v1 only runs
-    # the main scale, so G-D's noise comparison is at the main scale alone.
-    for scale in scales:
+    # Noise sensitivity (comparisons.secondary): every gate's comparison at the sensitivity
+    # scales 0.5 and 1.0 only. G-D has none: formal-v1 runs the main scale alone (#203 review).
+    for scale in sensitivity:
         noise = {"scenario": "noise", "noise_scale": scale}
         specs.append(
             ComparisonSpec(
@@ -188,19 +188,6 @@ def registered_specs(qualifying: Sequence[str], v1_variant: str | None, scales) 
                     secondary=True,
                 )  # fmt: skip
             )
-    if v1_variant is not None:
-        main = {"world": "v1compat", "motion": "curved", "scenario": "noise",
-                "noise_scale": scales[0]}  # fmt: skip
-        specs.append(
-            ComparisonSpec(
-                f"G-D noise {scales[0]}",
-                "noise sensitivity",
-                "superiority",
-                {**vo2, **main},
-                {"variant": v1_variant, **main},
-                secondary=True,
-            )  # fmt: skip
-        )
     return specs
 
 
@@ -256,6 +243,7 @@ def _comparison_dict(c) -> dict:
         "p_holm": c.p_holm,
         "significant": bool(c.passed),
         "degenerate": c.degenerate,
+        "n_seeds": c.difference.n_seeds,  # a seed whose episodes all lack the value drops out
     }
 
 
@@ -311,23 +299,27 @@ def e1(secondary, premise, protocol_seed, alpha) -> dict:
 
 
 def reacquisition(records, bound_s) -> dict:
-    out = {}
-    for variant in ("VO2", "V2"):
-        selection = {"variant": variant, "world": "wind", "scenario": "occlusion"}
-        rows = restricted_reacquisition(
-            [r for r in records if all(r[k] == v for k, v in selection.items())], bound_s
-        )
-        timed = [r for r in rows if r["restricted_reacquisition_time_s"] is not None]
-        censored = [r for r in rows if r["reacquisition_censored"] is not None]
-        out[variant] = {
-            "restricted_mean_time_s": float(
-                np.mean([r["restricted_reacquisition_time_s"] for r in timed])
-            ) if timed else None,
-            "censored_fraction": float(np.mean([r["reacquisition_censored"] for r in censored]))
-            if censored else None,
-            "ended_during_occlusion": len(rows) - len(censored),
-        }  # fmt: skip
-    return {"bound_s": bound_s, "wind_occlusion": out}
+    """Restricted reacquisition in both worlds' occlusion (protocol reacquisition)."""
+    worlds = {}
+    for world in ("wind", "v1compat"):
+        out = {}
+        for variant in ("VO2", "V2"):
+            selection = {"variant": variant, "world": world, "scenario": "occlusion"}
+            rows = restricted_reacquisition(
+                [r for r in records if all(r[k] == v for k, v in selection.items())], bound_s
+            )
+            timed = [r for r in rows if r["restricted_reacquisition_time_s"] is not None]
+            censored = [r for r in rows if r["reacquisition_censored"] is not None]
+            out[variant] = {
+                "restricted_mean_time_s": float(
+                    np.mean([r["restricted_reacquisition_time_s"] for r in timed])
+                ) if timed else None,
+                "censored_fraction": float(np.mean([r["reacquisition_censored"] for r in censored]))
+                if censored else None,
+                "ended_during_occlusion": len(rows) - len(censored),
+            }  # fmt: skip
+        worlds[world] = out
+    return {"bound_s": bound_s, "worlds": worlds}
 
 
 def conclusions(protocol, gates, a3_result, e1_result) -> list[str]:
@@ -369,7 +361,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         None if args.v1_reference == "none" else f"{V1_REFERENCE_PREFIX}{args.v1_reference}"
     )
     noise = protocol["scenarios"]["noise"]
-    scales = [noise["scale"], *([] if args.no_sensitivity else noise["sensitivity_scales"])]
+    sensitivity = [] if args.no_sensitivity else list(noise["sensitivity_scales"])
     alpha = 0.05
     protocol_sha256 = hashlib.sha256(args.protocol.read_bytes()).hexdigest()
     protocol_seed = int(protocol_sha256[:8], 16)
@@ -381,7 +373,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )  # fmt: skip
     controls = qualifying_controls(records, variants)
     qualifying = [c for c, v in controls.items() if v["qualifies"]]
-    specs = registered_specs(qualifying, v1_variant, scales)
+    specs = registered_specs(qualifying, v1_variant, sensitivity)
     # A pilot of some variants scores what it can: a comparison with a side that was not
     # evaluated is listed as skipped, and the report says it is not the formal decision (its
     # Holm families hold only the comparisons run).
@@ -430,7 +422,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         gates["G-C"] = {"status": "not testable", "controls": controls, "passed": None}
     gates["G-D"] = (
         {"passed": bool(rows["G-D"]["gate_passed"]), "comparison": "G-D"}
-        if v1_variant is not None
+        if "G-D" in rows
         else {"status": "not run"}
     )
     gates["G-E"] = {"status": "from the throughput bench, not evaluation records"}
@@ -441,6 +433,14 @@ def main(argv: Sequence[str] | None = None) -> dict:
             "a formal summary needs A3 and E1 decided: evaluate with --speed-clamp and "
             f"--ablations (A3 {a3_result.get('status')}, E1 {e1_result.get('status')})"
         )
+    if not not_formal:
+        tests = [*summary["comparisons"], *e1_result["tests"], a3_result["speed_held"]]
+        short = [f"{row['name']} ({row['n_seeds']})" for row in tests
+                 if row["n_seeds"] != len(train_seeds)]  # fmt: skip
+        if short:
+            raise ValueError(
+                f"a formal test lost training seeds (expected {len(train_seeds)}): {short}"
+            )
     report = {
         "protocol_sha256": protocol_sha256,
         "seeds": args.seeds,
@@ -451,6 +451,10 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "formal": not not_formal,
         "not_formal_because": not_formal,
         "skipped_comparisons": skipped,
+        "noise_sensitivity": {
+            "scales": sensitivity,
+            "G-D": "not applicable: formal-v1 is evaluated at the main noise scale only",
+        },
         "gates": gates,
         "a3": a3_result,
         "e1": e1_result,

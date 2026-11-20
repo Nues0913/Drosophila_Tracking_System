@@ -111,6 +111,10 @@ gates:
   G-D:
     name: versus v1
     rule: v1compat curved normal VO2 - v1 VO-late >= 0.10 and Holm-adjusted p < 0.05
+    # formal-v1's actors run in the same worlds as the v2 variants, occlusion_view v2
+    # (hide_target): the same task on the same episodes. G-D reads curved normal only, so the
+    # view never enters it; v1's occlusion cells are reported beside T-4's blackout audit, the
+    # view v1 was trained with (#197 review).
   G-E:
     name: engineering
     rule: >-

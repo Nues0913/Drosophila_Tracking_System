@@ -95,6 +95,7 @@ def test_driver_evaluates_an_exported_artifact_end_to_end(tmp_path, monkeypatch)
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["invalid_records"] == 0
     assert [run["run"] for run in manifest["runs"]] == ["main", "speed_clamp"]
+    assert manifest["occlusion_view"] == PROTOCOL["occlusion_view"]["v2"] == "hide_target"
 
 
 def test_e1_ablations_include_the_occlusion_window_runs():

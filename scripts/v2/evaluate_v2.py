@@ -270,6 +270,8 @@ def main() -> None:
         "episodes": episodes,
         "runs": [],
         "artifacts": [],
+        # every actor, formal-v1's included, sees the v2 occlusion view (#197 review)
+        "occlusion_view": protocol["occlusion_view"]["v2"],
     }
     # Each artifact is loaded and verified once, kept on the CPU, and moved to the device only
     # for its own runs, so the GPU holds one policy at a time.

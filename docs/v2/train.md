@@ -122,13 +122,13 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
   - 結束的回合數、成功率、碰撞率、每步 reward；
   - value loss、explained variance、policy loss、entropy、approx KL、clip 比例、`kl_teacher`；
   - 學習率、λ、log std、收集和更新的秒數、GPU 峰值。
-- 在輸出目錄建立 `STOP`：trainer 在每次更新之後查看，存好 `checkpoint.pt` 後以 0 結束。移除 `STOP`，用相同的設定、主機和 `--init` 加上 `--resume` 續跑。
+- 在輸出目錄建立 `STOP`：trainer 在每次更新之後查看，存好 `checkpoint.pt` 後以 0 結束。移除 `STOP`，用相同的設定、`--seed`、主機、裝置和 `--init` 加上 `--resume` 續跑；任何一項不同都會報錯（#188 review）。
 - `checkpoint.pt` 保存：
   - actor、critic、兩個 optimizer、更新用的 RNG；
   - 世界、感覺、學生和 teacher 的狀態；
   - 抽樣用的 RNG。
 - 結束時用 `export_policy` 匯出到 `final/`。card 的 `provenance.stages` 是 Stage 1 的 stages 加上 `{"name": "ppo", ...}`，`provenance.train_seed` 是 `--seed`。`--seed` 必須等於 Stage 1 的訓練 seed：Stage 1 的 card 有 `train_seed` 時要相同，沒有時路徑裡的 `seed_<n>` 不能和它矛盾，否則報錯，因為評估的回合編號由它決定（#188 review）。
-- actor 或 critic 的梯度不是有限值時，那一步不更新，monitor 以 exit 3 結束。
+- actor 或 critic 的梯度、value loss、policy loss、approx KL 不是有限值時，monitor 以 exit 3 結束（梯度不是有限值的那一步不更新）。NaN 的 KL 不會累計 KL 停止條件的次數，所以要靠這條擋下（#188 review）。
 
 ## 取代 Stage 1 的條件
 跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。

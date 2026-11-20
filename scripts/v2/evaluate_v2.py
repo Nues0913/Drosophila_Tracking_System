@@ -152,24 +152,36 @@ def train_seed_of(path: Path, card: dict) -> int:
     return in_path.pop()
 
 
-def load_v1_artifact(path: Path):
+def v1_slot(protocol: dict, v1_seed: int) -> int:
+    """The v2 training seed whose episodes a formal-v1 actor of seed v1_seed runs on (protocol
+    v1_reference_seeds, #143: the formal seeds are 1-5, formal-v1's 0-4)."""
+    slots = [int(v2) for v2, v1 in protocol["v1_reference_seeds"].items() if v1 == v1_seed]
+    if len(slots) != 1:
+        raise ValueError(f"formal-v1 seed {v1_seed} is not one v2 seed's G-D reference")
+    return slots[0]
+
+
+def load_v1_artifact(path: Path, protocol: dict):
     """(policy on the CPU, card, weights sha256) of a formal-v1 actor <variant>/seed_<n>/actor.
 
-    Its records carry the variant "v1:<variant>" and the seed from the path, which formal-v1's
-    layout fixes (release formal-v1); evaluation uses that seed's v2 episode numbers, so G-D
-    pairs VO2 and v1 VO-late of one training seed on the same episodes (#192 R2).
+    Its records carry the variant "v1:<variant>" and the v2 training seed the protocol pairs
+    with the path's formal-v1 seed (v1_slot); evaluation uses that seed's v2 episode numbers,
+    so G-D pairs VO2 and v1 VO-late on the same episodes (#192 R2).
     """
     from flytrack_core.model import load_policy_artifact
 
     seed_dir, variant_dir = path.parent, path.parent.parent
     if path.name != "actor" or not re.fullmatch(r"seed_\d+", seed_dir.name):
         raise ValueError(f"{path}: a formal-v1 actor is <variant>/seed_<n>/actor")
+    v1_seed = int(seed_dir.name[5:])
+    slot = v1_slot(protocol, v1_seed)
     policy, _, card = load_policy_artifact(path, device="cpu")
     policy.eval()
     card = {
         **card,
         "v2_variant": f"{V1_REFERENCE_PREFIX}{variant_dir.name}",
-        "v2_train_seed": int(seed_dir.name[5:]),
+        "v2_train_seed": slot,
+        "v1_train_seed": v1_seed,
     }
     return policy, card, card["files"]["weights.pt"]
 
@@ -276,7 +288,7 @@ def main() -> None:
     # Each artifact is loaded and verified once, kept on the CPU, and moved to the device only
     # for its own runs, so the GPU holds one policy at a time.
     loaded = [("v2", path, *load_artifact(path)) for path in args.artifacts]
-    loaded += [("v1", path, *load_v1_artifact(path)) for path in args.v1_artifacts]
+    loaded += [("v1", path, *load_v1_artifact(path, protocol)) for path in args.v1_artifacts]
     snapshots: dict[tuple, list] = {}
     invalid = 0
     with (
@@ -366,6 +378,11 @@ def main() -> None:
     manifest["e1_premise"] = e1_premise(snapshots)
     manifest["artifacts"] = [str(p) for p in args.artifacts]
     manifest["v1_artifacts"] = [str(p) for p in args.v1_artifacts]
+    manifest["v1_reference_seeds"] = {  # v2 training seed -> the formal-v1 seed it ran
+        str(card["v2_train_seed"]): card["v1_train_seed"]
+        for generation, _, _, card, _ in loaded
+        if generation == "v1"
+    }
     manifest["invalid_records"] = invalid
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     print(f"{invalid} records failed validate_episode_record", flush=True)

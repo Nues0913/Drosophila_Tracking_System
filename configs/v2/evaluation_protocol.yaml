@@ -8,8 +8,14 @@ declared_date: '2026-11-18'
 freeze_issue: 142
 plan: docs/v2/大實驗計劃書.md
 model_variants: [VO2, V2, O2, RW2, ER2, GRU2]
-training_seeds: [0, 1, 2, 3, 4]
+# #143 7032821608: seed 0 ran the pilots that chose the recipe (#184 (e), #196 (f), #189, #188's
+# first PPO pilot, #137 F05), so the formal seeds are 1-5; tuning uses the pilot seeds only.
+training_seeds: [1, 2, 3, 4, 5]
 pilot_seeds: [100, 101]
+# G-D's reference: the formal-v1 VO-late actor each v2 training seed is paired with, on that
+# seed's episodes. formal-v1 trained seeds 0-4, and the pairing needs only the shared
+# episodes (v1 and v2 share no training randomness), so v2 seed 5 takes v1's seed 0.
+v1_reference_seeds: {1: 1, 2: 2, 3: 3, 4: 4, 5: 0}
 worlds: [v1compat, wind]
 scenarios:
   normal: {}

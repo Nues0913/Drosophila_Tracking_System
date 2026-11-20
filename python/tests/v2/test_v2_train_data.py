@@ -1,9 +1,13 @@
+import ctypes
+import errno
 from collections import Counter
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import torch
 from flytrack_v2.model import ModelConfigV2, build_policy
+from flytrack_v2.train import data
 from flytrack_v2.train.config import (
     CONFIG_DIR,
     STATE_STRIDE,
@@ -359,6 +363,41 @@ def test_replay_round_trip_preserves_draw_order(tmp_path):
         batch = replay.sample(size, sample_rng, held_out=held_out)
         torch.testing.assert_close(batch, expected, rtol=0, atol=0)
         assert torch.equal(sample_rng.get_state(), draw_rng.get_state())
+
+
+def test_madvise_failure_warns_once_and_keeps_replay_readable(tmp_path, monkeypatch):
+    def madvise(*_args):
+        ctypes.set_errno(errno.EINVAL)
+        return -1
+
+    monkeypatch.setattr(
+        data.ctypes, "CDLL", lambda *_args, **_kwargs: SimpleNamespace(madvise=madvise)
+    )
+    monkeypatch.setattr(data, "_madvise_warned", False)
+    code = torch.tensor([[[1.5]]], dtype=torch.float16)
+    shard = ReplayShard(
+        StepData(
+            code,
+            torch.zeros(1, 1, 2),
+            torch.zeros(1, 1, dtype=torch.bool),
+            torch.zeros(1, 1, dtype=torch.bool),
+        ),
+        code.clone(),
+        torch.zeros(1, 3, dtype=torch.uint8),
+        torch.tensor([False]),
+        0,
+    )
+    paths = [tmp_path / f"replay-{i}.pt" for i in range(2)]
+    for path in paths:
+        torch.save(shard.checkpoint(), path)
+    with pytest.warns(
+        UserWarning, match=rf"madvise\(MADV_RANDOM\).*\[Errno {errno.EINVAL}\]"
+    ) as caught:
+        for path in paths:
+            loaded = ReplayShard.load(path)
+            assert torch.equal(loaded.steps.code, shard.steps.code)
+            assert torch.equal(loaded.states, shard.states)
+    assert len(caught) == 1
 
 
 def test_restore_rejects_legacy_time_major_replay(tmp_path):

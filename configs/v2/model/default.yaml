@@ -1,6 +1,7 @@
 graph_path: data/subgraphs/v2_main/graph.npz
 frontend_path: artifacts/frontend_v2/frontend.npz
 visual_bins: 9
+visual_offset_init: 0.28
 activation_beta: 10.0
 tau_min_s: 0.01
 tau_max_s: 10.0

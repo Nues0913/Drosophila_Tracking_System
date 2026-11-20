@@ -2,6 +2,7 @@ import json
 
 import pytest
 import torch
+from flytrack_core.contracts import file_sha256
 from flytrack_v2.artifacts import VARIANTS
 from flytrack_v2.interfaces import ACTION_EPS, ActionDistribution, reset_rows, unsquash
 from flytrack_v2.model import (
@@ -507,6 +508,10 @@ def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
 
     save = dagger.DAggerRun.save
     resume_args = [*args, "--out", str(resumed)]
+
+    def unexpected_collect(*_args, **_kwargs):
+        pytest.fail("Pre-fit checkpoint must reuse the collected replay")
+
     for fitted in (False, True):
         with monkeypatch.context() as patch:
 
@@ -519,6 +524,8 @@ def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
                     raise InterruptedError("test checkpoint interruption")
 
             patch.setattr(dagger.DAggerRun, "save", interrupt_after_save)
+            if fitted:
+                patch.setattr(dagger.RolloutCollector, "collect", unexpected_collect)
             with pytest.raises(SystemExit, match="2"):
                 main(resume_args)
         checkpoint = torch.load(resumed / "round_1/progress.pt", weights_only=True)
@@ -598,17 +605,21 @@ def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("silent_round", [None, 1, 4])
-def test_round_health_warning_and_stage_failure(tmp_path, monkeypatch, silent_round):
+@pytest.mark.parametrize("failure_case", ["low_speed", "early_silent", "final_silent", "nonfinite"])
+def test_round_health_warning_and_stage_failure(tmp_path, monkeypatch, failure_case):
     probes = 0
+    silent_round = {"early_silent": 1, "final_silent": 4}.get(failure_case)
 
     def health_metrics(*args):
         nonlocal probes
         probes += 1
         silent = probes == silent_round
+        nonfinite = probes == 4 and failure_case == "nonfinite"
         return {
-            "health_speed_std_m_s": torch.tensor(0.03 if probes == 1 or silent else 0.02),
-            "health_odor_swap_delta_omega": torch.tensor(0.1),
+            "health_speed_std_m_s": torch.tensor(
+                0.03 if probes == 1 or silent or nonfinite else 0.02
+            ),
+            "health_odor_swap_delta_omega": torch.tensor(float("inf") if nonfinite else 0.1),
             "health_dn_min_mean_rate": torch.tensor(0.0 if silent else 0.1),
             "health_dn_silent": torch.tensor(int(silent)),
         }
@@ -668,18 +679,26 @@ def test_round_health_warning_and_stage_failure(tmp_path, monkeypatch, silent_ro
 
     failure = json.loads((tmp_path / "failure/reason.json").read_text())
     assert failure["metrics"] == round_ends[-1]
-    assert (tmp_path / "failure/checkpoint.pt").is_file()
     assert (tmp_path / "failure/batch.pt").is_file()
+    checkpoint_path = tmp_path / "failure" / failure["checkpoint"]
+    assert checkpoint_path.is_file()
+    assert failure["checkpoint_sha256"] == file_sha256(checkpoint_path)
     if silent_round is not None:
         assert "silent readout DNs" in failure["reason"]
-    if silent_round == 1:
+    if failure_case == "nonfinite":
+        assert "non-finite health metrics" in failure["reason"]
+    if failure_case in ("early_silent", "nonfinite"):
+        assert failure["checkpoint"] == "checkpoint.pt"
+        assert not (tmp_path / f"round_{expected_rounds[-1]}/checkpoint.pt").exists()
         assert not (tmp_path / "final").exists()
         return
 
-    if silent_round is None:
+    if failure_case == "low_speed":
         assert "speed std is <= 0.02 m/s" in failure["reason"]
     assert "Exported to final/. Stage 1 health check failed." in failure["reason"]
-    checkpoint = torch.load(tmp_path / "round_4/checkpoint.pt", weights_only=True)
+    assert failure["checkpoint"] == "../round_4/checkpoint.pt"
+    assert not (tmp_path / "failure/checkpoint.pt").exists()
+    checkpoint = torch.load(checkpoint_path, weights_only=True)
     assert checkpoint["progress"]["round_index"] == 4
     assert checkpoint["progress"]["updates"] == 4
     loaded = load_policy(tmp_path / "final")

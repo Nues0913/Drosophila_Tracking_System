@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 from flytrack_v2.contracts import SensorContractV2
+from flytrack_v2.eval.records import episode_numbers
 from flytrack_v2.eval.runner import (
     ObservationAblation,
     SpeedClamp,
@@ -213,9 +214,7 @@ def build_world(contract, kind, motion, scenarios, noise_scale, protocol, episod
 
 
 def episode_seeds(protocol: dict, use: str, train_seed: int, episodes: int, scenarios: int):
-    entry = protocol["episode_seeds"][use]
-    one = [entry["base"] + entry["per_train_seed"] * train_seed + e for e in range(episodes)]
-    return one * scenarios
+    return list(episode_numbers(protocol, use, train_seed, episodes)) * scenarios
 
 
 def main() -> None:

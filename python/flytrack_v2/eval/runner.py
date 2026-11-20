@@ -226,27 +226,48 @@ def json_line(value) -> str:
 
 
 def _speed_distance(sums: Mapping[str, Tensor], batch: int) -> dict[str, list[float]]:
-    """Per row: the step count, the least-squares slope of speed on distance, and the means."""
+    """Per row: the step count, the least-squares slope of speed on distance, the means, and
+    the within-episode centered moments sxy = sum (d - mean d)(v - mean v) and
+    sxx = sum (d - mean d)^2, from which a seed's within-episode pooled slope is
+    sum sxy / sum sxx over its episodes (pooled_slope, #194 review)."""
     s = {key: value.cpu().tolist() for key, value in sums.items()}
-    slopes, mean_v, mean_d = [], [], []
+    slopes, mean_v, mean_d, sxy, sxx = [], [], [], [], []
     for i in range(batch):
         n = s["n"][i]
         if n < 2:
             slopes.append(math.nan)
             mean_v.append(math.nan)
             mean_d.append(math.nan)
+            sxy.append(0.0)
+            sxx.append(0.0)
             continue
         cov = s["dv"][i] / n - (s["d"][i] / n) * (s["v"][i] / n)
         var = s["dd"][i] / n - (s["d"][i] / n) ** 2
         slopes.append(cov / var if var > 1e-12 else math.nan)
         mean_v.append(s["v"][i] / n)
         mean_d.append(s["d"][i] / n)
+        sxy.append(cov * n)
+        sxx.append(max(var, 0.0) * n)
     return {
         "n": s["n"],
         "slope_m_s_per_m": slopes,
         "mean_speed_m_s": mean_v,
         "mean_distance_m": mean_d,
+        "sxy": sxy,
+        "sxx": sxx,
     }
+
+
+def pooled_slope(rows: Sequence[Mapping], prefix: str = "aligned_") -> float | None:
+    """A seed's within-episode pooled slope of commanded speed on distance (m/s per m).
+
+    Every episode is centered on its own means, so differences between episodes (a failing
+    episode both slow and far) never make a slope; the episodes are weighted by their spread in
+    distance. None without any spread. Pass the seed's secondary rows of one run.
+    """
+    sxy = sum(row[f"{prefix}sxy"] for row in rows)
+    sxx = sum(row[f"{prefix}sxx"] for row in rows)
+    return sxy / sxx if sxx > 1e-12 else None
 
 
 def run_episodes(

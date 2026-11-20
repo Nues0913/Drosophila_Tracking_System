@@ -57,15 +57,19 @@ Trainer 在 checkpoint 時同步輸出 `diagnostics.json`。各項診斷也寫�
 
 每輪完成更新後，在 held-out 視窗以 mode 動作探測，並在 `monitor.jsonl` 新增一筆 `round_end=1` 的健康指標紀錄。圖變體每個讀出 DN 的平均速率都須大於 `1e-4`。同一 burn-in 狀態會分別跑原始及左右氣味互換的 code，並記錄兩條分支的平均 `|Δω|`。中間輪次發現 DN 沉默時立即以 exit 3 結束。中間輪次的速度標準差 ≤ `0.02 m/s` 時會記錄指標，整次訓練只在首次觸及門檻時發出警告，並繼續下一輪。
 
-最後一輪的探測是 Stage 1 交界健康檢查。若出現 DN 沉默或速度標準差 ≤ `0.02 m/s`，trainer 會保存最後一輪 checkpoint 與 `failure/` 的診斷資料，仍用 `export_policy` 匯出至 `final/`，再以 exit 3 結束。匯出成功後，`failure/reason.json` 會註明產物已匯出且 Stage 1 健康檢查未通過。健康指標、loss 或梯度出現非有限值也會觸發 exit 3。`failure/` 保存 checkpoint、可用的探測或訓練 batch，以及失敗原因。
+最後一輪的探測是 Stage 1 交界健康檢查。若出現 DN 沉默或速度標準差 ≤ `0.02 m/s`，trainer 會保存最後一輪 checkpoint 與 `failure/` 的診斷資料，仍用 `export_policy` 匯出至 `final/`，再以 exit 3 結束。健康指標、loss 或梯度出現非有限值也會觸發 exit 3。
+
+`failure/reason.json` 記錄原因、失敗時的 monitor 指標、相對於 `failure/` 的 `checkpoint` 路徑，以及該檔的 `checkpoint_sha256`。可用的探測或訓練 batch 存於 `failure/batch.pt`。最後一輪仍會匯出的健康失敗引用 `../round_<k>/checkpoint.pt`，匯出成功後在原因中註明。若收集後的正規化指標、更新前的 held-out 探測、訓練更新或輪末健康檢查使訓練提早中止，當下的狀態存於 `failure/checkpoint.pt`。
 
 ## 停止、續跑與匯出
 
-在輸出目錄建立 `STOP`。Trainer 會在輪次邊界、讀出擬合前後及每輪每 50 次更新查閱該檔，保存進度後以 0 結束。移除 `STOP`，以相同設定、主機、裝置、變體和 seed 加上 `--resume`。續跑讀取最後發布的完整或輪內 checkpoint。Checkpoint 保存 RNG、世界與三種 recurrent state，以及首回合的重設排程、已執行的列和收集步數。輪內 checkpoint 也保存下一次更新的位置，並讀取已收集的 replay。首輪收集後的 checkpoint 可接續擬合，擬合後的 checkpoint 會還原正規化 buffer 及 Adam，直接接續更新。Monitor 與診斷輸出對齊 checkpoint 的環境步和日誌位置。舊 checkpoint 若在收集 replay 前建立，續跑可沿用當時的設定。錯相設定加入前使用 `--override desync_first_episode=false`，圖策略的 DN 正規化加入前使用 `--override readout_normalization=false`。
+在輸出目錄建立 `STOP`。Trainer 會在輪次邊界、讀出擬合前後及每輪每 50 次更新查閱該檔，保存進度後以 0 結束。移除 `STOP`，以相同設定、主機、裝置、變體和 seed 加上 `--resume`。續跑讀取最後發布的完整或輪內 checkpoint。輪內 checkpoint 也保存下一次更新的位置，並讀取已收集的 replay。首輪收集後會先保存一份 `progress.pt`，以便在擬合中斷時復用分片的 DN 速率並重新擬合。擬合完成後會更新 `progress.pt`，續跑可還原正規化 buffer、Adam 與排程，直接接續更新。Monitor 與診斷輸出對齊 checkpoint 的環境步和日誌位置。舊 checkpoint 若在收集 replay 前建立，續跑可沿用當時的設定。錯相設定加入前使用 `--override desync_first_episode=false`，圖策略的 DN 正規化加入前使用 `--override readout_normalization=false`。
+
+Checkpoint 保存 policy、靜息狀態、optimizer、排程、讀出擬合資料、訓練進度、診斷與 RNG。Collector 部分包含世界、感覺、中央與 teacher 狀態，以及首回合的重設排程、已執行的列和收集步數。以 4060 的 1,024 列 VO2 對照鏈為例，每份約 426 MB，其中感覺約 374.13 MB、中央約 35.22 MB、世界約 16.38 MB。未觸發 `STOP` 的完整四輪累計寫入四份輪末 checkpoint 和首輪兩份 `progress.pt`，約 2.56 GB。
 
 續跑沿用 `config.json` 中的 `model` 覆寫，CLI 可省略原先的 `model.*` 參數。續跑時若指定了新增或不同的模型覆寫，trainer 會報錯。
 
-每輪 `round_<k>/replay.pt` 只寫入該輪的新資料。格式標記為 `layout: env_major_f16`。各步資料連續排列為 `[環境列, 步數, ...]`，中央狀態排列為 `[環境列, 快照, 狀態寬度]`，因此單一序列在各欄位內都是連續的 mmap 讀取。載入分片時，抽樣會用到的頁面設為 `MADV_RANDOM`，讓核心依缺頁需求讀取，避免每次跳到新位置時大量預讀。讀出 DN 速率保留預設的 mmap 行為，供首輪擬合循序讀取。Code 和中央狀態以 float16 保存，teacher 動作和讀出 DN 速率以 float32 保存，reset 和遮蔽旗標以 bool 保存。分片另存世界、運動、情境與 held-out 的列標籤。舊的時間優先 float32 分片會報錯，請使用新輸出目錄重新訓練。
+每輪 `round_<k>/replay.pt` 只寫入該輪的新資料。格式標記為 `layout: env_major_f16`。各步資料連續排列為 `[環境列, 步數, ...]`，中央狀態排列為 `[環境列, 快照, 狀態寬度]`，因此單一序列在各欄位內都是連續的 mmap 讀取。載入分片時，對抽樣會用到的頁面提示 `MADV_RANDOM`，讓核心依缺頁需求讀取，避免每次跳到新位置時大量預讀。提示失敗時，整個程序只發出一次附 errno 的警告，並繼續讀取。讀出 DN 速率保留預設的 mmap 行為，供首輪擬合循序讀取。Code 和中央狀態以 float16 保存，teacher 動作和讀出 DN 速率以 float32 保存，reset 和遮蔽旗標以 bool 保存。分片另存世界、運動、情境與 held-out 的列標籤。舊的時間優先 float32 分片會報錯，請使用新輸出目錄重新訓練。
 
 原子發布的 `checkpoint.pt` 指示該輪已完成，`progress.pt` 指示該輪可從中間續跑。`config.json` 記錄解析後設定，`model` 保存覆寫，`model_config` 保存完整模型設定。訓練完成時，`final/` 由 `export_policy` 產生，可直接用 `load_policy` 載入。Model card 的 `provenance.stages` 包含 DAgger 的設定、模型覆寫、主機、實際 micro-batch、activation checkpoint 與以實際步數推得的四輪排程。Model card 頂層的 `model_config` 會將雙側讀出展開為實際的型別清單和 bodyId。來源版本可由執行環境提供 `GIT_COMMIT` 或 `GITHUB_SHA`，缺值時記為 null。
 
@@ -73,7 +77,7 @@ Trainer 在 checkpoint 時同步輸出 `diagnostics.json`。各項診斷也寫�
 
 以預設 VO2 四輪、每輪 1,024 列 × 733 步估算，296 欄 code、兩欄動作、兩個旗標及每 16 步存一次的 8,598 欄中央狀態，合計由 10.06 GB 降到 5.05 GB（未計讀出樣本、列標籤和封裝開銷）。以 4060 實際觀察到的約 27 GB 舊分片用量換算，相同收集量的新格式約 13.5 GB。依環境連續存放可讓抽樣沿著視窗讀取，減少分散缺頁引發的預讀量。
 
-預設設定每輪的收集緩衝約 2.52 GB，單眼百分位的暫存上限約 0.43 GB。統計完成後，每 64 列轉置拷貝到連續的目的張量，先轉換 code 並釋放舊 code，再轉換較大的中央狀態快照。轉置時同時在記憶體中的 replay 張量峰值約 2.96 GB。OS 會依可用記憶體保留 mmap 的檔案頁面。
+中央狀態每批最多暫存兩個 float32 快照（VO2 約 70.43 MB 的 CPU 緩衝），批次結束後在 CPU 轉存到連續的環境優先 float16 分片。Code 以 float32 逐組計算有效讀值的精確百分位，單眼暫存上限約 0.44 GB，統計完成後每 64 列轉存到環境優先的 float16 張量。首輪活動陣列峰值在 code 轉存時，計入 46 個中央快照、兩份不同精度的 code、動作、旗標與首輪讀出樣本，估計由 2.97 GB 降至 2.16 GB（2.76 GiB 至 2.01 GiB）。後三輪各少約 7.16 MB 的讀出樣本。此估計只計上述陣列。模型、allocator 保留的記憶體，以及 OS 保留的 mmap 檔案頁面另計。
 
 GPU 收集每 32 個控制步批次拷回 CPU，VO2 的暫存約 105 MiB。強制重設在 graph replay 後執行，同一世界、同一步的列合成一個遮罩，並就地更新 graph 使用的張量。每輪收集完會釋放世界的 CUDA graph capture pool，下一輪用同一世界狀態重新 capture。無 activation checkpoint 時，VO2 的 recurrent core 計算圖主項估計在 128 條序列約 3.94 GiB、64 條序列約 1.97 GiB。連同讀出、CSR 工作區、模型緩衝及世界狀態，訓練峰值粗估約為 5–6 GiB 及 3–4 GiB，收集階段的峰值另受 CUDA graph 影響。實測值以 monitor 的 `max_memory_allocated` 為準。
 
@@ -122,13 +126,13 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
   - 結束的回合數、成功率、碰撞率、每步 reward；
   - value loss、explained variance、policy loss、entropy、approx KL、clip 比例、`kl_teacher`；
   - 學習率、λ、log std、收集和更新的秒數、GPU 峰值。
-- 在輸出目錄建立 `STOP`：trainer 在每次更新之後查看，存好 `checkpoint.pt` 後以 0 結束。移除 `STOP`，用相同的設定、主機和 `--init` 加上 `--resume` 續跑。
+- 在輸出目錄建立 `STOP`：trainer 在每次更新之後查看，存好 `checkpoint.pt` 後以 0 結束。移除 `STOP`，用相同的設定、`--seed`、主機、裝置和 `--init` 加上 `--resume` 續跑；任何一項不同都會報錯（#188 review）。
 - `checkpoint.pt` 保存：
   - actor、critic、兩個 optimizer、更新用的 RNG；
   - 世界、感覺、學生和 teacher 的狀態；
   - 抽樣用的 RNG。
 - 結束時用 `export_policy` 匯出到 `final/`。card 的 `provenance.stages` 是 Stage 1 的 stages 加上 `{"name": "ppo", ...}`，`provenance.train_seed` 是 `--seed`。`--seed` 必須等於 Stage 1 的訓練 seed：Stage 1 的 card 有 `train_seed` 時要相同，沒有時路徑裡的 `seed_<n>` 不能和它矛盾，否則報錯，因為評估的回合編號由它決定（#188 review）。
-- actor 或 critic 的梯度不是有限值時，那一步不更新，monitor 以 exit 3 結束。
+- actor 或 critic 的梯度、value loss、policy loss、approx KL 不是有限值時，monitor 以 exit 3 結束（梯度不是有限值的那一步不更新）。NaN 的 KL 不會累計 KL 停止條件的次數，所以要靠這條擋下（#188 review）。
 
 ## 取代 Stage 1 的條件
 跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。

@@ -291,6 +291,8 @@ def test_ppo_runs_stops_resumes_and_exports(tmp_path):
     first = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
     assert [row["update"] for row in first] == [1] and not (out / "final").exists()
     (out / "STOP").unlink()
+    with pytest.raises(SystemExit):  # #188 review: another seed must not resume this run
+        ppo.main([*args[:3], "6", *args[4:], "--resume"])
     assert ppo.main([*args, "--resume"]) == 0
     rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
     assert [row["update"] for row in rows] == [1, 2, 3, 4]  # 8 envs x 3 steps per update
@@ -357,3 +359,13 @@ def test_the_time_limit_terminates_and_a_forced_reset_bootstraps():
     adv, _, values = advantages_and_returns(_ConstantCritic(), rollout, gamma, 0.95)
     v = 0.5 / (1 - gamma)
     torch.testing.assert_close(adv[0], torch.tensor([1 - v, 1 + gamma * v - v]))
+
+
+def test_the_warm_up_needs_one_actor_update_not_a_finished_ramp():
+    """#188: 40 updates with a 20 + 20 warm-up train the actor during its whole ramp."""
+    steps = lambda updates: f"total_env_steps={updates * 1024 * 32}"  # noqa: E731
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "4070", [steps(40)])
+    assert config["updates"] == 40
+    assert schedule(39, config).actor_on and schedule(39, config).actor_lr > 0
+    with pytest.raises(ValueError, match="no actor updates after the critic warm-up"):
+        ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "4070", [steps(20)])

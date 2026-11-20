@@ -31,6 +31,8 @@ scenarios:
 motions: {primary: curved, secondary: wander}
 episodes_per_cell: 100
 # Episode seeds of each use, disjoint ranges (training draws its own from rng.episode_seed).
+# records.episode_numbers checks that a training seed's block stays below the next range
+# (#137 F16): e.g. pilot_held_out takes train seeds below 1,200.
 # Evaluation episodes: base + 100000 * train_seed + e, e = 0..99, the same e in every
 # scenario, world and variant, so comparisons pair; each training seed has its own episodes,
 # so seed means carry the episode sampling variance (#170: shared episodes shifted every
@@ -146,8 +148,11 @@ comparisons:
       only say whether the controller depends on the channel. Occlusion tracking is reported
       before, during, after the occlusion until reacquisition, and after reacquisition
     A3 speed: >-
-      deterministic actions (mode); per seed, the slope of the commanded speed on the
-      distance seen before acting, over the steps whose bearing seen before acting is within
+      deterministic actions (mode); per seed, the within-episode pooled slope of the commanded
+      speed on the distance seen before acting (each episode centered on its own means, then
+      sum Sxy / sum Sxx over the seed's normal episodes, so a difference between episodes, such
+      as a failing one both slow and far, never makes a slope; flytrack_v2.eval.runner
+      pooled_slope, #194 review), over the steps whose bearing seen before acting is within
       45 degrees (the success rule's bearing; the aligned slope) and over all steps (reported
       beside it); and the actor with its speed held at 0.20 m/s on paired episodes. "The
       speed problem is solved" needs a positive aligned slope on at least 4 of 5 seeds and

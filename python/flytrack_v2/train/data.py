@@ -7,8 +7,10 @@ import math
 import mmap
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import NamedTuple
 
 import numpy as np
@@ -38,6 +40,8 @@ _PACK_ROWS = 64
 _REPLAY_LAYOUT = "env_major_f16"
 _READOUT_SAMPLE_STRIDE = 4
 _TEACHER_KEYS = ("agent_pose", "agent_velocity", "target_pose", "target_velocity", "occluded")
+_MADVISE_WARNING_LOCK = Lock()
+_madvise_warned = False
 
 
 def mix_actions(teacher: Tensor, student: Tensor, beta: float, generator: torch.Generator):
@@ -81,6 +85,7 @@ class ReplayShard:
 
     @classmethod
     def load(cls, path: Path) -> ReplayShard:
+        global _madvise_warned
         shard = cls.restore(torch.load(path, map_location="cpu", weights_only=True, mmap=True))
         # PyTorch exposes the mapped storages, but keeps the mmap handle internal.
         madvise = ctypes.CDLL(None, use_errno=True).madvise
@@ -94,7 +99,15 @@ class ReplayShard:
                 page_offset = address % mmap.PAGESIZE
                 if madvise(address - page_offset, size + page_offset, mmap.MADV_RANDOM) != 0:
                     errno = ctypes.get_errno()
-                    raise OSError(errno, os.strerror(errno), path)
+                    with _MADVISE_WARNING_LOCK:
+                        if _madvise_warned:
+                            continue
+                        _madvise_warned = True
+                    warnings.warn(
+                        f"madvise(MADV_RANDOM) failed for {path}: "
+                        f"[Errno {errno}] {os.strerror(errno)}",
+                        stacklevel=2,
+                    )
         return shard
 
 
@@ -321,10 +334,18 @@ class RolloutCollector:
         episode_steps = torch.empty(plan.ticks, self.rows, dtype=torch.int64, device=self.device)
         snapshots = range(plan.first_snapshot, plan.ticks, STATE_STRIDE)
         states = torch.empty(
-            len(snapshots), self.rows, self.policy.central_state_size, dtype=torch.float32
+            self.rows, len(snapshots), self.policy.central_state_size, dtype=torch.float16
+        )
+        staged_states = torch.empty(
+            min(len(snapshots), math.ceil(_TRANSFER_TICKS / STATE_STRIDE)),
+            self.rows,
+            self.policy.central_state_size,
+            dtype=torch.float32,
+            device=self.device,
         )
         initial = self.policy.initial_central_state(self.rows, self.device)
         is_cuda = self.device.type == "cuda"
+        cpu_states = torch.empty_like(staged_states, device="cpu") if is_cuda else staged_states
         readout_rates = None
         if sample_readout_rates:
             train_rows = torch.where(~self.held_out)[0]
@@ -336,23 +357,18 @@ class RolloutCollector:
                 len(train_rows),
                 self.policy.readout.rate_mean.numel(),
             )
-        if is_cuda:
-            staging = _allocate_steps(
-                _TRANSFER_TICKS, self.rows, self.policy.code_size, self.device
-            )
-            staged_states = torch.empty_like(
-                states[: math.ceil(_TRANSFER_TICKS / STATE_STRIDE)], device=self.device
-            )
-        else:
-            staging, staged_states = steps, states
+        staging = (
+            _allocate_steps(_TRANSFER_TICKS, self.rows, self.policy.code_size, self.device)
+            if is_cuda
+            else steps
+        )
         next_snapshot = 0
         for start_tick in range(0, plan.ticks, _TRANSFER_TICKS):
             end = min(start_tick + _TRANSFER_TICKS, plan.ticks)
             first_saved = next_snapshot
             for tick in range(start_tick, end):
                 if tick in snapshots:
-                    slot = next_snapshot - first_saved if is_cuda else next_snapshot
-                    staged_states[slot].copy_(self.central)
+                    staged_states[next_snapshot - first_saved].copy_(self.central)
                     next_snapshot += 1
                 slot = tick - start_tick if is_cuda else tick
                 sample = None
@@ -363,18 +379,21 @@ class RolloutCollector:
                 )
                 for buffer, value in zip(staging, data, strict=True):
                     buffer[slot].copy_(value)
+            saved_count = next_snapshot - first_saved
             if is_cuda:
                 for dest, source in zip(steps, staging, strict=True):
                     dest[start_tick:end].copy_(source[: end - start_tick])
-                states[first_saved:next_snapshot].copy_(
-                    staged_states[: next_snapshot - first_saved]
-                )
+                cpu_states[:saved_count].copy_(staged_states[:saved_count])
+            # Pack into the shard as we collect, keeping the float16 cast on CPU.
+            states[:, first_saved:next_snapshot].copy_(cpu_states[:saved_count].transpose(0, 1))
+        del staged_states, cpu_states
         rate = plan.ticks * self.rows / (time.perf_counter() - start)
         if is_cuda:
             for world in self.worlds:
                 world.release_rollout_graphs()
         # Code and labels use the observation before the action, one step before the info count.
         std, mean = torch.std_mean(episode_steps.to(torch.float64), correction=0)
+        del episode_steps
         dt = self.policy.contract.control_dt
         metrics = {
             "collect_env_steps_per_s": rate,
@@ -383,11 +402,9 @@ class RolloutCollector:
         }
         samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
         code, action, reset, occluded = steps
-        del steps, staging, staged_states
+        del steps, staging
         stats = normalization_stats(code, self.policy.input_norm)
-        # Release the time-major code before allocating the packed snapshots.
         code = _env_major(code, torch.float16)
-        states = _env_major(states, torch.float16)
         steps = StepData(
             code,
             _env_major(action, action.dtype),

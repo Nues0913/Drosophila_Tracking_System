@@ -498,7 +498,9 @@ def main(argv: Sequence[str] | None = None) -> dict:
         expected=grid, alpha=alpha,
     )  # fmt: skip
     rows = {row["name"]: row for row in summary["comparisons"]}
-    gates = {"G-A": g_a(records)}
+    # a pilot of the controls alone has no VO2: its G-A and G-C comparisons are not run, and
+    # G-C still shows each control's qualification (#205 review)
+    gates = {"G-A": g_a(records) if "VO2" in variants else {"status": "not run", "passed": None}}
     described = {row["name"] for row in descriptive}
 
     def untested(name):
@@ -518,6 +520,8 @@ def main(argv: Sequence[str] | None = None) -> dict:
         gates["G-C"] = {"status": "not run", "controls": {}, "passed": None}
     elif not qualifying:
         gates["G-C"] = {"status": "not testable", "controls": controls, "passed": None}
+    elif "VO2" not in variants:
+        gates["G-C"] = {"status": "not run", "controls": controls, "passed": None}
     elif descriptive:
         gates["G-C"] = {"status": "descriptive (one seed)", "controls": controls, "passed": None}
     else:

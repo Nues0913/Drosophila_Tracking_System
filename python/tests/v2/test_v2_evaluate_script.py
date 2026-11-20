@@ -129,4 +129,18 @@ def test_v1_reference_actors_need_the_formal_v1_layout(tmp_path):
     """#192 R2: <variant>/seed_<n>/actor fixes the variant and the seed of a formal-v1 actor."""
     for wrong in ("VO-late/seed_0/odor/actor", "VO-late/seed_x/actor", "VO-late/seed_0/final"):
         with pytest.raises(ValueError, match="formal-v1 actor is"):
-            evaluate_v2.load_v1_artifact(tmp_path / wrong)
+            evaluate_v2.load_v1_artifact(tmp_path / wrong, PROTOCOL)
+    with pytest.raises(ValueError, match="not one v2 seed's G-D reference"):
+        evaluate_v2.load_v1_artifact(tmp_path / "VO-late/seed_7/actor", PROTOCOL)
+
+
+def test_each_formal_seed_has_one_formal_v1_reference():
+    """#143: the formal seeds are 1-5 and formal-v1's 0-4; v2 seed 5 takes v1's seed 0, and
+    every other seed keeps its own number."""
+    assert PROTOCOL["training_seeds"] == [1, 2, 3, 4, 5]
+    assert 0 not in PROTOCOL["training_seeds"]  # seed 0 chose the recipe
+    assert sorted(PROTOCOL["v1_reference_seeds"]) == PROTOCOL["training_seeds"]
+    assert {evaluate_v2.v1_slot(PROTOCOL, v1): v1 for v1 in range(5)} == {
+        1: 1, 2: 2, 3: 3, 4: 4, 5: 0
+    }  # fmt: skip
+    assert not set(PROTOCOL["training_seeds"]) & set(PROTOCOL["pilot_seeds"])

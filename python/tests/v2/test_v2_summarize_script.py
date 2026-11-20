@@ -236,6 +236,21 @@ def test_a_pilot_of_one_variant_scores_only_what_it_has(tmp_path):
     assert report["conclusions"] == ["speed: no effective speed control was established"]
 
 
+def test_a_pilot_of_a_control_alone_shows_its_qualification(tmp_path):
+    """No VO2: G-A and the G-C comparisons are not run, and G-C still says whether the control
+    qualifies."""
+    for succeed, status in ((True, "not run"), (False, "not testable")):
+        run = _write_run(tmp_path / f"run_{succeed}", v1=False, controls_succeed=succeed,
+                         drop=lambda variant, *_: variant != "RW2")  # fmt: skip
+        argv = _args(tmp_path, [run], "--v1-reference", "none")
+        argv[argv.index("--variants") + 1 : argv.index("--train-seeds")] = ["RW2"]
+        report = summarize_v2.main(argv)
+        assert report["gates"]["G-A"] == {"status": "not run", "passed": None}
+        assert report["gates"]["G-C"]["status"] == status
+        assert report["gates"]["G-C"]["controls"]["RW2"]["qualifies"] is succeed
+        assert report["a3"]["status"] == report["e1"]["status"] == "missing"
+
+
 def test_the_full_protocol_run_is_marked_formal_only_when_nothing_is_missing(tmp_path):
     report = summarize_v2.main(_args(tmp_path, [_write_run(tmp_path / "run")]))
     assert report["formal"] is False  # the fixture has 4 of 6 variants and 3 seeds

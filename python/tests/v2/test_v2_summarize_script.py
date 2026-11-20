@@ -333,6 +333,34 @@ def test_an_e1_premise_that_fails_gives_no_e1_conclusion(tmp_path):
     assert report["conclusions"] == ["speed: no effective speed control was established"]
 
 
+def test_gru2_e1_is_described_beside_vo2s_from_its_own_premise(tmp_path):
+    """#141: the ablations also run on GRU2, reported as their own family with no conclusion;
+    each variant's E1 reads only its own premise pairs, and the report states the direction."""
+    run = _write_run(tmp_path / "run")
+    rows = [json.loads(line) for line in (run / "secondary.jsonl").read_text().splitlines()]
+    for row in [r for r in rows if r["run"] == "occlusion_baseline"]:
+        base = {**row, "variant": "GRU2", "during_tracking_fraction": 0.7}
+        rows.append(base)
+        rows.append({**base, "run": "odor_swap_occlusion", "during_tracking_fraction": 0.5})
+        rows.append({**base, "run": "wind_rotate_90_occlusion", "during_tracking_fraction": 0.7})
+    (run / "secondary.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    premise = json.loads((run / "manifest.json").read_text())["e1_premise"]
+    premise += [{"artifact": "g", "motion": "curved", "run": "odor_swap_occlusion",
+                 "max_m": 0.03, "fraction_over_1cm": 0.25, "variant": "GRU2"}]  # fmt: skip
+    (run / "manifest.json").write_text(json.dumps({"e1_premise": premise}))
+    report = summarize_v2.main(_args(tmp_path, [run]))
+    # a GRU2 pair that drifted fails GRU2's premise, not VO2's
+    assert report["e1"]["status"] == "decided" and report["e1"]["premise_ok"]
+    assert report["e1_gru2"]["status"] == "premise failed"
+    assert report["e1"]["difference"].startswith("occlusion_baseline - ablation")
+    vo2 = {t["name"]: t for t in report["e1"]["tests"]}
+    assert vo2["E1 odor_swap_occlusion"]["mean_difference"] > 0  # the swap lowers VO2's tracking
+    gru2 = {t["name"]: t for t in report["e1_gru2"]["tests"]}
+    assert gru2["E1 GRU2 odor_swap_occlusion"]["mean_difference"] == pytest.approx(0.2)
+    assert gru2["E1 GRU2 wind_rotate_90_occlusion"]["mean_difference"] == pytest.approx(0.0)
+    assert not any("GRU2" in c for c in report["conclusions"])
+
+
 def test_a_pilot_of_one_seed_reports_differences_without_tests(tmp_path):
     """A paired t test needs two seeds: one seed gives the registered comparisons as seed
     differences, and A3 and E1 as descriptive, with no conclusion drawn from them."""

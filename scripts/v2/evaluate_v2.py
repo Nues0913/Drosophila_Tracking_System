@@ -9,10 +9,10 @@ secondary.jsonl (the A3 speed slope and E1 occlusion phases per episode) and man
 
 Optional secondary runs on the same episodes:
 - --speed-clamp: every actor with its speed held at 0.20 m/s (#161 A3), normal scenario;
-- --ablations: VO2 in the wind world's occlusion scenario with the odor swapped and with the
-  wind rotated by 90 degrees (#161 E1), each during the occlusion only (the attribution, #192
-  R5, against occlusion_baseline: the same occlusion-only batch unablated) and over the whole
-  episode.
+- --ablations: VO2 and GRU2 in the wind world's occlusion scenario with the odor swapped and
+  with the wind rotated by 90 degrees (#161 E1), each during the occlusion only (the
+  attribution, #192 R5, against occlusion_baseline: the same occlusion-only batch unablated)
+  and over the whole episode. GRU2's is descriptive (#141).
 
 The summary (flytrack_v2.eval.summary) is built from episodes.jsonl afterwards.
 
@@ -79,25 +79,32 @@ ABLATIONS = {
 # occlusion-window ablation against occlusion_baseline, the same batch unablated.
 PREMISE_RUNS = ("occlusion_baseline", "odor_swap_occlusion", "wind_rotate_90_occlusion")
 
+# The variants the ablations run on: VO2's E1 is the registered attribution; GRU2's, on the same
+# inputs and episodes, is descriptive and says whether a learned controller uses odor or wind
+# while the target is hidden (registered before M4, #141).
+E1_VARIANTS = ("VO2", "GRU2")
 
-def e1_premise(snapshots: dict) -> list[dict]:
+
+def e1_premise(snapshots: dict, variants: dict | None = None) -> list[dict]:
     """Per artifact, motion and window ablation: how far each paired episode's agent is from
-    the baseline's when the occlusion starts (max, and the fraction farther than 1 cm)."""
+    the baseline's when the occlusion starts (max, and the fraction farther than 1 cm).
+    ``variants`` maps an artifact to its variant, so each variant's E1 reads its own pairs."""
     rows = []
     for (path, motion, label), xy in sorted(snapshots.items()):
         if label == "occlusion_baseline":
             continue
         base = np.asarray(snapshots[(path, motion, "occlusion_baseline")])
         distance = np.linalg.norm(np.asarray(xy) - base, axis=1)
-        rows.append(
-            {
-                "artifact": path,
-                "motion": motion,
-                "run": label,
-                "max_m": float(distance.max()),
-                "fraction_over_1cm": float((distance > 0.01).mean()),
-            }
-        )
+        row = {
+            "artifact": path,
+            "motion": motion,
+            "run": label,
+            "max_m": float(distance.max()),
+            "fraction_over_1cm": float((distance > 0.01).mean()),
+        }
+        if variants is not None:
+            row["variant"] = variants[path]
+        rows.append(row)
     return rows
 
 
@@ -290,6 +297,7 @@ def main() -> None:
     loaded = [("v2", path, *load_artifact(path)) for path in args.artifacts]
     loaded += [("v1", path, *load_v1_artifact(path, protocol)) for path in args.v1_artifacts]
     snapshots: dict[tuple, list] = {}
+    snapshot_variants: dict[str, str] = {}
     invalid = 0
     with (
         (args.output / "episodes.jsonl").open("w", encoding="utf-8") as records_out,
@@ -308,7 +316,7 @@ def main() -> None:
                     variant, seed = card["v2_variant"], card["v2_train_seed"]
                 else:
                     variant, seed = card["variant"], train_seed_of(path, card)
-                if label in ABLATIONS and variant != "VO2":
+                if label in ABLATIONS and variant not in E1_VARIANTS:
                     continue
                 actor = (V1Actor if generation == "v1" else V2Actor)(policy.to(args.device))
                 if label == "speed_clamp":
@@ -338,6 +346,7 @@ def main() -> None:
                 )
                 if result.snapshot_xy is not None:
                     snapshots[(str(path), motion, label)] = result.snapshot_xy
+                    snapshot_variants[str(path)] = variant
                 policy.to("cpu")
                 records = to_records(
                     result, rows, run_id=f"{args.output.name}:{label}", variant=variant,
@@ -375,7 +384,7 @@ def main() -> None:
                     }
                 )
                 print(f"{label} {kind} {motion} {variant} seed {seed}: {seconds:.0f} s", flush=True)
-    manifest["e1_premise"] = e1_premise(snapshots)
+    manifest["e1_premise"] = e1_premise(snapshots, snapshot_variants)
     manifest["artifacts"] = [str(p) for p in args.artifacts]
     manifest["v1_artifacts"] = [str(p) for p in args.v1_artifacts]
     manifest["v1_reference_seeds"] = {  # v2 training seed -> the formal-v1 seed it ran

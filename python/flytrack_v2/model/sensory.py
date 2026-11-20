@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -20,6 +21,8 @@ from flytrack_v2.interfaces import reset_rows
 from .config import ModelConfigV2
 from .core import inverse_softplus
 from .graph import GraphV2
+
+CHEM_GAIN = float(os.environ.get("FLYTRACK_CHEM_GAIN", "1"))  # explore only (#138)
 
 
 @dataclass(frozen=True)
@@ -329,6 +332,11 @@ class SeedProjection(nn.Module):
         )
         odor_midline = odor.reshape(len(code), 2, self.layout.odor_channels).mean(dim=1)
         sources = [odor, odor_midline, wind, wind.mean(dim=1, keepdim=True)]
+        # explore/v2-138-chem-gain only (never merged): a fixed gain on the odor and wind seed
+        # drive. Not written into the artifact, like #184 (e)'s shift; the model card does not
+        # know it, so evaluate with the same FLYTRACK_CHEM_GAIN.
+        if CHEM_GAIN != 1.0:
+            sources = [CHEM_GAIN * source for source in sources]
         if self.lc_rf is not None:
             if self.enable_vision:
                 pooled = vision.reshape(len(code), 2, eye_width) @ F.softplus(self.lc_rf).T

@@ -207,3 +207,45 @@ def test_no_qualifying_control_makes_g_c_not_testable(tmp_path):
         "structure: the structure comparison is not testable: no qualifying control"
         in (report["conclusions"])
     )
+
+
+def test_a_pilot_of_one_variant_scores_only_what_it_has(tmp_path):
+    """A VO2-only pilot: the comparisons with V2, the controls or v1 are skipped, not refused,
+    and the report says it is not the formal decision."""
+    run = _write_run(tmp_path / "run", v1=False, drop=lambda variant, *_: variant != "VO2")
+    argv = _args(tmp_path, [run], "--v1-reference", "none")
+    argv[argv.index("--variants") + 1 : argv.index("--train-seeds")] = ["VO2"]
+    report = summarize_v2.main(argv)
+    assert report["formal"] is False and "no v1 reference" in report["not_formal_because"]
+    assert report["gates"]["G-B"] == {"status": "not run", "passed": None}
+    assert report["gates"]["G-C"]["status"] == "not run"  # no control evaluated: not "not testable"
+    assert "G-B" in report["skipped_comparisons"] and report["summary"]["comparisons"] == []
+    assert report["gates"]["G-A"]["passed"]
+    # E1 shows the odor swap, so without G-B there is no occlusion conclusion either way
+    assert report["conclusions"] == ["speed: no effective speed control was established"]
+
+
+def test_the_full_protocol_run_is_marked_formal_only_when_nothing_is_missing(tmp_path):
+    report = summarize_v2.main(_args(tmp_path, [_write_run(tmp_path / "run")]))
+    assert report["formal"] is False  # the fixture has 4 of 6 variants and 3 seeds
+    assert report["skipped_comparisons"] == []
+
+
+def test_a_formal_summary_needs_a3_and_e1(tmp_path):
+    """With the fixture as the whole protocol, the report is formal; dropping the E1 runs is
+    then refused rather than read as a negative result."""
+    protocol = {**PROTOCOL, "model_variants": VARIANTS, "training_seeds": SEEDS,
+                "episodes_per_cell": EPISODES}  # fmt: skip
+    protocol["scenarios"] = {**PROTOCOL["scenarios"]}
+    protocol["scenarios"]["noise"] = {**PROTOCOL["scenarios"]["noise"], "sensitivity_scales": []}
+    path = tmp_path / "protocol.yaml"
+    path.write_text(yaml.safe_dump(protocol))
+    run = _write_run(tmp_path / "run")
+    argv = ["--runs", str(run), "--output", str(tmp_path / "report.json"), "--protocol", str(path)]
+    report = summarize_v2.main(argv)
+    assert report["formal"] is True and report["not_formal_because"] == []
+    lines = (run / "secondary.jsonl").read_text().splitlines()
+    kept = [line for line in lines if "occlusion" not in json.loads(line)["run"]]
+    (run / "secondary.jsonl").write_text("".join(line + "\n" for line in kept))
+    with pytest.raises(ValueError, match="formal summary needs A3 and E1"):
+        summarize_v2.main(argv)

@@ -331,17 +331,16 @@ def reacquisition(records, bound_s) -> dict:
 
 
 def conclusions(protocol, gates, a3_result, e1_result) -> list[str]:
-    """The registered wording of each negative result (protocol negative_results, #192 R13)."""
+    """The registered wording of each negative result (protocol negative_results, #192 R13).
+
+    Only decided analyses give one: a missing analysis is an incomplete evaluation (the formal
+    summary refuses it), not a negative result."""
     wording = protocol["negative_results"]
     out = []
-    if a3_result.get("status") != "decided" or not a3_result["speed_problem_solved"]:
+    if a3_result.get("status") == "decided" and not a3_result["speed_problem_solved"]:
         out.append(f"speed: {wording['speed'].split(chr(34))[1]}")
-    g_b = gates["G-B"]
-    if (
-        not g_b["passed"]
-        or e1_result.get("status") != "decided"
-        or not e1_result["any_significant"]
-    ):
+    e1_decided = e1_result.get("status") == "decided"
+    if gates["G-B"]["passed"] is False or (e1_decided and not e1_result["any_significant"]):
         out.append(f"occlusion: {wording['occlusion'].split(chr(34))[1]}")
     if gates["G-C"]["status"] == "not testable":
         out.append(f"structure: {wording['structure'].split(chr(34))[1]}")
@@ -383,6 +382,28 @@ def main(argv: Sequence[str] | None = None) -> dict:
     controls = qualifying_controls(records, variants)
     qualifying = [c for c, v in controls.items() if v["qualifies"]]
     specs = registered_specs(qualifying, v1_variant, scales)
+    # A pilot of some variants scores what it can: a comparison with a side that was not
+    # evaluated is listed as skipped, and the report says it is not the formal decision (its
+    # Holm families hold only the comparisons run).
+    known = set(variants) | ({v1_variant} if v1_variant is not None else set())
+    skipped = [
+        s.name for s in specs if not {s.candidate["variant"], s.reference["variant"]} <= known
+    ]
+    specs = [s for s in specs if s.name not in skipped]
+    not_formal = [
+        reason
+        for reason, applies in (
+            (f"variants missing: {sorted(set(protocol['model_variants']) - set(variants))}",
+             not set(protocol["model_variants"]) <= set(variants)),
+            ("training seeds differ from the protocol's",
+             sorted(train_seeds) != sorted(protocol["training_seeds"])),
+            ("no v1 reference", v1_variant is None),
+            ("episodes per cell overridden", args.episodes is not None),
+            ("no noise sensitivity", args.no_sensitivity),
+            ("pilot episodes", args.seeds != "formal_evaluation"),
+        )
+        if applies
+    ]  # fmt: skip
     # build_summary refuses incomplete or unpaired records before computing anything.
     summary = build_summary(
         records, specs, protocol_seed=protocol_seed, protocol_sha256=protocol_sha256,
@@ -390,8 +411,14 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )  # fmt: skip
     rows = {row["name"]: row for row in summary["comparisons"]}
     gates = {"G-A": g_a(records)}
-    gates["G-B"] = {"passed": bool(rows["G-B"]["gate_passed"]), "comparison": "G-B"}
-    if qualifying:
+    gates["G-B"] = (
+        {"passed": bool(rows["G-B"]["gate_passed"]), "comparison": "G-B"}
+        if "G-B" in rows
+        else {"status": "not run", "passed": None}
+    )
+    if not controls:
+        gates["G-C"] = {"status": "not run", "controls": {}, "passed": None}
+    elif qualifying:
         names = [f"G-C VO2 vs {c}" for c in qualifying]
         gates["G-C"] = {
             "status": "decided",
@@ -409,6 +436,11 @@ def main(argv: Sequence[str] | None = None) -> dict:
     gates["G-E"] = {"status": "from the throughput bench, not evaluation records"}
     a3_result = a3(secondary, train_seeds, protocol_seed, alpha)
     e1_result = e1(secondary, premise, protocol_seed, alpha)
+    if not not_formal and {a3_result.get("status"), e1_result.get("status")} != {"decided"}:
+        raise ValueError(
+            "a formal summary needs A3 and E1 decided: evaluate with --speed-clamp and "
+            f"--ablations (A3 {a3_result.get('status')}, E1 {e1_result.get('status')})"
+        )
     report = {
         "protocol_sha256": protocol_sha256,
         "seeds": args.seeds,
@@ -416,6 +448,9 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "variants": variants,
         "train_seeds": train_seeds,
         "v1_reference": v1_variant,
+        "formal": not not_formal,
+        "not_formal_because": not_formal,
+        "skipped_comparisons": skipped,
         "gates": gates,
         "a3": a3_result,
         "e1": e1_result,

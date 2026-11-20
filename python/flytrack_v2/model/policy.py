@@ -23,7 +23,17 @@ from .readout import DNReadoutV2, initial_speed_latent
 from .sensory import InputNorm, SeedProjection, SensoryEncoderV2, SensoryState
 
 _ROOT = Path(__file__).resolve().parents[3]
-_PARAMETER_CATEGORIES = ("g", "tau", "bias", "lc_rf", "missing_bias", "readout", "log_std", "gru")
+_PARAMETER_CATEGORIES = (
+    "g",
+    "tau",
+    "bias",
+    "lc_rf",
+    "visual_offset",
+    "missing_bias",
+    "readout",
+    "log_std",
+    "gru",
+)
 
 
 class _PolicyV2(nn.Module):
@@ -68,7 +78,11 @@ class _PolicyV2(nn.Module):
         return ActionDistribution(mean, self.log_std, self.contract.v_max, self.contract.omega_max)
 
     def rest_state(self) -> Tensor:
-        """Evolve a batch of one from the bias state with neutral sensory input."""
+        """Evolve a batch of one from the bias state with neutral sensory input.
+
+        Neutral vision has zero normalized features and valid eyes. The learned offset
+        therefore contributes to the settled state and readout bias calibration.
+        """
         return self._evolve_rest_state(self.config.rest_settle_s)
 
     @torch.inference_mode(False)
@@ -168,7 +182,12 @@ class ConnectomePolicyV2(_PolicyV2):
         self.graph = graph
         self.central_state_size = graph.n_nodes
         self.core = ConnectomeCoreV2(graph, config, self.contract)
-        self.projection = SeedProjection(graph, encoder.layout, enable_vision=variant != "O2")
+        self.projection = SeedProjection(
+            graph,
+            encoder.layout,
+            enable_vision=variant != "O2",
+            visual_offset_init=config.visual_offset_init,
+        )
         self.readout = DNReadoutV2(graph, config, self.contract, body_ids=readout_body_ids)
         non_readout = torch.ones(graph.n_nodes, dtype=torch.bool)
         non_readout[self.readout.node_indices] = False
@@ -421,6 +440,7 @@ def parameter_table(policy: ConnectomePolicyV2 | GRUPolicyV2) -> dict[str, int]:
         "core.tau_theta": "tau",
         "core.bias": "bias",
         "projection.lc_rf": "lc_rf",
+        "projection.visual_offset": "visual_offset",
         "projection.missing_bias": "missing_bias",
         "log_std": "log_std",
     }
@@ -460,15 +480,18 @@ def _graph_output_parameter_counts(policy: ConnectomePolicyV2) -> dict[str, int]
 
     seed_reachable = reachable[projection.seed_indices.tolist()]
     rf_slots = projection.source_index.cpu().numpy()[seed_reachable]
-    rf_count = len(projection.rf_eye)
+    rf_slots = (
+        rf_slots[rf_slots < len(projection.rf_eye)] if projection.enable_vision else rf_slots[:0]
+    )
     type_count = np.unique(graph.type_index[reachable]).size
     return {
         "g": np.unique(graph.edge_label[reachable[graph.post]]).size,
         "tau": type_count,
         "bias": type_count,
-        "lc_rf": (
-            np.unique(rf_slots[rf_slots < rf_count]).size * projection.layout.features_per_eye
-            if projection.enable_vision
+        "lc_rf": np.unique(rf_slots).size * projection.layout.features_per_eye,
+        "visual_offset": (
+            np.unique(projection.rf_type.cpu().numpy()[rf_slots]).size
+            if projection.visual_offset is not None
             else 0
         ),
         "missing_bias": np.unique(projection.seed_types.cpu().numpy()[seed_reachable]).size,

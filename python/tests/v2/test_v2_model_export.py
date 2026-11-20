@@ -42,7 +42,7 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types, f
     contract = SensorContractV2()
     policy = build_policy(
         variant,
-        {"speed_types": speed_types},
+        {"speed_types": speed_types, "visual_offset_init": 0.28},
         contract=contract,
         structure_seed=3 if variant in ("RW2", "ER2") else None,
     )
@@ -63,6 +63,7 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types, f
     card = json.loads((artifact / "model_card.json").read_text(encoding="utf-8"))
     config = card["model_config"]
     assert {field.name for field in fields(ModelConfigV2)} <= config.keys()
+    assert config["visual_offset_init"] == 0.28
     assert "bilateral" not in json.dumps(config)
     assert card["provenance"] == PROVENANCE
 
@@ -78,6 +79,9 @@ def test_policy_export_round_trip(tmp_path, monkeypatch, variant, speed_types, f
 
     if isinstance(policy, ConnectomePolicyV2):
         assert isinstance(restored, ConnectomePolicyV2)
+        assert not torch.equal(
+            policy.projection.visual_offset, torch.full_like(policy.projection.visual_offset, 0.28)
+        )
         assert bool(restored.readout.rate_norm_fitted) is fit_readout
         for field in fields(GraphV2):
             if field.name == "source_sha256":
@@ -166,6 +170,39 @@ def test_export_detects_modified_weights(artifact_copy):
         load_policy(artifact_copy)
 
 
+def _write_vo2_card(artifact, card):
+    (artifact / "model_card.json").write_text(json.dumps(card), encoding="utf-8")
+    (artifact / "SHA256SUMS").write_text(
+        "".join(
+            f"{file_sha256(artifact / name)}  {name}\n"
+            for name in required_files("VO2")
+            if name != "SHA256SUMS"
+        ),
+        encoding="ascii",
+    )
+
+
+@torch.no_grad()
+def test_load_legacy_card_without_visual_offset(artifact_copy):
+    reference = load_policy(artifact_copy)
+    card = json.loads((artifact_copy / "model_card.json").read_text(encoding="utf-8"))
+    assert card["model_config"].pop("visual_offset_init") is None
+    _write_vo2_card(artifact_copy, card)
+    restored = load_policy(artifact_copy)
+    assert restored.config.visual_offset_init is None
+    assert restored.projection.visual_offset is None
+    assert "projection.visual_offset" not in restored.state_dict()
+    torch.testing.assert_close(restored.state_dict(), reference.state_dict(), atol=0, rtol=0)
+    state = restored.initial_central_state(1, "cpu")
+    torch.testing.assert_close(state, reference.initial_central_state(1, "cpu"), atol=0, rtol=0)
+    code = torch.rand(1, reference.code_size, generator=torch.Generator().manual_seed(184))
+    code[:, -4:] = 1
+    actual = restored.forward_code(code, state)
+    expected = reference.forward_code(code, state)
+    torch.testing.assert_close(actual.central_state, expected.central_state, atol=0, rtol=0)
+    torch.testing.assert_close(actual.dist.mean, expected.dist.mean, atol=0, rtol=0)
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -192,15 +229,7 @@ def test_export_detects_modified_card(artifact_copy, change, message):
     else:
         del card["spec_version"]
         card["schema_version"] = 1
-    card_path.write_text(json.dumps(card), encoding="utf-8")
     # Recompute the manifest so these checks reach the model card and reconstructed policy.
-    (artifact_copy / "SHA256SUMS").write_text(
-        "".join(
-            f"{file_sha256(artifact_copy / name)}  {name}\n"
-            for name in required_files("VO2")
-            if name != "SHA256SUMS"
-        ),
-        encoding="ascii",
-    )
+    _write_vo2_card(artifact_copy, card)
     with pytest.raises(ValueError, match=message):
         load_policy(artifact_copy)

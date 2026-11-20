@@ -35,6 +35,7 @@ CONTRACT = SensorContractV2()
 CONFIG = ModelConfigV2()
 STEER = ("DNa01", "DNa02", "DNa03", "DNb05", "DNp09")
 BILATERAL_PATH = ROOT / "configs/v2/model/readout_bilateral_dn.yaml"
+DEFAULT_CONFIG_PATH = ROOT / "configs/v2/model/default.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -363,7 +364,7 @@ def test_zero_input_drift(frontend, main_graph, variant, speed_types):
 @pytest.mark.parametrize("variant", ["VO2", "V2", "O2", "GRU2"])
 @torch.no_grad()
 def test_rest_cache_invalidates_on_dynamics_update(monkeypatch, variant):
-    config = replace(CONFIG, rest_settle_s=0.2, rest_refresh_s=0.05)
+    config = replace(CONFIG, rest_settle_s=0.2, rest_refresh_s=0.05, visual_offset_init=0.28)
     policy = build_policy(
         variant, config, graph=small_graph(), budget_target=1808 if variant == "GRU2" else None
     )
@@ -386,7 +387,11 @@ def test_rest_cache_invalidates_on_dynamics_update(monkeypatch, variant):
         parameter = policy.gru.bias_ih
         learned_bias = policy.readout.bias
     else:
-        parameter = policy.core.bias if variant == "VO2" else policy.projection.missing_bias
+        parameter = {
+            "VO2": policy.core.bias,
+            "V2": policy.projection.visual_offset,
+            "O2": policy.projection.missing_bias,
+        }[variant]
         learned_bias = policy.readout.speed_bias
     learned_bias.add_(0.1)
     saved_bias = learned_bias.clone()
@@ -599,10 +604,15 @@ def test_bilateral_readout_rejects_mismatched_metadata(
 
 @pytest.mark.slow
 def test_main_graph_parameter_budgets(frontend, main_graph):
+    config = ModelConfigV2.from_dict(yaml.safe_load(DEFAULT_CONFIG_PATH.read_text()))
+    visual = (main_graph.input_mask & GROUP_VISUAL) != 0
+    lc_types = np.unique(main_graph.type_index[visual]).size
     tables = {}
     for variant in VARIANTS:
         seed = 0 if variant in ("RW2", "ER2") else None
-        policy = build_policy(variant, graph=main_graph, frontend=frontend, structure_seed=seed)
+        policy = build_policy(
+            variant, config, graph=main_graph, frontend=frontend, structure_seed=seed
+        )
         table = tables[variant] = parameter_table(policy)
         assert table["total"] == sum(
             param.numel()
@@ -614,6 +624,7 @@ def test_main_graph_parameter_budgets(frontend, main_graph):
             assert table["g"] == len(policy.graph.label_pairs)
             assert table["tau"] == len(policy.graph.type_names)
             assert table["readout"] == 8
+            assert table["visual_offset"] == lc_types
             if variant in ("RW2", "ER2"):
                 readout = DNReadoutV2(
                     policy.graph, replace(CONFIG, speed_types="bilateral"), CONTRACT
@@ -621,6 +632,7 @@ def test_main_graph_parameter_budgets(frontend, main_graph):
                 assert len(readout.speed_types) == 31
         else:
             assert policy.config.budget_target == tables["VO2"]["total"]
+            assert table["visual_offset"] == 0
             with torch.no_grad():
                 code = policy.input_norm.neutral_code().expand(2, -1)
                 rest = policy.forward_code(code, policy.initial_central_state(2, "cpu"))
@@ -631,8 +643,8 @@ def test_main_graph_parameter_budgets(frontend, main_graph):
     assert tables["ER2"]["g"] == tables["VO2"]["g"] == 29_134
     target = tables["VO2"]["total"]
     assert all(20 * abs(table["total"] - target) <= target for table in tables.values())
-    assert tables["O2"]["total"] == target == 34_557
-    assert tables["O2"]["output_reachable_total"] == target - tables["O2"]["lc_rf"] < target
+    assert tables["O2"]["total"] == target == 34_557 + lc_types
+    assert tables["O2"]["output_reachable_total"] == target - tables["O2"]["lc_rf"] - lc_types
 
 
 def test_output_reachability_uses_dn_paths_and_shared_parameters(frontend):
@@ -647,10 +659,10 @@ def test_output_reachability_uses_dn_paths_and_shared_parameters(frontend):
         synapse_count=counts,
         subgraph_input_synapses=np.bincount(post, weights=counts, minlength=graph.n_nodes),
     )
-    policy = build_policy("VO2", graph=graph, frontend=frontend)
+    policy = build_policy("VO2", {"visual_offset_init": 0.28}, graph=graph, frontend=frontend)
     table = parameter_table(policy)
     # Four gain labels only lead to disconnected nodes. The left-eye LC group cannot reach the
-    # readout, but shares its missing bias with the right-eye LC group that does reach it.
+    # readout, but shares its offset and missing bias with the right eye that does reach it.
     assert (
         table["output_reachable_total"]
         == table["total"] - 4 - 2 - policy.encoder.layout.features_per_eye
@@ -660,11 +672,15 @@ def test_output_reachability_uses_dn_paths_and_shared_parameters(frontend):
 @pytest.mark.parametrize("bias_scale", [0.0, 0.1])
 def test_optimizer_bias_groups(frontend, bias_scale):
     policy = build_policy(
-        "VO2", replace(CONFIG, bias_lr_scale=bias_scale), graph=small_graph(), frontend=frontend
+        "VO2",
+        replace(CONFIG, bias_lr_scale=bias_scale, visual_offset_init=0.28),
+        graph=small_graph(),
+        frontend=frontend,
     )
     groups = parameter_groups(policy, 0.002)
     assert len(groups) == 1 + bool(bias_scale)
     assert groups[0]["lr"] == 0.002 and groups[0]["lr_scale"] == 1.0
+    assert any(param is policy.projection.visual_offset for param in groups[0]["params"])
     assert policy.core.bias.requires_grad == bool(bias_scale)
     if bias_scale:
         assert groups[1]["params"][0] is policy.core.bias
@@ -737,11 +753,117 @@ def test_projection_pools_only_seeds_and_has_missing_bias():
         SeedProjection(replace(graph, side=side), layout)
 
 
+def test_visual_offset_applies_only_to_valid_eyes():
+    layout = CodeLayout(2, 1)
+    projection = SeedProjection(small_graph(), layout, visual_offset_init=0.28)
+    norm = InputNorm(layout)
+    code = norm.neutral_code().repeat(4, 1)
+    code[:, -4:-2] = torch.tensor([[1, 1], [0, 1], [1, 0], [0.5, float("inf")]])
+    assert projection.visual_offset.shape == (1,)
+    with torch.no_grad():
+        projection.missing_bias.fill_(0.75)
+    expected = torch.zeros(4, projection.n_nodes)
+    expected[:, :3] = torch.tensor(
+        [[0.28, 0.28, 0.28], [0.75, 0.75, 0.28], [0.28, 0.28, 0.75], [0.75, 0.75, 0.75]]
+    )
+    torch.testing.assert_close(projection(norm(code)), expected, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("variant", ["VO2", "V2", "O2", "RW2", "ER2"])
+def test_visual_offset_gradients(frontend, variant):
+    policy = build_policy(
+        variant,
+        {"visual_offset_init": 0.28, "initial_state": "bias"},
+        graph=small_graph(),
+        frontend=frontend,
+        structure_seed=0 if variant in ("RW2", "ER2") else None,
+    )
+    offset = policy.projection.visual_offset
+    code = policy.input_norm.neutral_code()
+    state = policy.initial_central_state(1, "cpu")
+    for _ in range(3):
+        step = policy.forward_code(code, state)
+        state = step.central_state
+    step.dist.mean.sum().backward()
+    if variant == "O2":
+        assert offset.grad is None
+        with torch.no_grad():
+            expected = policy.forward_code(code, state)
+            offset.add_(1.0)
+            changed = policy.forward_code(code, state)
+        torch.testing.assert_close(changed.central_state, expected.central_state, atol=0, rtol=0)
+        torch.testing.assert_close(changed.dist.mean, expected.dist.mean, atol=0, rtol=0)
+    else:
+        assert offset.grad is not None
+        assert torch.isfinite(offset.grad).all()
+        assert torch.count_nonzero(offset.grad) > 0
+
+
+@pytest.mark.slow
+@torch.no_grad()
+def test_visual_offset_matches_post_normalization_shift(frontend, main_graph):
+    offset = 0.28
+    layout = CodeLayout()
+    eye_width = layout.features_per_eye
+    statistics = {
+        "mean": torch.linspace(-0.5, 0.5, sum(layout.widths)),
+        "std": torch.linspace(0.5, 1.5, sum(layout.widths)),
+    }
+
+    class ShiftedVisualNorm(InputNorm):
+        def forward(self, code, enabled=None):
+            normalized = super().forward(code, enabled)
+            flags = normalized[:, -4:-2]
+            valid = ((flags > 0.5) & flags.isfinite()).repeat_interleave(eye_width, dim=1)
+            normalized[:, : 2 * eye_width] += offset * valid
+            return normalized
+
+    actual = build_policy(
+        "VO2",
+        replace(CONFIG, visual_offset_init=offset),
+        graph=main_graph,
+        frontend=frontend,
+        input_norm=InputNorm(layout, **statistics),
+    )
+    reference = build_policy(
+        "VO2",
+        CONFIG,
+        graph=main_graph,
+        frontend=frontend,
+        input_norm=ShiftedVisualNorm(layout, **statistics),
+    )
+    assert reference.projection.visual_offset is None
+    assert "projection.visual_offset" not in reference.state_dict()
+
+    states = [policy.initial_central_state(4, "cpu") for policy in (actual, reference)]
+    code = torch.rand(4, actual.code_size, generator=torch.Generator().manual_seed(184))
+    code[:, -4:-2] = torch.tensor([[1, 1], [0, 1], [1, 0], [0, 0]])
+    shifted = actual.forward_code(code, states[0])
+    expected = reference.forward_code(code, states[1])
+    outputs = (
+        (shifted.central_state, expected.central_state),
+        (shifted.dist.mean, expected.dist.mean),
+        (shifted.dist.log_std, expected.dist.log_std),
+        (shifted.dist.mode(), expected.dist.mode()),
+        *((value, expected.aux[key]) for key, value in shifted.aux.items()),
+    )
+    max_difference = max((a - b).abs().max().item() for a, b in outputs)
+    print(f"Visual offset maximum absolute forward_code difference: {max_difference:.9g}")
+    for a, b in outputs:
+        torch.testing.assert_close(a, b, atol=1e-6, rtol=0)
+    torch.testing.assert_close(*states, atol=1e-6, rtol=0)
+    rest_mode = actual.forward_code(actual.input_norm.neutral_code(), states[0][:1]).dist.mode()
+    torch.testing.assert_close(rest_mode, torch.tensor([[0.2, 0.0]]), atol=1e-5, rtol=0)
+
+
 def test_model_config_matches_yaml_and_rejects_unknown_keys():
-    with (ROOT / "configs/v2/model/default.yaml").open() as source:
+    with DEFAULT_CONFIG_PATH.open() as source:
         defaults = yaml.safe_load(source)
-    assert CONFIG.to_dict() == defaults
-    assert CONFIG == ModelConfigV2.from_dict(defaults)
+    assert replace(CONFIG, visual_offset_init=0.28).to_dict() == defaults
+    assert ModelConfigV2.from_dict(defaults).visual_offset_init == 0.28
+    defaults.pop("visual_offset_init")
+    assert CONFIG.to_dict() == defaults | {"visual_offset_init": None}
+    assert ModelConfigV2.from_dict(defaults) == CONFIG
     defaults.pop("rest_refresh_s")
     assert CONFIG == ModelConfigV2.from_dict(defaults)
     with pytest.raises(ValueError, match="Unknown"):
@@ -754,6 +876,9 @@ def test_model_config_matches_yaml_and_rejects_unknown_keys():
         ModelConfigV2(initial_state="zero")
     with pytest.raises(ValueError, match="rest_settle_s"):
         ModelConfigV2(rest_settle_s=-1)
+    for offset in (float("nan"), float("inf"), "0.28", True):
+        with pytest.raises(ValueError, match="visual_offset_init"):
+            ModelConfigV2(visual_offset_init=offset)
     for refresh in (0, -1, float("nan"), float("inf"), CONFIG.rest_settle_s + 1):
         with pytest.raises(ValueError, match="rest_refresh_s"):
             ModelConfigV2(rest_refresh_s=refresh)

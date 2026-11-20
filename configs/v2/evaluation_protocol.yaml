@@ -105,9 +105,12 @@ gates:
   G-C:
     name: structure
     rule: >-
-      VO2 noninferior to RW2, ER2 and GRU2 with margin 0.05; superiority is reported; a
-      control enters the comparison only if its normal success is >= 0.3; with no control at
-      or above 0.3, G-C is "not testable: no qualifying control" (#161 E2)
+      VO2 noninferior to RW2, ER2 and GRU2 with margin 0.05 on success pooled over the four
+      scenarios (noise at the main scale), both worlds and both motions, one mean per training
+      seed (user decision 2026-11-20, #203 review: normal alone sits at the ceiling after PPO);
+      superiority is reported; a control enters the comparison only if its normal success is
+      >= 0.3; with no control at or above 0.3, G-C is "not testable: no qualifying control"
+      (#161 E2)
   G-D:
     name: versus v1
     rule: v1compat curved normal VO2 - v1 VO-late >= 0.10 and Holm-adjusted p < 0.05
@@ -131,7 +134,10 @@ comparisons:
     - G-C VO2 vs GRU2 (noninferiority, margin 0.05)
     - G-D
   secondary:
-    G-C superiority: VO2 vs RW2, ER2, GRU2 (superiority)
+    G-C superiority: VO2 vs RW2, ER2, GRU2 (superiority), pooled as G-C
+    G-C by scenario: >-
+      VO2 vs each qualifying control in each scenario on its own (noninferiority, margin
+      0.05), as formal-v1 registered its structure comparison; reported only
     # #169 Decision 2: curved alone reaches 0.51 by memory, so a claim that odor or wind is
     # used during occlusion rests on wander and on the E1 ablations, never on curved alone.
     G-B by motion: VO2 - V2 in wind occlusion, curved and wander separately
@@ -143,7 +149,9 @@ comparisons:
       compares them with occlusion_baseline, the same occlusion-only batch without an ablation:
       paired episodes agree until the occlusion starts up to float32 rounding (batch layout,
       GPU nondeterminism; #194 review), which manifest.json's e1_premise checks (each pair's
-      distance when the occlusion starts: the maximum and the fraction above 1 cm). The
+      distance when the occlusion starts: the maximum and the fraction above 1 cm). The premise
+      holds when no episode of any pair is more than 1 cm apart (every fraction_over_1cm is 0);
+      otherwise E1 is reported as "premise failed" and gives no conclusion (#203 review). The
       measure is the tracking fraction during the occlusion (secondary.jsonl
       during_tracking_fraction), per seed the mean of (ablation - occlusion_baseline) over its
       episodes; each of (a) and (b) is a one-sided paired t test over training seeds that the
@@ -170,7 +178,11 @@ comparisons:
       or negative (#184 Decision, made before any aligned slope was measured). Formal-v1's
       actors have unrestricted slopes of about 0 (#170 audit); both slopes are recomputed for
       them
-    noise sensitivity: every gate's comparison at noise scales 0.5 and 1.0, reported only
+    noise sensitivity: >-
+      every gate's comparison on the noise scenario alone at noise scales 0.5 and 1.0 (G-B in
+      the wind world, G-C over both worlds; G-D has none, formal-v1 runs the main scale only),
+      not the pooled G-C recomputed; reported only. The main scale is never a sensitivity
+      scale (#204 review)
 # #192 R13, registered before M4: the wording of each negative result. Every training seed's
 # result is reported, so many episodes never hide the uncertainty across seeds.
 negative_results:

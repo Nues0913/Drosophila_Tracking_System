@@ -166,3 +166,15 @@ def test_a_missing_motion_on_either_side_is_refused_not_passed():
     # check_pairing is the second line: it alone also refuses the comparison
     with pytest.raises(ValueError, match="G-B: the two sides do not cover the same episodes"):
         check_pairing(holes, G_B)
+
+
+def test_a_tuple_in_a_selection_is_one_of_its_values():
+    """#203: G-C pools the four scenarios at the main noise scale, never the sensitivity ones."""
+    from flytrack_v2.eval.summary import matches
+
+    pooled = {"variant": "VO2", "noise_scale": (None, 0.75)}
+    assert matches({"variant": "VO2", "noise_scale": None}, pooled)
+    assert matches({"variant": "VO2", "noise_scale": 0.75}, pooled)
+    assert not matches({"variant": "VO2", "noise_scale": 0.5}, pooled)
+    assert not matches({"variant": "V2", "noise_scale": None}, pooled)
+    assert matches({"variant": "VO2", "scenario": "normal"}, {"scenario": "normal"})

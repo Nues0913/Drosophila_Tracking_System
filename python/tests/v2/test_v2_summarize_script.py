@@ -87,9 +87,9 @@ def _secondary(record, run, success=None, during=None, slope=0.05):
     }  # fmt: skip
 
 
-def _write_run(path, v1=True, drop=None, controls_succeed=True, sensitivity=False):
+def _write_run(path, v1=True, drop=None, controls_succeed=True, sensitivity=False, seeds=SEEDS):
     grid = summarize_v2.grid_for(
-        PROTOCOL, "formal_evaluation", VARIANTS, SEEDS, V1 if v1 else None, EPISODES, sensitivity
+        PROTOCOL, "formal_evaluation", VARIANTS, seeds, V1 if v1 else None, EPISODES, sensitivity
     )
     records, secondary = [], []
     for (variant, seed, world, scenario, motion, scale), episodes in sorted(grid.items(), key=str):
@@ -152,7 +152,16 @@ def test_a_complete_evaluation_gives_every_gate_and_the_secondary_analyses(tmp_p
     assert gates["G-D"]["passed"]
     names = {row["name"] for row in report["summary"]["comparisons"]}
     assert {"G-B curved", "G-B wander", "G-C VO2 vs RW2 superiority"} <= names
-    assert not any("noise" in name for name in names)  # --no-sensitivity: no noise family
+    families = {row["family"] for row in report["summary"]["comparisons"]}
+    assert "noise sensitivity" not in families  # --no-sensitivity: no noise family
+    by_scenario = {
+        r["name"] for r in report["summary"]["comparisons"] if r["family"] == "G-C by scenario"
+    }
+    assert by_scenario == {
+        f"G-C VO2 vs {c} {s}"
+        for c in ("RW2", "GRU2")
+        for s in ("normal", "occlusion", "noise", "conflict")
+    }
     assert set(report["reacquisition"]["worlds"]) == {"wind", "v1compat"}
     assert report["a3"]["positive_aligned_seeds"] == 3
     assert report["a3"]["speed_held"]["significant"]
@@ -182,7 +191,7 @@ def test_the_v1_reference_must_be_there_for_g_d(tmp_path):
     with pytest.raises(ValueError, match="expected cells have no records"):
         summarize_v2.main(_args(tmp_path, [run]))
     report = summarize_v2.main(_args(tmp_path, [run], "--v1-reference", "none"))
-    assert report["gates"]["G-D"] == {"status": "not run"}
+    assert report["gates"]["G-D"] == {"status": "not run", "passed": None}
 
 
 def test_runs_split_over_hosts_are_scored_together(tmp_path):
@@ -276,10 +285,73 @@ def test_noise_sensitivity_is_every_gate_at_the_registered_scales_only(tmp_path)
     argv = _args(tmp_path, [run])
     argv.remove("--no-sensitivity")
     report = summarize_v2.main(argv)
-    noise = {row["name"] for row in report["summary"]["comparisons"] if "noise" in row["name"]}
+    rows = {row["name"]: row for row in report["summary"]["comparisons"]}
+    noise = {name for name, row in rows.items() if row["family"] == "noise sensitivity"}
     assert noise == {
         f"{gate} noise {scale}"
         for gate in ("G-B", "G-C VO2 vs RW2", "G-C VO2 vs GRU2")
         for scale in (0.5, 1.0)
     }
     assert report["noise_sensitivity"]["G-D"].startswith("not applicable")
+    # G-C pools the four scenarios at the main noise scale only: per seed VO2 - RW2 is
+    # 5/16, 6/16, 7/16 (the sensitivity cells would give 7/24, 6/24, 11/24)
+    assert rows["G-C VO2 vs RW2"]["mean"] == pytest.approx(6 / 16)
+    assert tuple(rows["G-C VO2 vs RW2"]["candidate"]["noise_scale"]) == (None, 0.75)
+    written = json.loads((tmp_path / "report.json").read_text())["summary"]["comparisons"]
+    assert next(r for r in written if r["name"] == "G-C VO2 vs RW2")["candidate"][
+        "noise_scale"
+    ] == [
+        None,
+        0.75,
+    ]
+
+
+def test_an_e1_premise_that_fails_gives_no_e1_conclusion(tmp_path):
+    """#203 review: ablated runs that already differ when the occlusion starts are not E1."""
+    run = _write_run(tmp_path / "run")
+    premise = [{"artifact": "a", "motion": "curved", "run": "odor_swap_occlusion",
+                "max_m": 0.03, "fraction_over_1cm": 0.25}]  # fmt: skip
+    (run / "manifest.json").write_text(json.dumps({"e1_premise": premise}))
+    report = summarize_v2.main(_args(tmp_path, [run]))
+    assert report["e1"]["status"] == "premise failed" and not report["e1"]["premise_ok"]
+    # G-B passes, and E1 cannot speak, so no occlusion conclusion
+    assert report["conclusions"] == ["speed: no effective speed control was established"]
+
+
+def test_a_pilot_of_one_seed_reports_differences_without_tests(tmp_path):
+    """A paired t test needs two seeds: one seed gives the registered comparisons as seed
+    differences, and A3 and E1 as descriptive, with no conclusion drawn from them."""
+    run = _write_run(tmp_path / "run", seeds=[0])
+    argv = _args(tmp_path, [run])
+    argv[argv.index("--train-seeds") + 1 : argv.index("--episodes")] = ["0"]
+    report = summarize_v2.main(argv)
+    rows = {row["name"]: row for row in report["descriptive_comparisons"]}
+    assert rows["G-C VO2 vs RW2"]["mean_difference"] == pytest.approx(5 / 16)  # 13/16 - 8/16
+    assert rows["G-C VO2 vs RW2"]["p_value"] is None and report["summary"]["comparisons"] == []
+    assert (
+        report["gates"]["G-B"]["status"]
+        == report["gates"]["G-C"]["status"]
+        == ("descriptive (one seed)")
+    )
+    assert report["a3"]["status"] == "descriptive" and report["e1"]["status"] == "descriptive"
+    assert report["conclusions"] == []
+
+
+def test_an_unmeasured_e1_premise_is_missing_not_failed(tmp_path):
+    """#204 review: ablation rows without the manifest's e1_premise are incomplete."""
+    run = _write_run(tmp_path / "run")
+    (run / "manifest.json").write_text("{}")
+    report = summarize_v2.main(_args(tmp_path, [run]))
+    assert report["e1"]["status"] == "missing"
+
+
+def test_the_main_noise_scale_is_never_a_sensitivity_scale(tmp_path):
+    """#204 review: its episodes would be main and noise_sensitivity records, counted twice."""
+    protocol = {**PROTOCOL, "scenarios": {**PROTOCOL["scenarios"]}}
+    protocol["scenarios"]["noise"] = {**PROTOCOL["scenarios"]["noise"],
+                                      "sensitivity_scales": [0.5, 0.75, 1.0]}  # fmt: skip
+    path = tmp_path / "protocol.yaml"
+    path.write_text(yaml.safe_dump(protocol))
+    run = _write_run(tmp_path / "run")
+    with pytest.raises(ValueError, match="main noise scale must not be"):
+        summarize_v2.main([*_args(tmp_path, [run]), "--protocol", str(path)])

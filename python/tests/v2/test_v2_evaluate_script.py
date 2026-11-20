@@ -119,6 +119,10 @@ def test_e1_premise_measures_each_pair_against_the_baseline():
     (row,) = evaluate_v2.e1_premise(snapshots)
     assert row["run"] == "odor_swap_occlusion" and row["fraction_over_1cm"] == 0.5
     assert row["max_m"] == pytest.approx(0.02)
+    # #141: GRU2 is ablated too, so each pair says whose it is
+    assert evaluate_v2.E1_VARIANTS == ("VO2", "GRU2")
+    (row,) = evaluate_v2.e1_premise(snapshots, {"a": "GRU2"})
+    assert row["variant"] == "GRU2"
 
 
 def test_v1_reference_actors_need_the_formal_v1_layout(tmp_path):

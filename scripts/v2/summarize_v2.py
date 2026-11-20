@@ -14,7 +14,8 @@ v1compat. Then:
   >= 0.3, #161 E2);
 - A3 (the within-episode pooled aligned slope per seed, and the speed-held paired test) and E1
   (the occlusion-window ablations against occlusion_baseline) from secondary.jsonl, each its
-  own secondary family; the reacquisition time with its censored fraction;
+  own secondary family; GRU2's E1 beside VO2's, descriptive (#141); the reacquisition time
+  with its censored fraction;
 - the registered wording of each negative result (protocol negative_results).
 
 G-E (throughput) comes from the bench, not from evaluation records.
@@ -321,27 +322,40 @@ def a3(secondary, train_seeds, protocol_seed, alpha) -> dict:
     return out
 
 
-def e1(secondary, premise, protocol_seed, alpha, train_seeds) -> dict:
+E1_DIFFERENCE = "occlusion_baseline - ablation: positive when the ablation lowers the tracking"
+
+
+def e1(secondary, premise, protocol_seed, alpha, train_seeds, variant="VO2") -> dict:
     """protocol comparisons.secondary.E1 attribution: occlusion-window ablations against the
-    unablated occlusion-only batch, tracking during the occlusion, Holm across the two."""
-    base = _rows(secondary, run="occlusion_baseline", variant="VO2")
+    unablated occlusion-only batch, tracking during the occlusion, Holm across the two.
+
+    VO2's is the registered attribution; GRU2's (variant="GRU2") is descriptive: its own family,
+    no conclusion, not a gate (#141). Each reads only its own variant's premise pairs."""
+    base = _rows(secondary, run="occlusion_baseline", variant=variant)
     if not base:
         return {"status": "missing", "reason": "no occlusion_baseline rows (--ablations)"}
+    # rows written before #141 carry no variant: only VO2 was ablated then
+    premise = [row for row in premise if row.get("variant", "VO2") == variant]
     if not premise:  # #204 review: an unmeasured premise is missing data, not a failed one
         return {"status": "missing", "reason": "no e1_premise in the runs' manifest.json"}
     worst = max(row["max_m"] for row in premise)
     # The premise (protocol E1 attribution, #203 review): every paired run's episodes within
     # 1 cm of occlusion_baseline when the occlusion starts; otherwise E1 says nothing.
     premise_ok = all(row["fraction_over_1cm"] == 0 for row in premise)
-    summary = {"premise_ok": premise_ok, "premise": {"pairs": premise, "max_distance_m": worst}}
+    summary = {
+        "difference": E1_DIFFERENCE,
+        "premise_ok": premise_ok,
+        "premise": {"pairs": premise, "max_distance_m": worst},
+    }
+    prefix = "E1" if variant == "VO2" else f"E1 {variant}"
     if len(train_seeds) < 2:
         tests = [
             _descriptive(
-                f"E1 {label}",
+                f"{prefix} {label}",
                 *_paired_seed_means(
-                    f"E1 {label}",
+                    f"{prefix} {label}",
                     base,
-                    _rows(secondary, run=label, variant="VO2"),
+                    _rows(secondary, run=label, variant=variant),
                     "during_tracking_fraction",
                 ),
             )
@@ -351,9 +365,11 @@ def e1(secondary, premise, protocol_seed, alpha, train_seeds) -> dict:
                 "any_significant": None, **summary}  # fmt: skip
     tests = []
     for label in E1_ABLATIONS:
-        ablated = _rows(secondary, run=label, variant="VO2")
+        ablated = _rows(secondary, run=label, variant=variant)
         tests.append(
-            _paired_by_seed(f"E1 {label}", base, ablated, "during_tracking_fraction", protocol_seed)
+            _paired_by_seed(
+                f"{prefix} {label}", base, ablated, "during_tracking_fraction", protocol_seed
+            )
         )
     adjusted = holm(tests, alpha)
     return {
@@ -555,6 +571,11 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "gates": gates,
         "a3": a3_result,
         "e1": e1_result,
+        # descriptive (#141): does a learned controller on the same inputs use odor or wind
+        # while the target is hidden? No conclusion, not a gate, not needed for a formal summary
+        "e1_gru2": e1(secondary, premise, protocol_seed, alpha, train_seeds, variant="GRU2")
+        if "GRU2" in variants
+        else {"status": "not run"},
         "reacquisition": reacquisition(records, protocol["reacquisition"]["restricted_bound_s"]),
         # one seed is a pilot's description: even a control's qualification is not a result yet
         "conclusions": conclusions(protocol, gates, a3_result, e1_result)

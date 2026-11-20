@@ -153,10 +153,14 @@ comparisons:
       holds when no episode of any pair is more than 1 cm apart (every fraction_over_1cm is 0);
       otherwise E1 is reported as "premise failed" and gives no conclusion (#203 review). The
       measure is the tracking fraction during the occlusion (secondary.jsonl
-      during_tracking_fraction), per seed the mean of (ablation - occlusion_baseline) over its
-      episodes; each of (a) and (b) is a one-sided paired t test over training seeds that the
-      ablation lowers it, p < 0.05 with Holm across the two, a secondary family of its own
-      (#194 review). The same ablations over the whole episode are reported beside them and
+      during_tracking_fraction), per seed the mean of (occlusion_baseline - ablation) over its
+      episodes, positive when the ablation lowers the tracking (the report states it); each of
+      (a) and (b) is a one-sided paired t test over training seeds that the ablation lowers
+      it, p < 0.05 with Holm across the two, a secondary family of its own (#194 review). The
+      same ablations run on GRU2, on the same inputs and episodes, and are reported beside
+      VO2's as a descriptive family of their own: whether a learned controller uses odor or
+      wind while the target is hidden. They give no conclusion and are no gate (#141,
+      registered before M4). The same ablations over the whole episode are reported beside them and
       only say whether the controller depends on the channel. Occlusion tracking is reported
       before, during, after the occlusion until reacquisition, and after reacquisition
     A3 speed: >-

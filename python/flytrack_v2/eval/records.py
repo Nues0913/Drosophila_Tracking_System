@@ -24,6 +24,30 @@ CELL = ("train_seed", "world", "scenario", "motion", "noise_scale")
 GRID_KEY = ("variant", *CELL)
 
 
+def episode_numbers(protocol: Mapping, use: str, train_seed: int, episodes: int) -> range:
+    """The episode seeds of ``use`` for one training seed: base + per_train_seed * train_seed + e.
+
+    The formula has no upper end of its own, so check that the episodes fit in one training
+    seed's block and that the block stays below the next registered range (pilot seed 5,000
+    would otherwise reach formal seed 0's episodes, #137 F16).
+    """
+    table = protocol["episode_seeds"]
+    entry = table[use]
+    base, per = entry["base"], entry["per_train_seed"]
+    if type(train_seed) is not int or train_seed < 0:
+        raise ValueError(f"train seed must be a nonnegative int, got {train_seed!r}")
+    if not 0 < episodes <= per:
+        raise ValueError(f"{episodes} episodes do not fit in {use}'s {per} per training seed")
+    first = base + per * train_seed
+    starts = [value.get("base", value.get("start")) for value in table.values()]
+    following = min((start for start in starts if start > base), default=None)
+    if following is not None and first + episodes > following:
+        raise ValueError(
+            f"{use} with train seed {train_seed} reaches the next registered range at {following}"
+        )
+    return range(first, first + episodes)
+
+
 def expected_grid(
     protocol: Mapping,
     use: str,
@@ -41,7 +65,6 @@ def expected_grid(
     every world, scenario and motion; the noise scenario appears at the protocol's scale and,
     with ``sensitivity``, at each sensitivity scale; other scenarios have noise_scale None.
     """
-    entry = protocol["episode_seeds"][use]
     worlds = list(worlds or protocol["worlds"])
     motions = list(motions or (protocol["motions"]["primary"], protocol["motions"]["secondary"]))
     episodes = episodes or protocol["episodes_per_cell"]
@@ -49,8 +72,7 @@ def expected_grid(
     scales = [noise["scale"], *(noise["sensitivity_scales"] if sensitivity else [])]
     grid = {}
     for seed in train_seeds:
-        first = entry["base"] + entry["per_train_seed"] * seed
-        seeds = frozenset(range(first, first + episodes))
+        seeds = frozenset(episode_numbers(protocol, use, seed, episodes))
         for variant in variants:
             for world in worlds:
                 for motion in motions:

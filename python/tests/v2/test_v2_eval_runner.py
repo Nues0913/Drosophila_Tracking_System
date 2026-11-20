@@ -254,3 +254,20 @@ def test_a_snapshot_records_each_row_before_the_chosen_action():
     result = run_episodes(world, _Actor(), [3, 2], max_steps=20, sync_every=1, snapshot_step=2)
     assert result.snapshot_xy == [[2.0, -2.0], [2.0, -2.0]]
     assert run_episodes(_World(1), _Actor(), [3], max_steps=20).snapshot_xy is None
+
+
+def test_the_pooled_slope_ignores_differences_between_episodes():
+    """#194 review: two episodes with slope 0 but different mean speed and distance pool to
+    +0.141 in one regression; centered within each episode they pool to 0."""
+    from flytrack_v2.eval.runner import pooled_slope
+
+    rows = [
+        {"aligned_sxy": 0.0, "aligned_sxx": 2.0},  # flat at 0.1 m/s around 1 m
+        {"aligned_sxy": 0.0, "aligned_sxx": 2.0},  # flat at 0.3 m/s around 2 m
+    ]
+    assert pooled_slope(rows) == 0.0
+    assert pooled_slope([{"aligned_sxy": 1.0, "aligned_sxx": 0.0}]) is None
+    world = _World(2)
+    result = run_episodes(world, _Actor(), [3, 2], max_steps=20, sync_every=1)
+    rows = [{k: v[i] for k, v in result.speed_distance.items()} for i in range(2)]
+    assert pooled_slope(rows, prefix="") == pytest.approx(0.5)  # each episode's slope is 0.5

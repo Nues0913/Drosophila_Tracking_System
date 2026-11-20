@@ -1,5 +1,7 @@
 """Record-set checks before aggregation (#161 C5)."""
 
+from pathlib import Path
+
 import pytest
 from flytrack_v2.eval.records import check_records, expected_grid
 
@@ -130,3 +132,21 @@ def test_every_v2_variant_must_cover_the_same_cells_even_without_a_grid():
         check_records([*records, *[r for r in wander if r["variant"] == "V2"]])
     reference = [_record("v1:VO-late", s, e, artifact="1" * 64) for s in (0, 1) for e in (1, 2)]
     assert len(check_records([*records, *wander, *reference])) == 20
+
+
+def test_episode_numbers_stay_inside_their_registered_range():
+    """#137 F16: the formula base + per_train_seed * seed + e has no upper end of its own."""
+    import yaml
+    from flytrack_v2.eval.records import episode_numbers
+
+    root = Path(__file__).resolve().parents[3]
+    protocol = yaml.safe_load((root / "configs/v2/evaluation_protocol.yaml").read_text())
+    assert episode_numbers(protocol, "pilot_held_out", 101, 100) == range(
+        1_510_100_000, 1_510_100_100
+    )
+    with pytest.raises(ValueError, match="reaches the next registered range at 1620000000"):
+        episode_numbers(protocol, "pilot_held_out", 1200, 100)  # world_audit starts at 1.62e9
+    with pytest.raises(ValueError, match="do not fit"):
+        episode_numbers(protocol, "formal_evaluation", 0, 100_001)
+    with pytest.raises(ValueError, match="nonnegative int"):
+        episode_numbers(protocol, "formal_evaluation", -1, 100)

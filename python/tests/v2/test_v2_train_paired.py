@@ -52,9 +52,10 @@ def collector(monkeypatch, pair_weight, rows=4):
 def test_each_world_gets_its_transforms():
     kinds, factors = pair_assignment(["v1compat", "wind"], 8)
     v1, wind = kinds[:8].tolist(), kinds[8:].tolist()
-    # v1compat has no valid wind: swap and intensity only; the wind world rotates half its rows.
+    # v1compat has no valid wind: swap and intensity only; the wind world swaps half its rows.
     assert v1 == [data.PAIR_SWAP, data.PAIR_INTENSITY] * 4
-    assert wind == [data.PAIR_ROTATE, data.PAIR_SWAP, data.PAIR_ROTATE, data.PAIR_INTENSITY] * 2
+    assert wind == [data.PAIR_SWAP, data.PAIR_ROTATE, data.PAIR_SWAP, data.PAIR_INTENSITY] * 2
+    assert (kinds == data.PAIR_SWAP).float().mean() == 0.5  # as A2's first version
     intensity = factors[kinds == data.PAIR_INTENSITY].tolist()
     assert set(intensity) == {2.0, 0.5}
 
@@ -111,7 +112,7 @@ def test_pairs_never_change_the_rollout(monkeypatch, weight):
 
 
 def test_paired_labels_come_from_the_transformed_observation(monkeypatch):
-    run = collector(monkeypatch, 1.0)
+    run = collector(monkeypatch, 1.0, rows=8)  # enough rotate rows (a quarter of wind's)
     initial = run.policy.initial_central_state(run.rows, "cpu")
     kinds = run.pair_kinds
     turned = torch.zeros(run.rows, dtype=torch.bool)

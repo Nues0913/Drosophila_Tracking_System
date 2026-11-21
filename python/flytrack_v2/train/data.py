@@ -74,13 +74,15 @@ INTENSITY_FACTORS = (2.0, 0.5)
 
 def pair_assignment(world_kinds: list[str], rows_per_world: int) -> tuple[Tensor, Tensor]:
     """Each row's transform and intensity factor, fixed for the run. v1compat has no valid
-    wind, so its rows alternate swap and intensity; a wind-world row is rotate on half its
-    rows, swap and intensity on a quarter each. Intensity rows alternate the factors."""
+    wind, so its rows alternate swap and intensity; a wind-world row is swap on half its rows,
+    rotate and intensity on a quarter each, so half of all rows swap the odor, as in A2's first
+    version (#138 7067941360: with 3/8 the occluded turn lost the odor's side). Intensity rows
+    alternate the factors."""
     kinds, factors = [], []
     for kind in world_kinds:
         for local in range(rows_per_world):
             if kind == "wind":
-                kinds.append((PAIR_ROTATE, PAIR_SWAP, PAIR_ROTATE, PAIR_INTENSITY)[local % 4])
+                kinds.append((PAIR_SWAP, PAIR_ROTATE, PAIR_SWAP, PAIR_INTENSITY)[local % 4])
                 factors.append(INTENSITY_FACTORS[(local // 4) % 2])
             else:
                 kinds.append((PAIR_SWAP, PAIR_INTENSITY)[local % 2])

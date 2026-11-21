@@ -17,8 +17,12 @@ final/).
   seed is one of its training seeds; no FLYTRACK_* environment override is set (container
   settings aside); the host is in hosts.yaml. GIT_COMMIT is set for the cards.
 - A stage whose final/ verifies against its SHA256SUMS is kept and a held-out evaluation with a
-  manifest is kept, so running the same command again picks up where it stopped. A training
-  step with a config.json from an earlier attempt (a crash, a reboot) runs with --resume.
+  manifest is kept, so running the same command again picks up where it stopped. A stage
+  stopped by a crash or a reboot resumes with --resume from its own checkpoint: Stage 1 when
+  its config.json exists (dagger starts over when it has no round checkpoint), Stage 2 only
+  when checkpoint.pt exists (ppo writes config.json at once but its first checkpoint after 25
+  updates, and --resume needs it; #210 review). Stage 2 without a checkpoint starts over, its
+  earlier metrics.jsonl and monitor.jsonl kept as *.attempt<n>.jsonl.
 - Attempts count across runs (OUT/run_<host>.jsonl): a training step gets two, an evaluation
   one; --retry-failed starts the count again. A stage that exits 3 (the monitor's engineering
   failure: NaN, KL, a silent readout, reproducible) without final/ is not run again. A stage
@@ -240,6 +244,24 @@ def health(step: dict) -> str:
     return ", ".join(kinds) or reason
 
 
+def resumable(step: dict) -> bool:
+    """Whether a training step continues from an earlier attempt's own checkpoint."""
+    if step["kind"] != "train":
+        return False
+    if step["name"] == "stage2":
+        return (step["out"] / "checkpoint.pt").is_file()
+    return (step["out"] / "config.json").is_file()
+
+
+def set_aside(step: dict, attempt: int) -> None:
+    """Before Stage 2 starts over: keep the earlier attempt's records under their attempt
+    number, so the new run's metrics.jsonl (opened for appending) has no repeated updates."""
+    for name in ("metrics.jsonl", "monitor.jsonl"):
+        path = step["out"] / name
+        if path.is_file():
+            path.rename(path.with_name(f"{path.stem}.attempt{attempt}{path.suffix}"))
+
+
 def run_chain(
     steps: list[dict], log: Path, env: dict, min_free_gb: float, past: dict | None = None
 ) -> str:
@@ -259,7 +281,9 @@ def run_chain(
             while len(tried) < ATTEMPTS[step["kind"]] and not step_done(step):
                 if tried and tried[-1]["exit"] == ENGINEERING_FAILURE:
                     break  # the monitor's failures reproduce; never resumed
-                resume = step["kind"] == "train" and (step["out"] / "config.json").is_file()
+                resume = resumable(step)
+                if step["name"] == "stage2" and not resume:
+                    set_aside(step, len(tried))
                 record = execute(step, len(tried) + 1, log, env, resume)
                 tried.append(record)
                 print(f"  {step['name']}: exit {record['exit']}, {record['wall_s'] / 60:.1f} min",
@@ -268,7 +292,10 @@ def run_chain(
                 last = f"exit {tried[-1]['exit']}" if tried else "no attempt"
                 return f"failed: {step['name']} ({last}, {len(tried)} attempt(s))"
         code = tried[-1]["exit"] if tried else 0
-        if step["name"] == "stage1" and code == ENGINEERING_FAILURE:
+        # Without a record (--retry-failed, or a lost log) a kept Stage 1 still reports its
+        # exported health warning (#210 review).
+        warned = (step["out"] / "failure/reason.json").is_file()
+        if step["name"] == "stage1" and (code == ENGINEERING_FAILURE or (not tried and warned)):
             notes.append(f"stage1 health: {health(step)}")
         elif code != 0:
             notes.append(f"{step['name']} exit {code} with final/ verified")

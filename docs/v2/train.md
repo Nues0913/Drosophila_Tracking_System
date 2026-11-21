@@ -161,7 +161,10 @@ python scripts/v2/run_formal.py --host 4070 --seeds 5 1 --sha <Decision 的 SHA>
   - 正式評估（`formal_evaluation`）屬於 WP10，在 M4b 之後做。
 - **續跑**：同一個指令重跑即可。
   - `final/` 能通過 `SHA256SUMS` 驗證的階段，以及已經有 `manifest.json` 的評估，都會沿用。`final/` 驗證通過的階段，不論 exit code 是什麼都算完成，不會再跑。
-  - 訓練步驟的輸出目錄裡已經有 `config.json`（之前當機或主機重開）時，會加 `--resume`。
+  - 之前當機或主機重開而停下的階段，會從它自己的 checkpoint 加 `--resume` 續跑：
+    - Stage 1：有 `config.json` 就續跑。沒有任何一輪的 checkpoint 時，dagger 會從頭開始。
+    - Stage 2：只有 `checkpoint.pt` 存在時才續跑。ppo 一開始就寫 `config.json`，第一次 checkpoint 卻在第 25 次更新之後，而 `--resume` 一定要有它（#210 review）。
+    - Stage 2 沒有 checkpoint 時從頭跑，上一次的 `metrics.jsonl`、`monitor.jsonl` 改名成 `*.attempt<n>.jsonl` 保留，新的紀錄才不會有重複的更新編號。
 - **嘗試的次數**：每一次嘗試都記在 `run_<host>.jsonl`，重跑同一個指令時會接著累計。
   - 訓練步驟最多 2 次，評估最多 1 次。
   - exit 3（monitor 的工程失敗：NaN、KL、讀出 DN 沉默）而且沒有 `final/` 的，不會再試，因為這類失敗會重現。

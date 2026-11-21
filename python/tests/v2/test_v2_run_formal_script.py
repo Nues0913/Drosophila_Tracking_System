@@ -203,6 +203,34 @@ def test_a_crash_resumes_and_attempts_count_across_runs(tmp_path, monkeypatch):
     assert run_formal.run_chain(steps, log, {}, 0, {}) == "done"
 
 
+def test_stage2_resumes_only_from_its_checkpoint(tmp_path, monkeypatch):
+    """ppo writes config.json at once but checkpoint.pt only after 25 updates (#210 review)."""
+    steps = run_formal.chain(args(tmp_path), "VO2", 5)
+    stage2 = steps[2]
+    final_dir(steps[0]["out"] / "final")
+    stage2["out"].mkdir(parents=True)
+    (stage2["out"] / "config.json").write_text("{}")
+    (stage2["out"] / "metrics.jsonl").write_text('{"update": 1}\n')
+    assert not run_formal.resumable(stage2)
+    calls = fake_executor(monkeypatch, all_pass(stage1=[]))
+    assert run_formal.run_chain(steps, tmp_path / "log.jsonl", {}, 0) == "done"
+    assert ("stage2", 1, False) in calls
+    assert (stage2["out"] / "metrics.attempt0.jsonl").read_text() == '{"update": 1}\n'
+    (stage2["out"] / "checkpoint.pt").write_bytes(b"c")
+    assert run_formal.resumable(stage2)
+
+
+def test_retry_failed_keeps_the_stage1_health_note(tmp_path, monkeypatch):
+    steps = run_formal.chain(args(tmp_path), "VO2", 5)
+    fake_executor(monkeypatch, all_pass(stage1=[(3, True)]), "round 4: silent readout DNs")
+    log = tmp_path / "log.jsonl"
+    run_formal.run_chain(steps, log, {}, 0)
+    # --retry-failed: no history, every step kept.
+    assert run_formal.run_chain(steps, log, {}, 0, {}) == (
+        "done (stage1 health: silent readout DNs)"
+    )
+
+
 def test_monitor_failures_are_not_resumed(tmp_path, monkeypatch):
     steps = run_formal.chain(args(tmp_path), "VO2", 5)
     calls = fake_executor(monkeypatch, all_pass(stage1=[(3, False)]))

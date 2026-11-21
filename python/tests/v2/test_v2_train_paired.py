@@ -7,7 +7,13 @@ from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model import ModelConfigV2, build_policy
 from flytrack_v2.train import data, update
 from flytrack_v2.train.config import CONFIG_DIR, load_config
-from flytrack_v2.train.data import Replay, ReplayShard, RolloutCollector, pair_transform
+from flytrack_v2.train.data import (
+    Replay,
+    ReplayShard,
+    RolloutCollector,
+    pair_assignment,
+    pair_transform,
+)
 from flytrack_v2.train.update import (
     PAIR_SUBSETS,
     PAIR_SUMS,
@@ -43,20 +49,35 @@ def collector(monkeypatch, pair_weight, rows=4):
     return RolloutCollector(policy(), config, seed=5, device=torch.device("cpu"))
 
 
-def test_the_transform_is_e1s_swap_on_even_rows_and_rotation_on_odd_rows():
+def test_each_world_gets_its_transforms():
+    kinds, factors = pair_assignment(["v1compat", "wind"], 8)
+    v1, wind = kinds[:8].tolist(), kinds[8:].tolist()
+    # v1compat has no valid wind: swap and intensity only; the wind world rotates half its rows.
+    assert v1 == [data.PAIR_SWAP, data.PAIR_INTENSITY] * 4
+    assert wind == [data.PAIR_ROTATE, data.PAIR_SWAP, data.PAIR_ROTATE, data.PAIR_INTENSITY] * 2
+    intensity = factors[kinds == data.PAIR_INTENSITY].tolist()
+    assert set(intensity) == {2.0, 0.5}
+
+
+def test_the_transforms_are_e1s_and_the_intensity_scale():
+    kinds = torch.tensor(
+        [data.PAIR_SWAP, data.PAIR_ROTATE, data.PAIR_INTENSITY, data.PAIR_INTENSITY]
+    )
+    factors = torch.tensor([2.0, 2.0, 2.0, 0.5])
     obs = {
-        "odor": torch.rand(6, 2), "wind": torch.randn(6, 2), "vision": torch.rand(6, 2, 3),
-        "valid": torch.ones(6, 4),
+        "odor": torch.rand(4, 2), "wind": torch.randn(4, 2), "vision": torch.rand(4, 2, 3),
+        "valid": torch.ones(4, 4),
     }  # fmt: skip
-    shown = pair_transform(obs, 45.0)
-    even, odd = slice(0, None, 2), slice(1, None, 2)
-    assert torch.equal(shown["odor"][even], swap_odor(obs)["odor"][even])
-    assert torch.equal(shown["wind"][even], obs["wind"][even])
-    assert torch.equal(shown["odor"][odd], obs["odor"][odd])
-    assert torch.equal(shown["wind"][odd], rotate_wind(90.0, 45.0)(obs)["wind"][odd])
+    shown = pair_transform(obs, kinds, factors, 45.0)
+    assert torch.equal(shown["odor"][0], swap_odor(obs)["odor"][0])
+    assert torch.equal(shown["wind"][0], obs["wind"][0])
+    assert torch.equal(shown["odor"][1], obs["odor"][1])
+    assert torch.equal(shown["wind"][1], rotate_wind(90.0, 45.0)(obs)["wind"][1])
+    torch.testing.assert_close(shown["odor"][2:], obs["odor"][2:] * factors[2:, None])
+    assert torch.equal(shown["wind"][2:], obs["wind"][2:])
     assert shown["vision"] is obs["vision"] and shown["valid"] is obs["valid"]
-    twice = pair_transform(shown, 45.0)
-    assert torch.equal(twice["odor"], obs["odor"])  # swapping twice restores the odor
+    twice = pair_transform(shown, kinds, factors, 45.0)
+    assert torch.equal(twice["odor"][0], obs["odor"][0])  # swapping twice restores the odor
 
 
 def test_chemical_code_is_senses_columns_without_stepping_state():
@@ -92,21 +113,33 @@ def test_pairs_never_change_the_rollout(monkeypatch, weight):
 def test_paired_labels_come_from_the_transformed_observation(monkeypatch):
     run = collector(monkeypatch, 1.0)
     initial = run.policy.initial_central_state(run.rows, "cpu")
-    moved = torch.zeros(run.rows, dtype=torch.bool)
+    kinds = run.pair_kinds
+    turned = torch.zeros(run.rows, dtype=torch.bool)
+    slowed = torch.zeros(run.rows, dtype=torch.bool)
     for _ in range(50):  # the plume reaches the agents after about 2 s
         obs, sensory, teacher = run.obs, run.sensory, run.teacher_state
         privileged = data._concatenate([w.privileged() for w in run.worlds], data._TEACHER_KEYS)
         step = run.step(1.0, initial)
-        shown = pair_transform(obs, run.policy.contract.antenna_angle_deg)
+        shown = pair_transform(obs, kinds, run.pair_factors, run.policy.contract.antenna_angle_deg)
         assert torch.equal(step.chem_pair, run.policy.encoder.chemical_code(shown, sensory))
         expected, _ = run.teacher.act(
             privileged, shown, privileged["agent_velocity"], teacher, limit_acceleration=False
         )
         assert torch.equal(step.action_pair, expected)
-        moved |= step.occluded & (step.action_pair[:, 1] != step.action[:, 1])
-    # Once the odor is present, the occluded teacher turns on what it is shown (the bilateral
-    # odor and, while the odor is present, the upwind surge): the copies' labels differ.
-    assert moved[0::2].any() and moved[1::2].any()
+        assert torch.equal(step.pair_kind, kinds)
+        turned |= step.occluded & (step.action_pair[:, 1] != step.action[:, 1])
+        slowed |= step.occluded & (step.action_pair[:, 0] != step.action[:, 0])
+        # Intensity keeps the left/right ratio: while the odor stays present in both, the
+        # teacher's turn is the same.
+        present = (obs["odor"].max(-1).values > run.teacher.detect) & (
+            shown["odor"].max(-1).values > run.teacher.detect
+        )
+        same = (kinds == data.PAIR_INTENSITY) & step.occluded & present
+        torch.testing.assert_close(step.action_pair[same, 1], step.action[same, 1])
+    # Once the odor is present, the occluded teacher turns on a swap or a rotation and slows
+    # or speeds on an intensity change.
+    assert turned[kinds == data.PAIR_SWAP].any() and turned[kinds == data.PAIR_ROTATE].any()
+    assert slowed[kinds == data.PAIR_INTENSITY].any()
 
 
 def test_paired_replay_round_trip(monkeypatch, tmp_path):
@@ -124,6 +157,7 @@ def test_paired_replay_round_trip(monkeypatch, tmp_path):
     replay.shards.append(loaded)
     batch = replay.sample(5, torch.Generator().manual_seed(0))
     assert batch.chem_pair.shape == (12, 5, 4) and batch.action_pair.shape == (12, 5, 2)
+    assert batch.pair_kind.shape == batch.pair_case.shape == (12, 5)
 
 
 def batch_from(run, ticks=24):
@@ -148,6 +182,19 @@ def test_the_pair_loss_is_zero_weight_neutral_and_has_gradients(monkeypatch):
     on["loss"].backward()
     gains = [p for name, p in model.named_parameters() if "gain" in name]
     assert gains and any(p.grad is not None and p.grad.abs().sum() > 0 for p in gains)
+
+
+def test_the_speed_term_carries_the_intensity_pairs(monkeypatch):
+    run = collector(monkeypatch, 1.0)
+    model, batch = run.policy, batch_from(run)
+    only = batch._replace(pair_kind=torch.full_like(batch.pair_kind, data.PAIR_INTENSITY))
+    values = sequence_loss(
+        model, only, model.initial_central_state(1, "cpu"), LossSettings(4, 1e-4, 1e-3, 1.0)
+    )
+    torch.testing.assert_close(
+        values["pair_loss"], values["pair_turn_loss"] + values["pair_speed_loss"]
+    )
+    assert "pair_intensity_all_n" in values and values["pair_intensity_all_n"] > 0
 
 
 def test_untransformed_copies_add_nothing(monkeypatch):

@@ -62,17 +62,44 @@ class StepData(NamedTuple):
     chem_pair: Tensor | None = None
     action_pair: Tensor | None = None
     pair_case: Tensor | None = None  # OcclusionTeacher.cases, uint8
+    pair_kind: Tensor | None = None  # PAIR_SWAP, PAIR_ROTATE or PAIR_INTENSITY, uint8
 
 
-def pair_transform(obs: dict[str, Tensor], antenna_angle_deg: float) -> dict[str, Tensor]:
-    """E1's two ablations (flytrack_v2.eval.runner), split by row: even rows see the odor
-    swapped, odd rows the wind rotated by 90 degrees."""
-    odd = (torch.arange(len(obs["odor"]), device=obs["odor"].device) % 2 == 1)[:, None]
+# A2 second version (#138 7062303679): three transforms. Swap and rotate are E1's ablations
+# (flytrack_v2.eval.runner); intensity scales both antennae's odor by a factor, which keeps the
+# left/right ratio (the teacher's turn) and changes the teacher's speed near the source.
+PAIR_SWAP, PAIR_ROTATE, PAIR_INTENSITY = 1, 2, 3
+INTENSITY_FACTORS = (2.0, 0.5)
+
+
+def pair_assignment(world_kinds: list[str], rows_per_world: int) -> tuple[Tensor, Tensor]:
+    """Each row's transform and intensity factor, fixed for the run. v1compat has no valid
+    wind, so its rows alternate swap and intensity; a wind-world row is rotate on half its
+    rows, swap and intensity on a quarter each. Intensity rows alternate the factors."""
+    kinds, factors = [], []
+    for kind in world_kinds:
+        for local in range(rows_per_world):
+            if kind == "wind":
+                kinds.append((PAIR_ROTATE, PAIR_SWAP, PAIR_ROTATE, PAIR_INTENSITY)[local % 4])
+                factors.append(INTENSITY_FACTORS[(local // 4) % 2])
+            else:
+                kinds.append((PAIR_SWAP, PAIR_INTENSITY)[local % 2])
+                factors.append(INTENSITY_FACTORS[(local // 2) % 2])
+    return torch.tensor(kinds, dtype=torch.uint8), torch.tensor(factors, dtype=torch.float32)
+
+
+def pair_transform(
+    obs: dict[str, Tensor], kinds: Tensor, factors: Tensor, antenna_angle_deg: float
+) -> dict[str, Tensor]:
+    """Each row's transform (pair_assignment) applied to one observation."""
     swapped, rotated = swap_odor(obs), rotate_wind(90.0, antenna_angle_deg)(obs)
+    kinds = kinds.to(obs["odor"].device)[:, None]
+    scaled = obs["odor"] * factors.to(obs["odor"].device, obs["odor"].dtype)[:, None]
+    odor = torch.where(kinds == PAIR_SWAP, swapped["odor"], obs["odor"])
     return {
         **obs,
-        "odor": torch.where(odd, obs["odor"], swapped["odor"]),
-        "wind": torch.where(odd, rotated["wind"], obs["wind"]),
+        "odor": torch.where(kinds == PAIR_INTENSITY, scaled, odor),
+        "wind": torch.where(kinds == PAIR_ROTATE, rotated["wind"], obs["wind"]),
     }
 
 
@@ -145,6 +172,7 @@ class SequenceBatch(NamedTuple):
     chem_pair: Tensor | None = None  # #138 A2, see StepData
     action_pair: Tensor | None = None
     pair_case: Tensor | None = None
+    pair_kind: Tensor | None = None
 
     def to(self, device: torch.device) -> SequenceBatch:
         return SequenceBatch(*(None if value is None else value.to(device) for value in self))
@@ -159,9 +187,10 @@ def _allocate_steps(
             torch.empty(ticks, rows, chem_width, dtype=torch.float32, device=device),
             torch.empty(ticks, rows, 2, dtype=torch.float32, device=device),
             torch.empty(ticks, rows, dtype=torch.uint8, device=device),
+            torch.empty(ticks, rows, dtype=torch.uint8, device=device),
         )
         if chem_width
-        else (None, None, None)
+        else (None, None, None, None)
     )
     return StepData(
         torch.empty(ticks, rows, width, dtype=torch.float32, device=device),
@@ -196,6 +225,10 @@ class RolloutCollector:
         if config.get("pair_weight", 0.0) > 0:  # #138 A2
             columns = policy.encoder.chemical_columns
             self.chem_width = columns.stop - columns.start
+            world_kinds = [k for k in WORLD_NAMES for _ in MOTION_NAMES]
+            self.pair_kinds, self.pair_factors = pair_assignment(
+                world_kinds, config["envs_per_instance"]
+            )
         split_rng = torch.Generator().manual_seed(seed ^ 0x5EED)
         reserve = max(1, round(self.rows * config["held_out"]["fraction"]))
         self.held_out = torch.zeros(self.rows, dtype=torch.bool)
@@ -354,11 +387,13 @@ class RolloutCollector:
             self.teacher_state,
             limit_acceleration=self.limit_acceleration,
         )
-        pair = (None, None, None)
+        pair = (None, None, None, None)
         if self.chem_width:
             # The same sensory and teacher state, one transformed observation; neither state
             # advances from it (#138 A2).
-            shown = pair_transform(self.obs, self.policy.contract.antenna_angle_deg)
+            shown = pair_transform(
+                self.obs, self.pair_kinds, self.pair_factors, self.policy.contract.antenna_angle_deg
+            )
             chem = self.policy.encoder.chemical_code(shown, sensory_before)
             label_pair, _ = self.teacher.act(
                 privileged,
@@ -367,7 +402,8 @@ class RolloutCollector:
                 teacher_before,
                 limit_acceleration=self.limit_acceleration,
             )
-            pair = (chem, label_pair, self.teacher.cases(privileged, self.obs))
+            kinds = self.pair_kinds.to(self.device)
+            pair = (chem, label_pair, self.teacher.cases(privileged, self.obs), kinds)
         action = mix_actions(label, student.dist.mode(), beta, self.mix_rng)
         results = [
             world.step(rows)
@@ -467,7 +503,7 @@ class RolloutCollector:
             "episode_time_std_s": std.item() * dt,
         }
         samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
-        code, action, reset, occluded, chem_pair, action_pair, pair_case = steps
+        code, action, reset, occluded, chem_pair, action_pair, pair_case, pair_kind = steps
         del steps, staging
         stats = normalization_stats(code, self.policy.input_norm)
         code = _env_major(code, torch.float16)
@@ -477,13 +513,14 @@ class RolloutCollector:
             _env_major(reset, reset.dtype),
             _env_major(occluded, occluded.dtype),
             *(
-                (None, None, None)
+                (None, None, None, None)
                 if chem_pair is None
                 # float16 like the code, so an unchanged column compares equal to the code's
                 else (
                     _env_major(chem_pair, torch.float16),
                     _env_major(action_pair, torch.float32),
                     _env_major(pair_case, torch.uint8),
+                    _env_major(pair_kind, torch.uint8),
                 )
             ),
         )
@@ -550,7 +587,7 @@ class Replay:
             offset += count
         return SequenceBatch(
             steps.code, steps.action, steps.reset, states, tags, steps.occluded,
-            steps.chem_pair, steps.action_pair, steps.pair_case,
+            steps.chem_pair, steps.action_pair, steps.pair_case, steps.pair_kind,
         )  # fmt: skip
 
 

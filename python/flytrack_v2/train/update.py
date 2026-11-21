@@ -21,6 +21,10 @@ class LossSettings:
     burn_in: int
     activity_coef: float
     label_margin: float | tuple[float, float]  # one margin, or (speed, turn)
+    pair_weight: float = 0.0  # #138 A2, see sequence_loss
+
+
+PAIR_SUMS = ("odor", "wind")  # pair metrics kept as sums until finish_pair_metrics
 
 
 def label_margins(config) -> tuple[float, float]:
@@ -75,16 +79,52 @@ def _latent_log_prob_by_action(dist: ActionDistribution, latent: Tensor) -> Tens
     return -0.5 * z.square() - log_std - 0.5 * math.log(2 * math.pi)
 
 
+def _pair_steps(policy, batch: SequenceBatch, burn_in: int) -> tuple[Tensor, Tensor, Tensor]:
+    """#138 A2: the steps the paired loss uses, [T, B] each: every step after the burn-in that
+    is occluded (the teacher's label then comes from the observation, so the transformed one
+    has its own label) and whose transformed chemical columns differ from the step's; and
+    which of those are odor swaps and which wind rotations (StepData)."""
+    columns = policy.encoder.chemical_columns
+    own = batch.code[burn_in:, :, columns]
+    shown = batch.chem_pair[burn_in:]
+    odor = policy.encoder.layout.widths[2]
+    changed_odor = (shown[..., :odor] != own[..., :odor]).any(-1)
+    changed_wind = (shown[..., odor:] != own[..., odor:]).any(-1)
+    use = batch.occluded[burn_in:] & (changed_odor | changed_wind)
+    return use, use & changed_odor, use & changed_wind
+
+
 def sequence_loss(
     policy, batch: SequenceBatch, initial: Tensor, settings: LossSettings
 ) -> dict[str, Tensor]:
+    """The NLL of the teacher's labels over the sequence after the burn-in, plus the activity
+    penalty, plus (#138 A2, pair_weight > 0) the paired turn loss:
+
+    on each step of _pair_steps the student also runs one step from the same central state on
+    the code with the transformed chemical columns (the copy's state is discarded), and the
+    difference of its turn mean from the step's (latent, the space of the NLL) must match the
+    difference of the teacher's latent turn labels for the two observations:
+    pair_weight * mean over those steps of (delta student - delta teacher)^2. Only the
+    sequences with such a step run the copy."""
     burn_in = settings.burn_in
     state = burn_in_state(
         policy, batch.code[:burn_in], batch.reset[:burn_in], batch.initial, initial
     )
     graph = isinstance(policy, ConnectomePolicyV2)
+    paired = settings.pair_weight > 0 and batch.chem_pair is not None
+    if paired:
+        use, use_odor, use_wind = _pair_steps(policy, batch, burn_in)
+        rows = torch.where(use.any(0))[0]
+        columns = policy.encoder.chemical_columns
+    pair_means = []
     means, activity = [], []
-    for code, ended in zip(batch.code[burn_in:], batch.reset[burn_in:], strict=True):
+    for tick, (code, ended) in enumerate(
+        zip(batch.code[burn_in:], batch.reset[burn_in:], strict=True)
+    ):
+        if paired and len(rows):
+            shown = code[rows].clone()
+            shown[:, columns] = batch.chem_pair[burn_in + tick, rows]
+            pair_means.append(policy.forward_code(shown, state[rows]).dist.mean)
         if graph:
             step = policy.forward_code(code, state, non_readout_activity=True)
             activity.append(step.aux["activity_sq"])
@@ -109,8 +149,14 @@ def sequence_loss(
     nll = -log_prob.sum(-1)
     nll_speed, nll_turn = -log_prob.mean(dim=(0, 1))
     penalty = settings.activity_coef * torch.stack(activity).mean()
+    pair = {}
+    pair_loss = nll.new_zeros(())
+    if paired:
+        pair, pair_loss = _pair_loss(
+            dist, latent, pair_means, rows, use, use_odor, use_wind, batch, burn_in, settings
+        )
     return {
-        "loss": nll.mean() + penalty,
+        "loss": nll.mean() + penalty + settings.pair_weight * pair_loss,
         "nll": nll.mean(),
         "nll_speed": nll_speed,
         "nll_turn": nll_turn,
@@ -120,7 +166,56 @@ def sequence_loss(
         "saturation_fraction_speed_high": speed_high.float().mean(),
         "saturation_fraction_turn": turn_saturated.float().mean(),
         "saturated_nll": torch.where(saturation, nll.detach(), 0.0).mean(),
+        **pair,
     }
+
+
+def _pair_loss(dist, latent, pair_means, rows, use, use_odor, use_wind, batch, burn_in, settings):
+    """The paired turn loss of sequence_loss, and its metrics as sums over the steps, divided by
+    their counts in finish_pair_metrics (batch_metrics weights micro-batches by their size, so
+    equal micro-batches combine exactly)."""
+    zero = latent.new_zeros(())
+    metrics = {"pair_loss": zero, "pair_steps": zero}
+    for kind in PAIR_SUMS:
+        for name in ("n", "sxy", "sxx", "syy"):
+            metrics[f"pair_{kind}_{name}"] = zero
+    if not len(rows):
+        return metrics, zero
+    student = torch.stack(pair_means)[..., 1] - dist.mean[:, rows, 1]
+    labels = shrink_labels(
+        batch.action_pair[burn_in:, rows], dist.v_max, dist.omega_max, settings.label_margin
+    )
+    teacher = unsquash(labels, dist.v_max, dist.omega_max)[..., 1] - latent[:, rows, 1]
+    mask = use[:, rows]
+    count = mask.sum()
+    loss = torch.where(mask, (student - teacher).square(), 0.0).sum() / count.clamp(min=1)
+    metrics["pair_loss"] = loss.detach()
+    metrics["pair_steps"] = count / use.numel()
+    for kind, kind_mask in zip(PAIR_SUMS, (use_odor[:, rows], use_wind[:, rows]), strict=True):
+        x, y = teacher.detach()[kind_mask], student.detach()[kind_mask]
+        metrics[f"pair_{kind}_n"] = kind_mask.sum().to(latent.dtype)
+        metrics[f"pair_{kind}_sxy"] = (x * y).sum()
+        metrics[f"pair_{kind}_sxx"] = x.square().sum()
+        metrics[f"pair_{kind}_syy"] = y.square().sum()
+    return metrics, loss
+
+
+def finish_pair_metrics(metrics: dict) -> dict:
+    """Turn the pair sums into per-kind metrics: the slope of the student's turn difference on
+    the teacher's (through the origin; 1 follows the teacher, 0 ignores the channel) and both
+    RMS differences, latent units. No pair keys: unchanged."""
+    if "pair_odor_n" not in metrics:
+        return metrics
+    out = {key: value for key, value in metrics.items() if not key.startswith(
+        tuple(f"pair_{kind}_" for kind in PAIR_SUMS)
+    )}  # fmt: skip
+    for kind in PAIR_SUMS:
+        n, sxy = metrics[f"pair_{kind}_n"], metrics[f"pair_{kind}_sxy"]
+        sxx, syy = metrics[f"pair_{kind}_sxx"], metrics[f"pair_{kind}_syy"]
+        out[f"pair_{kind}_slope"] = torch.where(sxx > 0, sxy / sxx.clamp(min=1e-12), 0.0)
+        out[f"pair_{kind}_teacher_rms"] = (sxx / n.clamp(min=1e-12)).sqrt()
+        out[f"pair_{kind}_student_rms"] = (syy / n.clamp(min=1e-12)).sqrt()
+    return out
 
 
 def _micro_batches(batch: SequenceBatch, size: int):
@@ -133,6 +228,8 @@ def _micro_batches(batch: SequenceBatch, size: int):
             batch.initial[rows],
             batch.tags[rows],
             batch.occluded[:, rows],
+            None if batch.chem_pair is None else batch.chem_pair[:, rows],
+            None if batch.action_pair is None else batch.action_pair[:, rows],
         )
 
 
@@ -242,7 +339,9 @@ def train_update(
 ) -> dict[str, Tensor | float]:
     lr = optimizer.param_groups[0]["lr"]
     optimizer.zero_grad(set_to_none=True)
-    metrics = batch_metrics(policy, batch, settings, micro_batch, backward=True)
+    metrics = finish_pair_metrics(
+        batch_metrics(policy, batch, settings, micro_batch, backward=True)
+    )
     parameters = [
         p for group in optimizer.param_groups for p in group["params"] if p.grad is not None
     ]

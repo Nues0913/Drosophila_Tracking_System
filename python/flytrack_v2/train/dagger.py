@@ -43,6 +43,7 @@ from .data import Replay, ReplayShard, RolloutCollector, SequenceBatch
 from .update import (
     LossSettings,
     batch_metrics,
+    finish_pair_metrics,
     first_batch_gradient_norms,
     health_metrics,
     label_latent_quantiles,
@@ -159,7 +160,10 @@ class DAggerRun:
         sequence = config["sequence"]
         self.replay = Replay(sequence["burn_in"], sequence["length"])
         self.settings = LossSettings(
-            sequence["burn_in"], config["activity_coef"], label_margins(config)
+            sequence["burn_in"],
+            config["activity_coef"],
+            label_margins(config),
+            config.get("pair_weight", 0.0),
         )
         self.micro_batch = config["micro_batch"]
         self.failure_batch: SequenceBatch | None = None
@@ -500,7 +504,12 @@ class DAggerRun:
                         self.micro_batch,
                         backward=False,
                     )
-                held = {f"held_out_{key}": held[key] for key in ("nll", "nll_speed", "nll_turn")}
+                held = finish_pair_metrics(held)
+                held = {
+                    f"held_out_{key}": value
+                    for key, value in held.items()
+                    if key in ("nll", "nll_speed", "nll_turn") or key.startswith("pair_")
+                }
                 scalars.update(held)
                 if not bool(held["held_out_nll"].isfinite()):
                     monitor.log_update(update, progress.env_steps, scalars)

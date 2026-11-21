@@ -122,6 +122,31 @@ class SensoryEncoderV2(nn.Module):
         )
         return code, SensoryState(frontend_state, new_k)
 
+    @torch.no_grad()
+    def chemical_code(self, obs: dict[str, Tensor], state: SensoryState) -> Tensor:
+        """The ORN and wind columns ``sense`` gives for ``obs`` from ``state``, without stepping
+        any state or running the visual frontend (#138 A2: a transformed observation's code
+        is the step's code with these columns replaced). [B, 2 * odor_channels + 2]."""
+        batch = validate_obs(obs, self.contract)
+        odor, wind, flags = (obs[key] for key in ("odor", "wind", "valid"))
+        if state.odor_K.shape != (batch, 2, self.layout.odor_channels):
+            raise ValueError("Incorrect ORN state shape")
+        finite = torch.cat(
+            (odor.isfinite().all(-1, keepdim=True), wind.isfinite().all(-1, keepdim=True)), dim=1
+        )
+        valid = (flags[:, 2:] > 0.5) & flags[:, 2:].isfinite() & finite & self.enabled[2:]
+        concentration = torch.where(valid[:, 0, None], odor.clamp_min(0), 0.0).unsqueeze(-1)
+        k = state.odor_K.clamp_min(1e-4)
+        response = torch.sigmoid(self.hill_n * (concentration.log() - k.log()))
+        wind = torch.where(valid[:, 1, None], wind, 0.0)
+        return torch.cat((response.flatten(1), wind), dim=1)
+
+    @property
+    def chemical_columns(self) -> slice:
+        """Where ``chemical_code`` sits in the code: after both eyes, before the flags."""
+        start = 2 * self.layout.features_per_eye
+        return slice(start, start + 2 * self.layout.odor_channels + 2)
+
 
 class InputNorm(nn.Module):
     """Fixed population mean and standard deviation for each non-flag code column."""

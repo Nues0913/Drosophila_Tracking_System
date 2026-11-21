@@ -124,6 +124,7 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     # Configs written before #184 labelled around the applied action.
     config.setdefault("teacher_limit_acceleration", True)
     config.setdefault("label_latent_bound", None)
+    config.setdefault("pair_weight", 0.0)  # configs before #138 A2
     config.setdefault("model", {})
     if set(config) != set(defaults):
         raise ValueError("DAgger config must have the same keys as dagger.yaml")
@@ -165,6 +166,7 @@ def load_config(path: Path, host: str, overrides: list[str] | None = None) -> di
     if optimizer["lr_final"] > optimizer["lr"]:
         raise ValueError("optimizer.lr_final must be <= optimizer.lr")
     _number(config["activity_coef"], "activity_coef", 0, math.inf, inclusive=True)
+    _number(config["pair_weight"], "pair_weight", 0, math.inf, inclusive=True)
     _number(config["label_margin"], "label_margin", 0, 1)
     if config["label_margin"] > 0.5:
         raise ValueError("label_margin must be <= 0.5 to leave a valid speed interval")

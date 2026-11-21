@@ -268,3 +268,13 @@ def test_micro_batches_keep_the_pair_metrics(monkeypatch):
     split = finish_pair_metrics(batch_metrics(model, batch, settings, 4, backward=False))
     for key in ("pair_odor_slope", "pair_wind_slope", "pair_odor_teacher_rms"):
         torch.testing.assert_close(whole[key], split[key])
+
+
+def test_the_bilateral_speed_readout_holds_on_as_graph():
+    """#138 A2 second version reads the speed from every bilateral DN pair on v2_cx_lat."""
+    from flytrack_v2.model.graph import GraphV2
+    from flytrack_v2.model.readout import _bilateral_speed_groups
+
+    graph = GraphV2.load("data/subgraphs/v2_cx_lat/graph.npz")
+    groups = _bilateral_speed_groups(graph)
+    assert "DNb05" in groups and "DNp09" in groups and len(groups) == 31

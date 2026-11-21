@@ -218,6 +218,11 @@ def test_stage2_resumes_only_from_its_checkpoint(tmp_path, monkeypatch):
     assert (stage2["out"] / "metrics.attempt0.jsonl").read_text() == '{"update": 1}\n'
     (stage2["out"] / "checkpoint.pt").write_bytes(b"c")
     assert run_formal.resumable(stage2)
+    # A second set-aside (after --retry-failed restarts the count) takes the next number.
+    (stage2["out"] / "metrics.jsonl").write_text('{"update": 2}\n')
+    run_formal.set_aside(stage2, 0)
+    assert (stage2["out"] / "metrics.attempt0.jsonl").read_text() == '{"update": 1}\n'
+    assert (stage2["out"] / "metrics.attempt1.jsonl").read_text() == '{"update": 2}\n'
 
 
 def test_retry_failed_keeps_the_stage1_health_note(tmp_path, monkeypatch):

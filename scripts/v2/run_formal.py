@@ -256,10 +256,15 @@ def resumable(step: dict) -> bool:
 def set_aside(step: dict, attempt: int) -> None:
     """Before Stage 2 starts over: keep the earlier attempt's records under their attempt
     number, so the new run's metrics.jsonl (opened for appending) has no repeated updates."""
-    for name in ("metrics.jsonl", "monitor.jsonl"):
-        path = step["out"] / name
+    names = ("metrics", "monitor")
+    # Never over an earlier copy (--retry-failed restarts the count, #210 review): the next
+    # number free for both files.
+    while any((step["out"] / f"{name}.attempt{attempt}.jsonl").exists() for name in names):
+        attempt += 1
+    for name in names:
+        path = step["out"] / f"{name}.jsonl"
         if path.is_file():
-            path.rename(path.with_name(f"{path.stem}.attempt{attempt}{path.suffix}"))
+            path.rename(path.with_name(f"{name}.attempt{attempt}.jsonl"))
 
 
 def run_chain(

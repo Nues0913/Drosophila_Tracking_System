@@ -203,6 +203,9 @@ class ConnectomePolicyV2(_PolicyV2):
         yield from self.core.parameters()
         yield from self.projection.parameters()
 
+    def project_plastic_(self) -> None:
+        self.core.project_plastic_()
+
     def _readout_mean(self, state: Tensor) -> Tensor:
         rates = self.core.rates(state).index_select(1, self.readout.node_indices)
         return self.readout(rates)
@@ -305,6 +308,8 @@ class GRUPolicyV2(_PolicyV2):
         *,
         from_artifact: bool = False,
     ):
+        if config.plastic_labels is not None:
+            raise ValueError("GRU2 does not support plastic_labels")
         super().__init__("GRU2", config, encoder, input_norm)
         if config.budget_target is None:
             raise ValueError("GRU2 requires a resolved budget_target")
@@ -378,6 +383,8 @@ def build_policy(
         config = ModelConfigV2()
     elif not isinstance(config, ModelConfigV2):
         config = ModelConfigV2.from_dict(config)
+    if variant == "GRU2" and config.plastic_labels is not None:
+        raise ValueError("GRU2 does not support plastic_labels")
     if structure_seed is not None:
         config = replace(config, structure_seed=structure_seed)
     if budget_target is not None:
@@ -437,6 +444,7 @@ def parameter_table(policy: ConnectomePolicyV2 | GRUPolicyV2) -> dict[str, int]:
     counts = dict.fromkeys(_PARAMETER_CATEGORIES, 0)
     roles = {
         "core.gain_theta": "g",
+        "core.gain_delta": "gain_delta",
         "core.tau_theta": "tau",
         "core.bias": "bias",
         "projection.lc_rf": "lc_rf",
@@ -453,7 +461,7 @@ def parameter_table(policy: ConnectomePolicyV2 | GRUPolicyV2) -> dict[str, int]:
     for name, param in policy.named_parameters():
         if id(param) in effective:
             category = roles.get(name, name.split(".", 1)[0])
-            counts[category] += param.numel()
+            counts[category] = counts.get(category, 0) + param.numel()
     reachable = (
         _graph_output_parameter_counts(policy) if isinstance(policy, ConnectomePolicyV2) else {}
     )
@@ -484,8 +492,9 @@ def _graph_output_parameter_counts(policy: ConnectomePolicyV2) -> dict[str, int]
         rf_slots[rf_slots < len(projection.rf_eye)] if projection.enable_vision else rf_slots[:0]
     )
     type_count = np.unique(graph.type_index[reachable]).size
-    return {
-        "g": np.unique(graph.edge_label[reachable[graph.post]]).size,
+    labels = np.unique(graph.edge_label[reachable[graph.post]])
+    counts = {
+        "g": labels.size,
         "tau": type_count,
         "bias": type_count,
         "lc_rf": np.unique(rf_slots).size * projection.layout.features_per_eye,
@@ -496,14 +505,40 @@ def _graph_output_parameter_counts(policy: ConnectomePolicyV2) -> dict[str, int]
         ),
         "missing_bias": np.unique(projection.seed_types.cpu().numpy()[seed_reachable]).size,
     }
+    if policy.config.plastic_labels:
+        counts["gain_delta"] = np.intersect1d(labels, policy.core.plastic_index.tolist()).size
+    return counts
 
 
-def parameter_groups(policy: ConnectomePolicyV2 | GRUPolicyV2, lr: float) -> list[dict]:
-    """Optimizer groups with an explicit LR scale for the central type biases."""
+def parameter_groups(
+    policy: ConnectomePolicyV2 | GRUPolicyV2, lr: float, plastic_lr_scale: float | None = None
+) -> list[dict]:
+    """Optimizer groups with explicit LR scales for type biases and plastic gains."""
     bias = policy.core.bias if isinstance(policy, ConnectomePolicyV2) else None
-    main = [param for param in policy.parameters() if param.requires_grad and param is not bias]
+    delta = policy.core.gain_delta if has_plastic_gains(policy) else None
+    main = [
+        param
+        for param in policy.parameters()
+        if param.requires_grad and param is not bias and param is not delta
+    ]
     groups = [{"params": main, "lr": lr, "lr_scale": 1.0}]
     if bias is not None and bias.requires_grad:
         scale = policy.config.bias_lr_scale
         groups.append({"params": [bias], "lr": lr * scale, "lr_scale": scale})
+    if delta is not None and delta.requires_grad:
+        scale = policy.config.plastic_lr_scale if plastic_lr_scale is None else plastic_lr_scale
+        if type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0:
+            raise ValueError("plastic_lr_scale must be positive and finite")
+        groups.append({"params": [delta], "lr": lr * scale, "lr_scale": scale})
     return groups
+
+
+def has_plastic_gains(policy: ConnectomePolicyV2 | GRUPolicyV2) -> bool:
+    return isinstance(policy, ConnectomePolicyV2) and bool(policy.config.plastic_labels)
+
+
+def attach_plastic_projection(
+    optimizer: torch.optim.Optimizer, policy: ConnectomePolicyV2 | GRUPolicyV2
+) -> None:
+    if has_plastic_gains(policy):
+        optimizer.register_step_post_hook(lambda _optim, _args, _kwargs: policy.project_plastic_())

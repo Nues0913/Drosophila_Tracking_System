@@ -28,6 +28,7 @@ from flytrack_v2.model import (
     export_policy,
     parameter_groups,
 )
+from flytrack_v2.model.policy import attach_plastic_projection
 from flytrack_v2.monitor import EngineeringFailure, RunMonitor
 
 from .config import (
@@ -173,6 +174,7 @@ class DAggerRun:
     def _create_optimizer(self) -> None:
         optim = self.config["optimizer"]
         self.optimizer = torch.optim.Adam(parameter_groups(self.policy, optim["lr"]))
+        attach_plastic_projection(self.optimizer, self.policy)
         self.scheduler = make_scheduler(self.optimizer, optim, sum(p.updates for p in self.plans))
 
     def round_dir(self, index: int) -> Path:

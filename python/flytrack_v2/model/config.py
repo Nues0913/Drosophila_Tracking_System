@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+PLASTIC_DEFAULTS = {"plastic_labels": None, "plastic_floor": 0.25, "plastic_lr_scale": 1.0}
+
 
 @dataclass(frozen=True)
 class ModelConfigV2:
@@ -40,6 +42,9 @@ class ModelConfigV2:
     structure_seed: int | None = None
     budget_target: int | None = None
     visual_offset_init: float | None = None
+    plastic_labels: tuple[tuple[str, str, int, float], ...] | None = None
+    plastic_floor: float = 0.25
+    plastic_lr_scale: float = 1.0
 
     def __post_init__(self) -> None:
         for key in ("graph_path", "frontend_path"):
@@ -118,6 +123,33 @@ class ModelConfigV2:
                 raise ValueError(f"{key} must be finite")
         if self.visual_offset_init is not None and not _is_finite_number(self.visual_offset_init):
             raise ValueError("visual_offset_init must be finite or None")
+        if not _is_finite_number(self.plastic_floor) or not 0 < self.plastic_floor <= 1:
+            raise ValueError("plastic_floor must be finite and in (0, 1]")
+        if not _is_finite_number(self.plastic_lr_scale) or self.plastic_lr_scale <= 0:
+            raise ValueError("plastic_lr_scale must be positive and finite")
+        if self.plastic_labels is not None:
+            if self.gain_parameterization != "softplus":
+                raise ValueError("plastic_labels requires softplus gain_parameterization")
+            if not isinstance(self.plastic_labels, (tuple, list)):
+                raise ValueError("plastic_labels must be a list or tuple")
+            labels = []
+            seen = set()
+            for entry in self.plastic_labels:
+                if not isinstance(entry, (tuple, list)) or len(entry) != 4:
+                    raise ValueError("Each plastic label must contain (pre, post, code, cap)")
+                pre, post, code, cap = entry
+                if not all(isinstance(name, str) and name for name in (pre, post)):
+                    raise ValueError("Plastic label pre and post must be nonempty type names")
+                if type(code) is not int or code not in (0, 1, 2):
+                    raise ValueError("Plastic label code must be 0, 1 or 2")
+                if not _is_finite_number(cap) or cap < 1:
+                    raise ValueError("Plastic label cap must be finite and >= 1")
+                key = (pre, post, code)
+                if key in seen:
+                    raise ValueError(f"Duplicate plastic label {key}")
+                seen.add(key)
+                labels.append((*key, cap))
+            object.__setattr__(self, "plastic_labels", tuple(labels))
 
     @classmethod
     def from_dict(cls, values: Mapping) -> ModelConfigV2:
@@ -126,11 +158,19 @@ class ModelConfigV2:
             raise ValueError(f"Unknown model config keys: {sorted(unknown)}")
         return cls(**values)
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, *, include_plastic_defaults: bool = False) -> dict:
+        values = {
             key: list(value) if isinstance(value, tuple) else value
             for key, value in asdict(self).items()
         }
+        if self.plastic_labels is not None:
+            values["plastic_labels"] = [list(label) for label in self.plastic_labels]
+        elif not include_plastic_defaults:
+            # A2 checkpoints hash the serialized config, including the resolved model.
+            for key, default in PLASTIC_DEFAULTS.items():
+                if values[key] == default:
+                    del values[key]
+        return values
 
 
 def _is_finite_number(value) -> bool:

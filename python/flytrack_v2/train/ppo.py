@@ -34,7 +34,11 @@ from torch import Tensor, nn
 
 from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model import export_policy, load_policy, parameter_groups
-from flytrack_v2.model.policy import ConnectomePolicyV2, attach_plastic_projection
+from flytrack_v2.model.policy import (
+    ConnectomePolicyV2,
+    attach_plastic_projection,
+    has_plastic_gains,
+)
 from flytrack_v2.monitor import EngineeringFailure, RunMonitor
 
 from .config import CONFIG_DIR, MOTION_NAMES, STOP_INTERVAL, WORLD_NAMES, _override, read_yaml
@@ -63,18 +67,10 @@ def load_ppo_config(path: Path, host: str, overrides: Sequence[str] = ()) -> dic
     """The PPO settings with --override applied, and the host's micro-batch (hosts.yaml)."""
     defaults = read_yaml(CONFIG_DIR / "ppo.yaml")
     config = read_yaml(path)
-    if config.keys() - {"plastic_lr_scale"} != defaults.keys() - {"plastic_lr_scale"}:
-        raise ValueError(
-            "PPO config must have the same keys as ppo.yaml plus optional plastic_lr_scale"
-        )
+    if config.keys() != defaults.keys():
+        raise ValueError("PPO config must have the same keys as ppo.yaml")
     for expression in overrides:
-        if expression.startswith("plastic_lr_scale="):
-            config.setdefault("plastic_lr_scale", 1.0)
         _override(config, expression)
-    if "plastic_lr_scale" in config:
-        scale = config["plastic_lr_scale"]
-        if type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0:
-            raise ValueError("plastic_lr_scale must be positive and finite")
     hosts = read_yaml(CONFIG_DIR / "hosts.yaml")
     if host not in hosts:
         raise ValueError(f"Unknown host {host!r}; hosts.yaml has {sorted(hosts)}")
@@ -571,9 +567,9 @@ class PPORun:
         for parameter in self.teacher.parameters():
             parameter.requires_grad_(False)
         self.critic = Critic(CRITIC_FEATURES, config["critic_hidden"]).to(device)
-        self.actor_optimizer = torch.optim.Adam(
-            parameter_groups(self.policy, 0.0, plastic_lr_scale=config.get("plastic_lr_scale", 1.0))
-        )
+        if has_plastic_gains(self.policy):
+            self.policy.core.gain_delta.requires_grad_(False)
+        self.actor_optimizer = torch.optim.Adam(parameter_groups(self.policy, 0.0))
         attach_plastic_projection(self.actor_optimizer, self.policy)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config["critic_lr"])
         self.settings = PPOSettings.from_config(config)

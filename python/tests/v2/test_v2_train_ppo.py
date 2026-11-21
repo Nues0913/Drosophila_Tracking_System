@@ -16,7 +16,9 @@ from flytrack_v2.train.ppo import (
     ppo_update,
     schedule,
 )
+from test_v2_model_core import small_graph
 from torch import nn
+from torch.nn.functional import softplus
 
 
 class _ConstantCritic(nn.Module):
@@ -307,6 +309,73 @@ def test_ppo_runs_stops_resumes_and_exports(tmp_path):
 
 
 @pytest.mark.slow
+def test_ppo_trains_plastic_gain_theta_and_resumes_with_frozen_delta(tmp_path):
+    from flytrack_v2.model import build_policy, export_policy, load_policy
+
+    labels = [("ORN", "Forward", 0, 2.0)]
+    policy = build_policy(
+        "VO2",
+        {"rest_settle_s": 0.05, "rest_refresh_s": 0.05, "plastic_labels": labels},
+        graph=small_graph(),
+    )
+    with torch.no_grad():
+        policy.core.gain_delta.fill_(0.1)
+    init = export_policy(
+        policy,
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    overrides = [
+        "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "epochs=1",
+        "total_env_steps=48", "warmup.critic_only_updates=0", "warmup.actor_ramp_updates=1",
+    ]  # fmt: skip
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
+    device = torch.device("cpu")
+    out = tmp_path / "ppo"
+    torch.manual_seed(5)
+    run = ppo.PPORun(config, init, 5, device, out)
+    run.prepare(resume=False)
+    (out / "STOP").touch()
+    run.run()
+    assert run.update == 1
+    core = run.policy.core
+    delta = core.gain_delta
+    groups = run.actor_optimizer.param_groups
+    assert all(param is not delta for group in groups for param in group["params"])
+    assert any(param is core.gain_theta for param in groups[0]["params"])
+    assert groups[0]["lr"] == config["actor_lr"]
+    assert not delta.requires_grad and delta.grad is None
+    assert torch.equal(delta, policy.core.gain_delta)
+    index = core.plastic_index
+    assert not torch.equal(core.gain_theta[index], policy.core.gain_theta[index])
+    gains = core.gains()[index]
+    assert bool(((core.plastic_lo <= gains) & (gains <= core.plastic_hi)).all())
+
+    resumed = ppo.PPORun(config, init, 5, device, out)
+    resumed.prepare(resume=True)
+    assert resumed.update == 1
+    torch.testing.assert_close(
+        resumed.actor_optimizer.state_dict(), run.actor_optimizer.state_dict()
+    )
+    core = resumed.policy.core
+    assert not core.gain_delta.requires_grad
+    assert torch.equal(core.gain_delta, delta)
+    # Force a bound violation to verify the projection hook also runs after resume.
+    with torch.no_grad():
+        core.gain_delta.fill_(100)
+    (out / "STOP").unlink()
+    resumed.run()
+    raw = softplus(core.gain_theta[index] + core.gain_delta)
+    assert bool(((core.plastic_lo <= raw) & (raw <= core.plastic_hi)).all())
+    final = out / "final"
+    exported = load_policy(final)
+    assert torch.equal(exported.state_dict()["core.gain_delta"], core.gain_delta)
+    assert torch.equal(exported.core.gains(), core.gains())
+    card = json.loads((final / "model_card.json").read_text())
+    assert card["model_config"]["plastic_labels"] == [list(label) for label in labels]
+
+
+@pytest.mark.slow
 def test_teacher_state_follows_the_student_through_the_warm_up(tmp_path):
     """#192 R7: the frozen teacher steps during the critic-only warm-up. With the actor's
     learning rate at 0 the student equals the teacher, so their recurrent states must agree."""
@@ -369,3 +438,13 @@ def test_the_warm_up_needs_one_actor_update_not_a_finished_ramp():
     assert schedule(39, config).actor_on and schedule(39, config).actor_lr > 0
     with pytest.raises(ValueError, match="no actor updates after the critic warm-up"):
         ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "4070", [steps(20)])
+
+
+def test_ppo_rejects_plastic_lr_scale_in_yaml_and_overrides(tmp_path):
+    defaults = ppo.CONFIG_DIR / "ppo.yaml"
+    config = tmp_path / "ppo.yaml"
+    config.write_text(defaults.read_text() + "\nplastic_lr_scale: 3.0\n")
+    with pytest.raises(ValueError, match="same keys as ppo.yaml"):
+        ppo.load_ppo_config(config, "2060")
+    with pytest.raises(ValueError, match="Expected an existing setting.*plastic_lr_scale=3.0"):
+        ppo.load_ppo_config(defaults, "2060", ["plastic_lr_scale=3.0"])

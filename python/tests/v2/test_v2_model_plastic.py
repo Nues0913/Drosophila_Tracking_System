@@ -17,7 +17,7 @@ from flytrack_v2.model import (
 )
 from flytrack_v2.model.core import ConnectomeCoreV2, resolve_plastic_indices
 from flytrack_v2.model.policy import attach_plastic_projection
-from flytrack_v2.train import dagger, ppo
+from flytrack_v2.train import dagger
 from flytrack_v2.train.config import CONFIG_DIR, ROOT, load_config
 from test_v2_model_core import small_graph
 
@@ -128,29 +128,6 @@ def test_dagger_groups_schedule_and_resume_hook(tmp_path, monkeypatch):
     assert resumed.scheduler.last_epoch == fresh.scheduler.last_epoch
     assert resumed.optimizer.state[resumed.policy.core.gain_delta]["step"].item() == 2
     _assert_projected_step(resumed.policy, resumed.optimizer)
-
-
-@pytest.mark.parametrize("scale", (None, 3))
-def test_ppo_groups_schedule_and_resume_hook(tmp_path, monkeypatch, scale):
-    overrides = [] if scale is None else [f"plastic_lr_scale={scale}"]
-    config = ppo.load_ppo_config(CONFIG_DIR / "ppo.yaml", "2060", overrides)
-    init = export_policy(_build(), tmp_path / "init", provenance=PROVENANCE)
-    monkeypatch.setattr(ppo, "PPOCollector", _Collector)
-    out = tmp_path / "ppo"
-    fresh = ppo.PPORun(config, init, 100, CPU, out)
-    fresh.prepare(resume=False)
-    fresh._set_rates(ppo.Schedule(True, 0.001, 0.002, 0.0))
-    opt = fresh.actor_optimizer
-    scale = 1.0 if scale is None else scale
-    assert opt.param_groups[-1]["lr_scale"] == scale
-    assert opt.param_groups[-1]["lr"] == pytest.approx(scale * opt.param_groups[0]["lr"])
-    _assert_projected_step(fresh.policy, opt)
-    fresh.save()
-
-    resumed = ppo.PPORun(config, init, 100, CPU, out)
-    resumed.prepare(resume=True)
-    assert resumed.actor_optimizer.state[resumed.policy.core.gain_delta]["step"].item() == 1
-    _assert_projected_step(resumed.policy, resumed.actor_optimizer)
 
 
 @pytest.mark.parametrize("variant", ("VO2", "GRU2"))

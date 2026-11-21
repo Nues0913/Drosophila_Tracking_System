@@ -1,7 +1,7 @@
 #!/bin/bash
 # #138 A3: extend a2_precheck.sh to full episodes and compare plastic LR scales.
 # Usage: a3_precheck.sh OUTROOT [scales...] [--override KEY=VALUE ...]
-# Environment: PYTHON, DEVICE, PLASTIC_LABELS, COLLISION_N, OMP_NUM_THREADS.
+# Environment: PYTHON, DEVICE, PLASTIC_LABELS, COLLISION_N, OMP_NUM_THREADS, SPEED_TYPES.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -43,6 +43,7 @@ cd "$(dirname "$0")/../../.."
 labels=${labels:-scripts/v2/explore/a3_plastic_labels.json}
 py=${PYTHON:-.venv/bin/python}
 device=${DEVICE:-cpu}
+speed_types=${SPEED_TYPES:-[DNp09,DNb05]}
 collision_n=${COLLISION_N:-20}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4} PYTHONPATH=python
 mkdir -p -- "$outroot"
@@ -69,7 +70,7 @@ run_row() {
             replay_ratio=8 batch_sequences=48 held_out.every_updates=5 held_out.sequences=16 \
             held_out.fraction=0.25 scenarios.normal=0.0 scenarios.occlusion=1.0 \
             scenarios.noise=0.0 scenarios.conflict=0.0 desync_first_episode=false \
-            episode_seconds=60 "${extra[@]}" pair_weight=10 model.speed_types=bilateral "$@" \
+            episode_seconds=60 "${extra[@]}" pair_weight=10 "model.speed_types=$speed_types" "$@" \
             < /dev/null >> "$outroot/$row.log" 2>&1 || status=$?
         if [[ $status -eq 3 && -f $out/final/SHA256SUMS ]]; then
             echo "$row: DAgger exported with a failed health check (exit 3)"

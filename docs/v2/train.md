@@ -136,3 +136,53 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
 
 ## 取代 Stage 1 的條件
 跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。
+
+# 正式矩陣的執行（WP9，#143）
+每台主機用 `scripts/v2/run_formal.py` 跑分配到的 seed，指令照 M4 的 Decision：
+
+```
+python scripts/v2/run_formal.py --host 4070 --seeds 5 1 --sha <Decision 的 SHA> --out runs/v2_formal
+```
+
+- **開跑前的檢查**：任何一項不符就拒絕執行，exit 2。
+  - HEAD 要等於 `--sha`，而且追蹤中的檔案沒有修改；
+  - 協定已經凍結（`status` 不再是 `draft_until_m4`）；
+  - `host_assignment` 是「主機 → seed」的對應，而且 `--seeds` 都分給這台主機；
+  - seed 都在 `training_seeds` 裡；
+  - 沒有設定任何 `FLYTRACK_*` 環境變數。容器的設定（`FLYTRACK_IMAGE_TAG`、`FLYTRACK_CLOCK_DOMAIN`）和下面的 `FLYTRACK_RUN_IMAGE_ID` 除外；
+  - 主機在 `hosts.yaml` 裡。
+  - 子程序的 `GIT_COMMIT` 由腳本設定，model card 會記錄正確的 SHA。
+- **順序**：每個 seed 依協定的 `model_variants`（VO2、V2、O2、RW2、ER2、GRU2）各跑一條鏈，依序是：
+  1. Stage 1；
+  2. Stage 1 的 `evaluate_v2.py --seeds pilot_held_out --no-sensitivity`，輸出到 `heldout_stage1/`；
+  3. Stage 2，從 Stage 1 的 `final/` 開始；
+  4. Stage 2 的同一個評估，輸出到 `heldout_stage2/`。
+  - 兩個評估供上面「取代 Stage 1 的條件」判定。Stage 1 的評估排在 Stage 2 之前，所以 Stage 2 失敗時，這個 seed 仍然有 Stage 1 的評估（#210 review）。
+  - 正式評估（`formal_evaluation`）屬於 WP10，在 M4b 之後做。
+- **續跑**：同一個指令重跑即可。
+  - `final/` 能通過 `SHA256SUMS` 驗證的階段，以及已經有 `manifest.json` 的評估，都會沿用。`final/` 驗證通過的階段，不論 exit code 是什麼都算完成，不會再跑。
+  - 之前當機或主機重開而停下的階段，會從它自己的 checkpoint 加 `--resume` 續跑：
+    - Stage 1：有 `config.json` 就續跑。沒有任何一輪的 checkpoint 時，dagger 會從頭開始。
+    - Stage 2：只有 `checkpoint.pt` 存在時才續跑。ppo 一開始就寫 `config.json`，第一次 checkpoint 卻在第 25 次更新之後，而 `--resume` 一定要有它（#210 review）。
+    - Stage 2 沒有 checkpoint 時從頭跑，上一次的 `metrics.jsonl`、`monitor.jsonl` 改名成 `*.attempt<n>.jsonl` 保留，新的紀錄才不會有重複的更新編號。
+- **嘗試的次數**：每一次嘗試都記在 `run_<host>.jsonl`，重跑同一個指令時會接著累計。
+  - 訓練步驟最多 2 次，評估最多 1 次。
+  - exit 3（monitor 的工程失敗：NaN、KL、讀出 DN 沉默）而且沒有 `final/` 的，不會再試，因為這類失敗會重現。
+  - 用完次數的步驟記為失敗，這條鏈剩下的步驟跳過，接著跑下一個變體。要重新嘗試，加 `--retry-failed`。
+  - 主機中途重開時，那次沒有寫進紀錄，不算一次嘗試。
+- **Stage 1 的 exit 3**：最後一輪出現讀出 DN 沉默或速度 std ≤ 0.02 時，trainer 會匯出 `final/` 再以 exit 3 結束（見上面的監控與健康檢查）。
+  - 腳本讀 `failure/reason.json`，把原因寫進結果，例如 `done (stage1 health: low speed)` 或 `done (stage1 health: silent readout DNs)`。
+  - 這條鏈照樣接著跑。報告要把兩種原因分開列出，DN 沉默的鏈另外標明。
+- **剩餘空間**不到 15 GB 時停止。
+- **清理**：Stage 1 的 `final/` 驗證通過後，刪掉各輪的 `replay.pt`（每輪 1.2–1.6 GB，只用來續跑 Stage 1）。
+- **紀錄**：
+  - `run_<host>.jsonl`：每一次嘗試一行，記錄指令、UTC 起訖、耗時、exit code 和第幾次；
+  - `outcome_<host>.json`：每條鏈的結果和 bench 的結果；
+  - `bench_v1_<host>.json`：同主機的 v1 吞吐量，供 G-E 使用。bench 失敗時，腳本以 exit 1 結束；
+  - `ENVIRONMENT_<host>.txt`：commit、主機標籤、映像（`FLYTRACK_RUN_IMAGE_ID`，沒有時記為 host Python 環境）、Python、torch、GPU、驅動和套件清單。
+- **打包**：
+  - `v2_formal_<host>_evidence.tar.gz`：設定、log、metrics JSONL、model card、`SHA256SUMS`、held-out 評估的輸出。不含權重、`checkpoint.pt`、`replay.pt`、各輪目錄和 TensorBoard（檔名含機器名稱，數值和 `metrics.jsonl` 相同）。log 裡的本機路徑換成 `<repo>` 和 `~`。
+  - `v2_formal_<host>_weights.tar.gz`：每個階段的 `final/`，原樣打包。
+  - 兩個檔案的雜湊記在 `v2_formal_<host>_SHA256SUMS`，上傳到 release `research-v2-formal`。
+- **`--smoke`**：幾分鐘內走完整個流程，用來確認主機能跑。只接受試跑 seed，不接受訓練 seed；允許草稿協定，不檢查 `host_assignment`；訓練用極小的設定，評估每格 2 個回合，不跑 bench。
+- `--dry-run` 只列出每一步的指令。

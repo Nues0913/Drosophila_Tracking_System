@@ -146,7 +146,7 @@ python scripts/v2/run_formal.py --host 4070 --seeds 5 1 --sha <Decision 的 SHA>
 
 - **開跑前的檢查**：任何一項不符就拒絕執行，exit 2。
   - HEAD 要等於 `--sha`，而且追蹤中的檔案沒有修改；
-  - 協定已經凍結（`status` 不再是 `draft_until_m4`）；
+  - 協定已經凍結（`status: frozen`，其他任何值都拒絕）；
   - `host_assignment` 是「主機 → seed」的對應，而且 `--seeds` 都分給這台主機；
   - seed 都在 `training_seeds` 裡；
   - 沒有設定任何 `FLYTRACK_*` 環境變數。容器的設定（`FLYTRACK_IMAGE_TAG`、`FLYTRACK_CLOCK_DOMAIN`）和下面的 `FLYTRACK_RUN_IMAGE_ID` 除外；

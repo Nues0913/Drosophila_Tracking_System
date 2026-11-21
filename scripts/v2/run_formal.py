@@ -12,8 +12,8 @@ host (G-E), ENVIRONMENT_<host>.txt and two archives: the evidence (configs, logs
 model cards, SHA256SUMS, held-out evaluation outputs; no weights) and the weights (each stage's
 final/).
 
-- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (its status is
-  no longer draft_until_m4), its host_assignment maps this host to every seed given, and every
+- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (status:
+  frozen), its host_assignment maps this host to every seed given, and every
   seed is one of its training seeds; no FLYTRACK_* environment override is set (container
   settings aside); the host is in hosts.yaml. GIT_COMMIT is set for the cards.
 - A stage whose final/ verifies against its SHA256SUMS is kept and a held-out evaluation with a
@@ -146,8 +146,9 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
         problems.append(f"seeds {wrong} are not the protocol's {kind} seeds {allowed}")
     if len(set(args.seeds)) != len(args.seeds):
         problems.append("a seed is listed twice")
-    if not args.smoke and protocol.get("status") == "draft_until_m4":
-        problems.append("the protocol is still a draft (status: draft_until_m4); M4 freezes it")
+    if not args.smoke and protocol.get("status") != "frozen":
+        status = protocol.get("status")
+        problems.append(f"the protocol is not frozen (status: {status}); M4 freezes it")
     assignment = protocol.get("host_assignment")
     if not args.smoke:
         if not isinstance(assignment, dict):

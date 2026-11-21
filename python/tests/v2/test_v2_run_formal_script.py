@@ -55,7 +55,8 @@ def test_preflight_passes_a_frozen_protocol_at_the_decision_sha(tmp_path):
         ({"seeds": [0, 1]}, FROZEN, "", {}, "not the protocol's training seeds"),
         ({"seeds": [100]}, FROZEN, "", {}, "not the protocol's training seeds"),
         ({"seeds": [1, 1]}, FROZEN, "", {}, "listed twice"),
-        ({}, PROTOCOL | {"status": "draft_until_m4"}, "", {}, "still a draft"),
+        ({}, PROTOCOL | {"status": "draft_until_m4"}, "", {}, "not frozen"),
+        ({}, PROTOCOL | {"status": "draft"}, "", {}, "not frozen"),  # any status but frozen
         ({"host": "3090"}, FROZEN, "", {}, "not in configs/v2/train/hosts.yaml"),
         ({"variants": ["VO2", "GRU3"]}, FROZEN, "", {}, "not in the protocol"),
         ({"seeds": [5, 2]}, FROZEN, "", {}, "not assigned to host 4070"),

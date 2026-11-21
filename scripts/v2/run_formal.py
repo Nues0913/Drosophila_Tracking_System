@@ -4,27 +4,33 @@
         --out runs/v2_formal
 
 For each assigned training seed, and each protocol variant in order (VO2, V2, O2, RW2, ER2,
-GRU2): Stage 1 (DAgger), Stage 2 (PPO from Stage 1's final/), then both stages on the
-pilot_held_out episodes, which the Stage 2 replacement rule reads (protocol
-training.stage2_replaces_stage1). The formal evaluation is WP10's, after M4b. At the end, the v1
-throughput bench on this host (G-E), ENVIRONMENT_<host>.txt and two archives: the evidence
-(configs, logs, metrics JSONL, model cards, SHA256SUMS, held-out evaluation outputs; no weights)
-and the weights (each stage's final/).
+GRU2): Stage 1 (DAgger), Stage 1 on the pilot_held_out episodes, Stage 2 (PPO from Stage 1's
+final/), Stage 2 on the same episodes. The Stage 2 replacement rule (protocol
+training.stage2_replaces_stage1) reads both evaluations, and Stage 1's is there even when Stage
+2 fails. The formal evaluation is WP10's, after M4b. At the end, the v1 throughput bench on this
+host (G-E), ENVIRONMENT_<host>.txt and two archives: the evidence (configs, logs, metrics JSONL,
+model cards, SHA256SUMS, held-out evaluation outputs; no weights) and the weights (each stage's
+final/).
 
 - Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (its status is
-  no longer draft_until_m4) and every seed is one of its training seeds; no FLYTRACK_*
-  environment override is set (container settings aside); the host is in hosts.yaml.
-  GIT_COMMIT is set for the cards.
+  no longer draft_until_m4), its host_assignment maps this host to every seed given, and every
+  seed is one of its training seeds; no FLYTRACK_* environment override is set (container
+  settings aside); the host is in hosts.yaml. GIT_COMMIT is set for the cards.
 - A stage whose final/ verifies against its SHA256SUMS is kept and a held-out evaluation with a
-  manifest is kept, so running the same command again picks up where it stopped.
-- Stage 1's exit 3 with final/ exported is the registered low-speed health warning, not a
-  failure. A stage that stops without final/ is resumed once with --resume (the same config);
-  if that fails too, the rest of that variant's chain is skipped and the next variant runs.
-  Failures are recorded and reported, never retried further (plan 5.7).
+  manifest is kept, so running the same command again picks up where it stopped. A training
+  step with a config.json from an earlier attempt (a crash, a reboot) runs with --resume.
+- Attempts count across runs (OUT/run_<host>.jsonl): a training step gets two, an evaluation
+  one; --retry-failed starts the count again. A stage that exits 3 (the monitor's engineering
+  failure: NaN, KL, a silent readout, reproducible) without final/ is not run again. A stage
+  whose final/ verifies is finished whatever its exit code, and is never run again.
+- Stage 1's exit 3 with final/ exported is the final round's health warning: its reason
+  (failure/reason.json: low speed, silent readout DNs, or both) goes into the outcome, e.g.
+  "done (stage1 health: low speed)", and the chain goes on (#210 review). A failed step skips
+  the rest of its chain; the next variant runs. Failures are reported, never relaxed (plan 5.7).
 - Once Stage 1's final/ verifies, its rounds' replay.pt (1.2-1.6 GB each, used only to resume
   Stage 1) is deleted.
-- Every step is a line in OUT/run_<host>.jsonl: command, UTC start and end, wall seconds, exit
-  code, attempt.
+- Every attempt is a line in OUT/run_<host>.jsonl: command, UTC start and end, wall seconds,
+  exit code, attempt number; OUT/outcome_<host>.json has each chain's result and the bench's.
 
 --smoke checks the runner end to end in minutes: pilot seeds only (never a training seed), a
 draft protocol allowed, tiny training and 2 evaluation episodes, and no bench.
@@ -52,7 +58,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL = ROOT / "configs/v2/evaluation_protocol.yaml"
 HOSTS = ROOT / "configs/v2/train/hosts.yaml"
-STAGE1_HEALTH_WARNING = 3  # flytrack_v2.monitor.ENGINEERING_FAILURE_EXIT_CODE, final/ exported
+ENGINEERING_FAILURE = 3  # flytrack_v2.monitor.ENGINEERING_FAILURE_EXIT_CODE
+ATTEMPTS = {"train": 2, "eval": 1}  # per step, counted across runs of the same command
 MIN_FREE_GB = 15  # Stage 1 keeps four rounds' replay until it finishes
 # Container settings (compose.yaml, docker/ros-entrypoint.sh) and the image record. Any other
 # FLYTRACK_* variable is refused: the explore branches' overrides (#138's FLYTRACK_CHEM_GAIN and
@@ -137,6 +144,17 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
         problems.append("a seed is listed twice")
     if not args.smoke and protocol.get("status") == "draft_until_m4":
         problems.append("the protocol is still a draft (status: draft_until_m4); M4 freezes it")
+    assignment = protocol.get("host_assignment")
+    if not args.smoke:
+        if not isinstance(assignment, dict):
+            problems.append("the protocol's host_assignment is not a host -> seeds mapping (M4)")
+        else:
+            mine = {int(seed) for seed in {str(k): v for k, v in assignment.items()}.get(
+                args.host, []
+            )}  # fmt: skip
+            others = [seed for seed in args.seeds if seed not in mine]
+            if others:
+                problems.append(f"seeds {others} are not assigned to host {args.host}")
     unknown = [v for v in args.variants if v not in protocol["model_variants"]]
     if unknown:
         problems.append(f"variants {unknown} are not in the protocol")
@@ -155,19 +173,17 @@ def chain(args, variant: str, seed: int) -> list[dict]:
     if args.smoke:
         stage1 += ["--override", *SMOKE_STAGE1]
         stage2 += ["--override", *SMOKE_STAGE2]
-    steps = [
-        {"name": "stage1", "kind": "train", "run": run, "out": run / "stage1", "cmd": stage1},
-        {"name": "stage2", "kind": "train", "run": run, "out": run / "stage2", "cmd": stage2},
-    ]
-    for stage in ("stage1", "stage2"):
-        cmd = [py, "scripts/v2/evaluate_v2.py", "--artifacts", rel(run / stage / "final")]
-        cmd += ["--seeds", "pilot_held_out", "--no-sensitivity", "--device", args.device]
-        cmd += ["--output", rel(run / f"heldout_{stage}")]
+    steps = []
+    for stage, cmd in (("stage1", stage1), ("stage2", stage2)):
+        steps.append({"name": stage, "kind": "train", "run": run, "out": run / stage, "cmd": cmd})
+        held = [py, "scripts/v2/evaluate_v2.py", "--artifacts", rel(run / stage / "final")]
+        held += ["--seeds", "pilot_held_out", "--no-sensitivity", "--device", args.device]
+        held += ["--output", rel(run / f"heldout_{stage}")]
         if args.smoke:
-            cmd += ["--episodes", "2"]
+            held += ["--episodes", "2"]
         steps.append(
             {"name": f"heldout_{stage}", "kind": "eval", "run": run,
-             "out": run / f"heldout_{stage}", "needs": run / stage / "final", "cmd": cmd}
+             "out": run / f"heldout_{stage}", "needs": run / stage / "final", "cmd": held}
         )  # fmt: skip
     return steps
 
@@ -178,10 +194,8 @@ def step_done(step: dict) -> bool:
     return (step["out"] / "manifest.json").is_file()
 
 
-def execute(step: dict, attempt: int, log: Path, env: dict) -> dict:
-    cmd = list(step["cmd"])
-    if attempt > 1:
-        cmd.append("--resume")
+def execute(step: dict, attempt: int, log: Path, env: dict, resume: bool) -> dict:
+    cmd = [*step["cmd"], "--resume"] if resume else list(step["cmd"])
     started, clock = utc(), time.monotonic()
     step["run"].mkdir(parents=True, exist_ok=True)
     logfile = step["run"] / f"{step['name']}.log"
@@ -201,37 +215,65 @@ def execute(step: dict, attempt: int, log: Path, env: dict) -> dict:
     return record
 
 
-def run_chain(steps: list[dict], log: Path, env: dict, min_free_gb: float) -> str:
-    """Run a chain's steps; returns "done" or the failed step's name."""
+def history(log: Path) -> dict[tuple[str, str], list[dict]]:
+    """Earlier attempts by (run, step), from the runner's own log."""
+    past: dict[tuple[str, str], list[dict]] = {}
+    if log.is_file():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                past.setdefault((record["run"], record["step"]), []).append(record)
+    return past
+
+
+def health(step: dict) -> str:
+    """Stage 1's exported health warning, from failure/reason.json (dagger.py's wording)."""
+    path = step["out"] / "failure/reason.json"
+    if not path.is_file():
+        return "reason missing"
+    reason = json.loads(path.read_text(encoding="utf-8")).get("reason", "")
+    kinds = [
+        name
+        for name, text in (("silent readout DNs", "silent readout DNs"), ("low speed", "speed std"))
+        if text in reason
+    ]
+    return ", ".join(kinds) or reason
+
+
+def run_chain(
+    steps: list[dict], log: Path, env: dict, min_free_gb: float, past: dict | None = None
+) -> str:
+    """Run a chain's steps; returns "done", with notes, or which step failed and how."""
+    past = {} if past is None else past
+    notes = []
     for step in steps:
+        tried = past.setdefault((rel(step["run"]), step["name"]), [])
         if step_done(step):
             print(f"  {step['name']}: kept", flush=True)
-            delete_replay(step)
-            continue
-        if "needs" in step and not artifact_done(step["needs"]):
-            return step["name"]
-        free = shutil.disk_usage(step["run"].parent if step["run"].parent.exists() else ROOT).free
-        if free < min_free_gb * 2**30:
-            raise SystemExit(f"stopped: {free / 2**30:.1f} GB free, {min_free_gb} GB needed")
-        attempts = (1, 2) if step["kind"] == "train" else (1,)
-        for attempt in attempts:
-            resumable = (step["out"] / "config.json").is_file()
-            if attempt == 2 and not resumable:
-                break
-            record = execute(step, attempt, log, env)
-            warned = (
-                step["name"] == "stage1"
-                and record["exit"] == STAGE1_HEALTH_WARNING
-                and artifact_done(step["out"] / "final")
-            )
-            print(f"  {step['name']}: exit {record['exit']}{' (health warning)' if warned else ''}"
-                  f", {record['wall_s'] / 60:.1f} min", flush=True)  # fmt: skip
-            if step_done(step) and (record["exit"] == 0 or warned):
-                break
-        if not step_done(step):
-            return step["name"]
+        else:
+            if "needs" in step and not artifact_done(step["needs"]):
+                return f"failed: {step['name']} has no {rel(step['needs'])}"
+            free = shutil.disk_usage(ROOT if not step["run"].exists() else step["run"]).free
+            if free < min_free_gb * 2**30:
+                raise SystemExit(f"stopped: {free / 2**30:.1f} GB free, {min_free_gb} GB needed")
+            while len(tried) < ATTEMPTS[step["kind"]] and not step_done(step):
+                if tried and tried[-1]["exit"] == ENGINEERING_FAILURE:
+                    break  # the monitor's failures reproduce; never resumed
+                resume = step["kind"] == "train" and (step["out"] / "config.json").is_file()
+                record = execute(step, len(tried) + 1, log, env, resume)
+                tried.append(record)
+                print(f"  {step['name']}: exit {record['exit']}, {record['wall_s'] / 60:.1f} min",
+                      flush=True)  # fmt: skip
+            if not step_done(step):
+                last = f"exit {tried[-1]['exit']}" if tried else "no attempt"
+                return f"failed: {step['name']} ({last}, {len(tried)} attempt(s))"
+        code = tried[-1]["exit"] if tried else 0
+        if step["name"] == "stage1" and code == ENGINEERING_FAILURE:
+            notes.append(f"stage1 health: {health(step)}")
+        elif code != 0:
+            notes.append(f"{step['name']} exit {code} with final/ verified")
         delete_replay(step)
-    return "done"
+    return "done" + (f" ({'; '.join(notes)})" if notes else "")
 
 
 def delete_replay(step: dict) -> None:
@@ -319,6 +361,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="print the steps and stop")
+    parser.add_argument(
+        "--retry-failed", action="store_true", help="start the attempt count of every step again"
+    )
     args = parser.parse_args(argv)
     protocol = yaml.safe_load(PROTOCOL.read_text(encoding="utf-8"))
     hosts = yaml.safe_load(HOSTS.read_text(encoding="utf-8"))
@@ -341,32 +386,44 @@ def main(argv: list[str] | None = None) -> int:
     env = {**os.environ, "GIT_COMMIT": head, "PYTHONPATH": str(ROOT / "python")}
     args.out.mkdir(parents=True, exist_ok=True)
     log = args.out / f"run_{args.host}.jsonl"
+    past = {} if args.retry_failed else history(log)
     outcome = {}
     for variant, seed, steps in chains:
         print(f"{utc()} {variant} seed {seed}", flush=True)
         min_free = 1 if args.smoke else MIN_FREE_GB
-        outcome[f"{variant}/seed_{seed}"] = run_chain(steps, log, env, min_free)
+        outcome[f"{variant}/seed_{seed}"] = run_chain(steps, log, env, min_free, past)
     extra = [log]
+    bench_status = "not run (smoke)"
     if not args.smoke:
         bench = args.out / f"bench_v1_{args.host}.json"
+        bench_status = "kept"
         if not bench.is_file():
             cmd = [sys.executable, "scripts/v2/bench.py", "v1", "--host-label", args.host]
-            cmd += ["--device", args.device, "--output", str(bench)]
+            cmd += ["--device", args.device, "--output", rel(bench)]
             code = subprocess.run(cmd, cwd=ROOT, env=env).returncode
-            print(f"bench v1 exit {code}", flush=True)
+            bench_status = "done" if code == 0 and bench.is_file() else f"failed: exit {code}"
+            print(f"bench v1: {bench_status}", flush=True)
         if bench.is_file():
             extra.append(bench)
     environment = args.out / f"ENVIRONMENT_{args.host}.txt"
     environment.write_text(environment_text(args, head))
     summary = args.out / f"outcome_{args.host}.json"
     summary.write_text(
-        json.dumps({"commit": head, "host": args.host, "chains": outcome}, indent=1) + "\n"
+        json.dumps(
+            {"commit": head, "host": args.host, "chains": outcome, "bench_v1": bench_status},
+            indent=1,
+        )
+        + "\n"
     )
     extra += [environment, summary]
     runs = [args.out / v / f"seed_{s}" for v, s, _ in chains]
     for path in archive(args.out, args.host, [r for r in runs if r.is_dir()], extra):
         print(f"wrote {path}")
-    failed = {key: step for key, step in outcome.items() if step != "done"}
+    failed = {key: step for key, step in outcome.items() if not step.startswith("done")}
+    if bench_status.startswith("failed"):
+        failed["bench_v1"] = bench_status
+    for key, step in outcome.items():
+        print(f"  {key}: {step}")
     print("all chains done" if not failed else f"failed: {failed}")
     return 0 if not failed else 1
 

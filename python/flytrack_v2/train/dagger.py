@@ -164,6 +164,7 @@ class DAggerRun:
             config["activity_coef"],
             label_margins(config),
             config.get("pair_weight", 0.0),
+            config.get("pair_window", 16),
         )
         self.micro_batch = config["micro_batch"]
         self.failure_batch: SequenceBatch | None = None

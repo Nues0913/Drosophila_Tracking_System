@@ -25,4 +25,5 @@ activation_checkpoint: false
 # #138 A2 (paired-observation DAgger): weight of the paired turn loss; 0 collects no pairs and
 # trains exactly as before. See flytrack_v2.train.update.sequence_loss.
 pair_weight: 0.0
+pair_window: 16  # control steps (0.8 s) the transformed branch runs before it forks again
 model: {}

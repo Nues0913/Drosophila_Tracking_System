@@ -3,13 +3,17 @@
 import pytest
 import torch
 from flytrack_v2.eval.runner import rotate_wind, swap_odor
+from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model import ModelConfigV2, build_policy
-from flytrack_v2.train import data
+from flytrack_v2.train import data, update
 from flytrack_v2.train.config import CONFIG_DIR, load_config
 from flytrack_v2.train.data import Replay, ReplayShard, RolloutCollector, pair_transform
 from flytrack_v2.train.update import (
+    PAIR_SUBSETS,
+    PAIR_SUMS,
     LossSettings,
     batch_metrics,
+    burn_in_state,
     finish_pair_metrics,
     sequence_loss,
 )
@@ -51,6 +55,8 @@ def test_the_transform_is_e1s_swap_on_even_rows_and_rotation_on_odd_rows():
     assert torch.equal(shown["odor"][odd], obs["odor"][odd])
     assert torch.equal(shown["wind"][odd], rotate_wind(90.0, 45.0)(obs)["wind"][odd])
     assert shown["vision"] is obs["vision"] and shown["valid"] is obs["valid"]
+    twice = pair_transform(shown, 45.0)
+    assert torch.equal(twice["odor"], obs["odor"])  # swapping twice restores the odor
 
 
 def test_chemical_code_is_senses_columns_without_stepping_state():
@@ -159,17 +165,52 @@ def test_untransformed_copies_add_nothing(monkeypatch):
 
 def test_pair_slope_is_one_when_the_student_follows_the_teacher():
     sums = {"pair_loss": torch.tensor(0.0), "pair_steps": torch.tensor(0.5)}
-    for kind, (sxy, sxx, syy, n) in {
-        "odor": (8.0, 8.0, 8.0, 4.0),
-        "wind": (0.0, 2.0, 0.0, 2.0),
-    }.items():
-        names = ("sxy", "sxx", "syy", "n")
-        values = dict(zip(names, map(torch.tensor, (sxy, sxx, syy, n)), strict=True))
-        sums.update({f"pair_{kind}_{key}": value for key, value in values.items()})
+    for kind in PAIR_SUMS:
+        for subset in PAIR_SUBSETS:
+            values = (8.0, 8.0, 8.0, 4.0) if kind == "odor" else (0.0, 2.0, 0.0, 2.0)
+            names = ("sxy", "sxx", "syy", "n")
+            for name, value in zip(names, values, strict=True):
+                sums[f"pair_{kind}_{subset}_{name}"] = torch.tensor(value)
     out = finish_pair_metrics(sums)
     assert out["pair_odor_slope"] == 1 and out["pair_wind_slope"] == 0
+    assert out["pair_odor_present_d9_16_slope"] == 1
     assert out["pair_odor_teacher_rms"] == out["pair_odor_student_rms"] == 2**0.5
-    assert out["pair_wind_student_rms"] == 0 and "pair_odor_sxy" not in out
+    assert out["pair_wind_student_rms"] == 0 and "pair_odor_all_sxy" not in out
+
+
+def test_the_branch_forks_every_window_and_carries_its_own_state(monkeypatch):
+    run = collector(monkeypatch, 1.0)
+    model, batch = run.policy, batch_from(run)
+    settings = LossSettings(4, 1e-4, 1e-3, 1.0, pair_window=8)
+    captured = {}
+    real = update._pair_loss
+
+    def spy(dist, latent, pair_means, rows, *rest):
+        captured.update(means=torch.stack(pair_means), rows=rows)
+        return real(dist, latent, pair_means, rows, *rest)
+
+    monkeypatch.setattr(update, "_pair_loss", spy)
+    initial = model.initial_central_state(1, "cpu")
+    with torch.no_grad():
+        values = sequence_loss(model, batch, initial, settings)
+        rows, columns = captured["rows"], model.encoder.chemical_columns
+        assert len(rows) and values["pair_case_present"] + values["pair_case_lost"] > 0
+        state = burn_in_state(model, batch.code[:4], batch.reset[:4], batch.initial, initial)
+        expected = []
+        for tick in range(len(batch.code) - 4):
+            code, ended = batch.code[4 + tick], batch.reset[4 + tick]
+            if tick % 8 == 0:
+                branch = state[rows]
+            shown = code[rows].clone()
+            held = batch.occluded[4 + tick, rows, None]
+            shown[:, columns] = torch.where(
+                held, batch.chem_pair[4 + tick, rows], shown[:, columns]
+            )
+            step = model.forward_code(shown, branch)
+            expected.append(step.dist.mean)
+            branch = reset_rows(step.central_state, initial, ended[rows])
+            state = reset_rows(model.forward_code(code, state).central_state, initial, ended)
+    torch.testing.assert_close(captured["means"], torch.stack(expected), rtol=0, atol=0)
 
 
 def test_micro_batches_keep_the_pair_metrics(monkeypatch):

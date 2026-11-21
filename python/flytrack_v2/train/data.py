@@ -61,6 +61,7 @@ class StepData(NamedTuple):
     # and the teacher's label for it from the same teacher state.
     chem_pair: Tensor | None = None
     action_pair: Tensor | None = None
+    pair_case: Tensor | None = None  # OcclusionTeacher.cases, uint8
 
 
 def pair_transform(obs: dict[str, Tensor], antenna_angle_deg: float) -> dict[str, Tensor]:
@@ -143,6 +144,7 @@ class SequenceBatch(NamedTuple):
     occluded: Tensor
     chem_pair: Tensor | None = None  # #138 A2, see StepData
     action_pair: Tensor | None = None
+    pair_case: Tensor | None = None
 
     def to(self, device: torch.device) -> SequenceBatch:
         return SequenceBatch(*(None if value is None else value.to(device) for value in self))
@@ -156,9 +158,10 @@ def _allocate_steps(
         (
             torch.empty(ticks, rows, chem_width, dtype=torch.float32, device=device),
             torch.empty(ticks, rows, 2, dtype=torch.float32, device=device),
+            torch.empty(ticks, rows, dtype=torch.uint8, device=device),
         )
         if chem_width
-        else (None, None)
+        else (None, None, None)
     )
     return StepData(
         torch.empty(ticks, rows, width, dtype=torch.float32, device=device),
@@ -351,7 +354,7 @@ class RolloutCollector:
             self.teacher_state,
             limit_acceleration=self.limit_acceleration,
         )
-        pair = (None, None)
+        pair = (None, None, None)
         if self.chem_width:
             # The same sensory and teacher state, one transformed observation; neither state
             # advances from it (#138 A2).
@@ -364,7 +367,7 @@ class RolloutCollector:
                 teacher_before,
                 limit_acceleration=self.limit_acceleration,
             )
-            pair = (chem, label_pair)
+            pair = (chem, label_pair, self.teacher.cases(privileged, self.obs))
         action = mix_actions(label, student.dist.mode(), beta, self.mix_rng)
         results = [
             world.step(rows)
@@ -464,7 +467,7 @@ class RolloutCollector:
             "episode_time_std_s": std.item() * dt,
         }
         samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
-        code, action, reset, occluded, chem_pair, action_pair = steps
+        code, action, reset, occluded, chem_pair, action_pair, pair_case = steps
         del steps, staging
         stats = normalization_stats(code, self.policy.input_norm)
         code = _env_major(code, torch.float16)
@@ -474,10 +477,14 @@ class RolloutCollector:
             _env_major(reset, reset.dtype),
             _env_major(occluded, occluded.dtype),
             *(
-                (None, None)
+                (None, None, None)
                 if chem_pair is None
                 # float16 like the code, so an unchanged column compares equal to the code's
-                else (_env_major(chem_pair, torch.float16), _env_major(action_pair, torch.float32))
+                else (
+                    _env_major(chem_pair, torch.float16),
+                    _env_major(action_pair, torch.float32),
+                    _env_major(pair_case, torch.uint8),
+                )
             ),
         )
         return (
@@ -543,7 +550,7 @@ class Replay:
             offset += count
         return SequenceBatch(
             steps.code, steps.action, steps.reset, states, tags, steps.occluded,
-            steps.chem_pair, steps.action_pair,
+            steps.chem_pair, steps.action_pair, steps.pair_case,
         )  # fmt: skip
 
 

@@ -80,6 +80,17 @@ def test_smoke_takes_pilot_seeds_and_a_draft_but_never_a_training_seed(tmp_path)
     assert run_formal.preflight(smoke, draft, HOSTS, HEAD, "", {})
 
 
+def test_the_frozen_protocol_gives_every_training_seed_to_one_host(tmp_path):
+    """M4 (#142): the repository's protocol is frozen and assigns each training seed once."""
+    assert PROTOCOL["status"] == "frozen"
+    seeds = [seed for given in PROTOCOL["host_assignment"].values() for seed in given]
+    assert sorted(seeds) == sorted(PROTOCOL["training_seeds"])
+    assert set(PROTOCOL["host_assignment"]) <= set(HOSTS)
+    for host, given in PROTOCOL["host_assignment"].items():
+        run = args(tmp_path, host=host, seeds=list(given))
+        assert run_formal.preflight(run, PROTOCOL, HOSTS, HEAD, "", {}) == []
+
+
 def test_host_assignment_keys_may_be_numbers(tmp_path):
     numeric = FROZEN | {"host_assignment": {4070: [5, 1], 4060: [2, 3], 2060: [4]}}
     assert run_formal.preflight(args(tmp_path), numeric, HOSTS, HEAD, "", {}) == []

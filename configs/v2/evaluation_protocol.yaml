@@ -1,10 +1,12 @@
-# v2 evaluation protocol, schema 4. DRAFT: the values follow docs/v2/大實驗計劃書.md sections
-# 3.9-3.11 and are frozen at M4 (2026-11-23 22:00 UTC+8) by #142. Until then only pilots
-# (seeds 100 and 101) may use it, and pilot results are never formal results.
+# v2 evaluation protocol, schema 4, following docs/v2/大實驗計劃書.md sections 3.9-3.11. Frozen
+# at M4 (2026-11-23 22:00 UTC+8) by #142: the formal runs use it as it stands at the M4
+# Decision's SHA, and a later change is a new protocol version, never an edit of this one.
+# Pilots (seeds 100 and 101) before the freeze used the draft; pilot results are never formal.
 schema_version: 4
 spec_version: v2
-status: draft_until_m4
+status: frozen
 declared_date: '2026-11-18'
+frozen_date: '2026-11-23'
 freeze_issue: 142
 plan: docs/v2/大實驗計劃書.md
 model_variants: [VO2, V2, O2, RW2, ER2, GRU2]
@@ -248,7 +250,9 @@ throughput:
   hard_floor_vs_v1: 1.0
   target_vs_v1: 5.0
   pr_regression_limit: 0.05
-host_assignment: decided at M4; the six variants of one seed run on one host
+# M4 (#143 7043742783): the six variants of one training seed run on one host, one executor per
+# (variant, seed); scripts/v2/run_formal.py refuses a seed its host is not given.
+host_assignment: {'4070': [5, 1], '4060': [2, 3], '2060': [4]}
 # #161 F, registered before the M2 bench: estimate the formal training time from the measured
 # combined throughput of the three hosts with a 20% margin (evaluation included: 48,000 main
 # episodes plus the noise sensitivity and the v1 comparison). Above 32 hours, the formal

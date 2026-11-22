@@ -620,3 +620,39 @@ def test_the_turn_term_leaves_the_catchup_group_out():
         state = torch.zeros(1, with_turn.hidden)
         mode = with_turn.forward_code(torch.ones(1, 1), state).dist.mode()[0]
     assert float(mode[0]) == pytest.approx(0.3, abs=0.02)
+
+
+@pytest.mark.slow
+def test_the_speed_term_can_leave_the_speed_readout_weights_alone():
+    """#138 A2 fifth version: the mode's speed is the same either way; without speed_readout its
+    gradient reaches the speed bias (and the graph) but not the speed readout weights."""
+    from flytrack_v2.model import build_policy
+
+    torch.manual_seed(8)
+    policy = build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05})
+    n, steps = 2, 2
+    none = torch.zeros(steps, n, dtype=torch.bool)
+    rollout = Rollout(
+        code=torch.randn(steps, n, policy.code_size) * 0.1,
+        latent=torch.zeros(steps, n, 2),
+        logp=torch.zeros(steps, n),
+        features=torch.zeros(steps, n, 1),
+        reward=torch.zeros(steps, n),
+        terminated=none,
+        truncated=none,
+        final_features=torch.zeros(steps, n, 1),
+        last_features=torch.zeros(n, 1),
+        central=policy.initial_central_state(n, "cpu"),
+        initial=policy.initial_central_state(1, "cpu"),
+    )
+    found = {}
+    for flag in (True, False):
+        policy.zero_grad(set_to_none=True)
+        *_, mode = ppo._actor_replay(policy, rollout, torch.arange(n), speed_readout=flag)
+        mode[..., 0].sum().backward()
+        weight = policy.readout.speed_weight.grad
+        found[flag] = (mode.detach(), weight, policy.readout.speed_bias.grad.clone())
+    torch.testing.assert_close(found[True][0], found[False][0])
+    assert float(found[True][1].abs().sum()) > 0
+    assert found[False][1] is None or float(found[False][1].abs().sum()) == 0
+    torch.testing.assert_close(found[True][2], found[False][2])

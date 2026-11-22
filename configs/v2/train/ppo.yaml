@@ -27,9 +27,12 @@ kickstart: {initial_lambda: 1.0, anneal_fraction: 0.3}
 # #138 A2 third version: a Huber loss on the occlusion teacher's m/s on occluded steps (ppo.py);
 # coef 0 leaves it off and runs no teacher
 occlusion_speed: {coef: 0.0, scale_m_s: 0.05, strong_slowdown: 0.1, limit_acceleration: false, catchup_min_distance_m: null,
-  trains_readout: true, groups: [strong, weak, lost, catchup]}
+  trains_readout: true, groups: [strong, weak, lost, catchup], lost_speed_scale: 1.0}
 # #138 A2 fourth version: the same teacher's turn rate on the same steps and groups
 # #138 A2 eighth version: each term trains only on the listed groups (ppo.SPEED_GROUPS; the
 # turn term never on catch-up); the defaults are every earlier version's
 occlusion_turn: {coef: 0.0, scale_rad_s: 0.5, groups: [strong, weak, lost]}
+# #138 A2 eleventh version: lost_speed_scale is the occlusion teacher's speed while the odor is
+# lost, as a fraction of the speed held from before the occlusion (1.0: hold it; below 1: slow down
+# on odor loss, as walking flies do). It changes the labels only; the groups keep the default teacher.
 checkpoint_every: 25

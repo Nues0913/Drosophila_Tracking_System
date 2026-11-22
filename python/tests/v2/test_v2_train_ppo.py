@@ -558,6 +558,42 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
     assert all(math.isfinite(row["speed_bias_strong"]) for row in rows)
 
 
+def test_lost_speed_scale_slows_only_the_labelling_teacher(tmp_path):
+    """#138 A2 eleventh version: occlusion_speed.lost_speed_scale rebuilds the labelling teacher
+    with that scale (odor lost: scale x the held speed); near, and so the groups, stay."""
+    from flytrack_v2.model import build_policy, export_policy
+
+    init = export_policy(
+        build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05}),
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    base = [
+        "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "total_env_steps=96",
+        "warmup.critic_only_updates=1", "warmup.actor_ramp_updates=1",
+        "occlusion_speed.coef=1.0", "occlusion_turn.coef=1.0",
+    ]  # fmt: skip
+    teachers = {}
+    for scale in (1.0, 0.5):
+        config = ppo.load_ppo_config(
+            ppo.CONFIG_DIR / "ppo.yaml", "2060", [*base, f"occlusion_speed.lost_speed_scale={scale}"]
+        )
+        run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / f"ppo_{scale}")
+        run.prepare(resume=False)
+        teachers[scale] = run.collector.teacher
+    assert teachers[1.0].lost_speed_scale == 1.0 and teachers[0.5].lost_speed_scale == 0.5
+    assert teachers[0.5].near == teachers[1.0].near and teachers[0.5].memory
+    assert teachers[0.5].walls == teachers[1.0].walls
+    for bad in (0, 1.5):
+        config = ppo.load_ppo_config(
+            ppo.CONFIG_DIR / "ppo.yaml", "2060", [*base, f"occlusion_speed.lost_speed_scale={bad}"]
+        )
+        with pytest.raises(ValueError, match="lost_speed_scale"):
+            ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / f"bad_{bad}").prepare(
+                resume=False
+            )
+
+
 def test_the_turn_term_pulls_the_mode_turn_to_the_teachers_label():
     """#138 A2 fourth version: the turn term alone moves the turn rate (omega_max 1 in the toy
     policy, so it starts at 0) to the grouped steps' label, and leaves the speed alone."""

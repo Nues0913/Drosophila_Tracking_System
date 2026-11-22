@@ -62,6 +62,7 @@ from flytrack_v2.model.policy import (
     has_plastic_gains,
 )
 from flytrack_v2.monitor import EngineeringFailure, RunMonitor
+from flytrack_v2.world.teacher import OcclusionTeacher, PrivilegedTeacher
 
 from .config import CONFIG_DIR, MOTION_NAMES, STOP_INTERVAL, WORLD_NAMES, _override, read_yaml
 from .data import RolloutCollector, _concatenate
@@ -563,6 +564,17 @@ class PPOCollector(RolloutCollector):
         self.catchup_min_distance_m = speed["catchup_min_distance_m"]
         # Whether each environment's episode has been occluded so far (the catch-up group).
         self.seen_occlusion = torch.zeros(self.rows, dtype=torch.bool, device=device)
+        # #138 A2 eleventh version: the labelling teacher slows down while the odor is lost.
+        # Only the speed label on odor-lost steps changes: cases, near and the state are the same.
+        lost_speed_scale = speed["lost_speed_scale"]
+        if not (isinstance(lost_speed_scale, (int, float)) and 0 < lost_speed_scale <= 1):
+            raise ValueError("occlusion_speed.lost_speed_scale must lie in (0, 1]")
+        if lost_speed_scale != 1:
+            self.teacher = OcclusionTeacher(
+                PrivilegedTeacher(policy.contract),
+                walls=self.walls,
+                lost_speed_scale=float(lost_speed_scale),
+            )
         # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
         # (the base collector's teacher_state starts from it and is checkpointed with it).
         self.speed_teacher_initial = self.teacher.initial_state(self.rows, device)

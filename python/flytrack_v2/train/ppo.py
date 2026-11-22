@@ -14,6 +14,14 @@
 - Reward: the world's track_v2 (#181). A time limit, and the forced end of a desynchronised
   first episode, bootstrap from the value of the state before the reset; only a collision
   terminates.
+- Occlusion speed (#138 A2 third version; off unless ``occlusion_speed.coef`` > 0): on the
+  student's own rollouts, the DAgger teacher (OcclusionTeacher, its state carried per
+  environment across rollouts) labels each occluded step's forward speed in m/s. The actor
+  loss adds coef * the mean over three groups (odor present with the teacher slowing by at
+  least ``strong_slowdown``, odor present and slowing less, odor lost; wall-rule steps are
+  left out) of a Huber loss on the student's mode speed minus that label, in units of
+  ``scale_m_s``. Unlike kickstarting it stays on to the end. The teacher only labels: the
+  student acts, and the evaluation never runs it.
 """
 
 from __future__ import annotations
@@ -228,6 +236,44 @@ class Rollout:
     initial: Tensor  # [1, S], the rest state rows restart from
     teacher_mean: Tensor | None = None  # [T, N, 2] when kickstarting
     teacher_log_std: Tensor | None = None  # [2]
+    speed_label: Tensor | None = None  # [T, N] m/s, the occlusion teacher's speed
+    speed_group: Tensor | None = None  # [T, N] uint8: 0 none, then SPEED_GROUPS in order
+
+
+SPEED_GROUPS = ("strong", "weak", "lost")  # codes 1, 2, 3 of Rollout.speed_group
+
+
+def occlusion_speed_groups(
+    cases: Tensor, odor: Tensor, near: float, strong_slowdown: float
+) -> Tensor:
+    """[B] uint8 speed groups from OcclusionTeacher.cases: odor present (case 1) splits by the
+    teacher's slowdown, mean odor / near (clamped to 1), at ``strong_slowdown``; odor lost
+    (case 2) is group 3; visible steps and wall-rule steps (cases 0, 3) are 0."""
+    slowdown = (odor.clamp(min=0).mean(-1) / near).clamp(max=1)
+    present = torch.where(slowdown >= strong_slowdown, 1, 2)
+    group = torch.where(cases == 1, present, torch.where(cases == 2, 3, 0))
+    return group.to(torch.uint8)
+
+
+def speed_group_counts(group: Tensor) -> Tensor:
+    """[len(SPEED_GROUPS)] float step counts of each group."""
+    return torch.stack([(group == code).sum() for code in range(1, len(SPEED_GROUPS) + 1)]).to(
+        torch.float32
+    )
+
+
+def occlusion_speed_term(
+    speed: Tensor, label: Tensor, group: Tensor, counts: Tensor, scale_m_s: float
+) -> Tensor:
+    """Sum over these steps of Huber((speed - label) / scale_m_s) / counts[group], divided by
+    the number of groups with steps, so that summed over a minibatch's parts it is the mean
+    over groups of each group's mean (``counts`` from speed_group_counts of the minibatch)."""
+    error = torch.nn.functional.huber_loss(
+        (speed - label) / scale_m_s, torch.zeros_like(speed), reduction="none", delta=1.0
+    )
+    weights = torch.cat((counts.new_zeros(1), 1 / counts.clamp(min=1)))[group.long()]
+    present = int((counts > 0).sum())
+    return (error * weights).sum() / max(present, 1)
 
 
 @dataclass(frozen=True)
@@ -288,7 +334,7 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
     graph = isinstance(policy, ConnectomePolicyV2)
     state = rollout.central[rows]
     initial = rollout.initial
-    logp, entropy, means, activity = [], [], [], []
+    logp, entropy, means, activity, speed = [], [], [], [], []
     for t in range(len(rollout.code)):
         if graph:
             step = policy.forward_code(rollout.code[t, rows], state, non_readout_activity=True)
@@ -299,9 +345,11 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
         logp.append(step.dist.log_prob(rollout.latent[t, rows]))
         entropy.append(step.dist.entropy())
         means.append(step.dist.mean)
+        speed.append(step.dist.mode()[..., 0])
         ended = rollout.terminated[t, rows] | rollout.truncated[t, rows]
         state = reset_rows(step.central_state, initial, ended)
-    return torch.stack(logp), torch.stack(entropy), torch.stack(means), torch.stack(activity)
+    stacked = (logp, entropy, means, activity, speed)
+    return tuple(torch.stack(values) for values in stacked)
 
 
 def _clip_and_step(optimizer, max_norm: float) -> Tensor:
@@ -327,8 +375,11 @@ def ppo_update(
     kick_lambda: float,
     micro_batch: int,
     generator: torch.Generator,
+    speed_coef: float = 0.0,
+    speed_scale_m_s: float = 0.05,
 ) -> dict[str, Tensor]:
-    """Epochs of minibatch updates over environments; returns the means of the last epoch."""
+    """Epochs of minibatch updates over environments; returns the means of the last epoch.
+    ``speed_coef`` > 0 adds the occlusion speed term while the actor trains (module doc)."""
     advantages, returns, values = advantages_and_returns(
         critic, rollout, settings.gamma, settings.gae_lambda
     )
@@ -338,6 +389,7 @@ def ppo_update(
     n = rollout.code.shape[1]
     minibatch = n // settings.minibatches
     kick = kick_lambda > 0 and rollout.teacher_mean is not None
+    speed_on = actor_on and speed_coef > 0 and rollout.speed_group is not None
     metrics: dict[str, Tensor] = {}
     for _epoch in range(settings.epochs):
         order = torch.randperm(n, generator=generator, device="cpu").to(rollout.code.device)
@@ -347,13 +399,18 @@ def ppo_update(
             actor_optimizer.zero_grad(set_to_none=True)
             critic_optimizer.zero_grad(set_to_none=True)
             terms: dict[str, Tensor] = {}
+            if speed_on:
+                counts = speed_group_counts(rollout.speed_group[:, rows])
+                terms["speed_loss"] = torch.zeros((), device=rollout.code.device)
             for part in rows.split(micro_batch):
                 weight = len(part) / len(rows)
                 value_loss = 0.5 * (critic(rollout.features[:, part]) - target[:, part]).square()
                 loss = settings.value_coef * value_loss.mean()
                 parts = {"value_loss": value_loss.mean().detach()}
+                # Terms already summed to the minibatch's value over its parts (not weighted).
+                exact = loss.new_zeros(())
                 if actor_on:
-                    logp, entropy, means, activity = _actor_replay(policy, rollout, part)
+                    logp, entropy, means, activity, speed = _actor_replay(policy, rollout, part)
                     log_ratio = logp - rollout.logp[:, part]
                     ratio = log_ratio.exp()
                     adv = normalized[:, part]
@@ -374,6 +431,16 @@ def ppo_update(
                         ).mean()
                         loss = loss + kick_lambda * kl
                         parts["kl_teacher"] = kl.detach()
+                    if speed_on:
+                        term = occlusion_speed_term(
+                            speed,
+                            rollout.speed_label[:, part],
+                            rollout.speed_group[:, part],
+                            counts,
+                            speed_scale_m_s,
+                        )
+                        exact = exact + speed_coef * term
+                        terms["speed_loss"] = terms["speed_loss"] + term.detach()
                     with torch.no_grad():
                         parts.update(
                             policy_loss=policy_loss.detach(),
@@ -381,7 +448,7 @@ def ppo_update(
                             approx_kl=((ratio - 1) - log_ratio).mean(),
                             clip_fraction=((ratio - 1).abs() > settings.clip).float().mean(),
                         )
-                (loss * weight).backward()
+                (loss * weight + exact).backward()
                 for name, value in parts.items():
                     terms[name] = terms.get(name, 0.0) + value * weight
             terms["critic_grad_norm"] = _clip_and_step(critic_optimizer, settings.grad_clip)
@@ -417,6 +484,13 @@ class PPOCollector(RolloutCollector):
         self.walls = self.worlds[0].walls
         self.episode_seconds = config["episode_seconds"]
         self.v_max = policy.contract.v_max
+        speed = config["occlusion_speed"]
+        self.speed_on = speed["coef"] > 0
+        self.speed_strong_slowdown = speed["strong_slowdown"]
+        self.speed_limit_acceleration = speed["limit_acceleration"]
+        # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
+        # (the base collector's teacher_state starts from it and is checkpointed with it).
+        self.speed_teacher_initial = self.teacher.initial_state(self.rows, device)
 
     def _features(self, privileged: Mapping[str, Tensor]) -> Tensor:
         return critic_features(privileged, self.walls, self.episode_seconds, self.v_max)
@@ -452,6 +526,10 @@ class PPOCollector(RolloutCollector):
             "final_features": torch.zeros(steps, rows, f, device=device),
         }
         teacher_mean = torch.empty(steps, rows, 2, device=device) if kickstart else None
+        if self.speed_on:
+            buffers["speed_label"] = torch.empty(steps, rows, device=device)
+            buffers["speed_group"] = torch.empty(steps, rows, dtype=torch.uint8, device=device)
+            bias = torch.zeros(len(SPEED_GROUPS), device=device)
         ended = torch.zeros((), device=device)
         stats = {name: torch.zeros((), device=device) for name in ("success", "collision")}
         reward_sum = torch.zeros((), device=device)
@@ -463,7 +541,29 @@ class PPOCollector(RolloutCollector):
             buffers["code"][t] = code
             buffers["latent"][t] = latent
             buffers["logp"][t] = step.dist.log_prob(latent)
-            buffers["features"][t] = self._features(self._privileged())
+            privileged = self._privileged()
+            buffers["features"][t] = self._features(privileged)
+            if self.speed_on:
+                # The DAgger teacher on the student's own state, every step so that its held
+                # speed is the student's applied speed when the occlusion starts.
+                label, self.teacher_state = self.teacher.act(
+                    privileged,
+                    self.obs,
+                    privileged["agent_velocity"],
+                    self.teacher_state,
+                    limit_acceleration=self.speed_limit_acceleration,
+                )
+                group = occlusion_speed_groups(
+                    self.teacher.cases(privileged, self.obs),
+                    self.obs["odor"],
+                    self.teacher.near,
+                    self.speed_strong_slowdown,
+                )
+                buffers["speed_label"][t] = label[:, 0]
+                buffers["speed_group"][t] = group
+                gap = step.dist.mode()[:, 0] - label[:, 0]
+                for code_id in range(1, len(SPEED_GROUPS) + 1):
+                    bias[code_id - 1] += torch.where(group == code_id, gap, 0.0).sum()
             if kickstart:
                 taught = self.teacher_policy.forward_code(code, self.teacher_central)
                 teacher_mean[t] = taught.dist.mean
@@ -512,6 +612,10 @@ class PPOCollector(RolloutCollector):
                 self.teacher_central = reset_rows(teacher_next, self.teacher_initial, reset)
             else:
                 self.teacher_central = reset_rows(self.teacher_central, self.teacher_initial, reset)
+            if self.speed_on:
+                self.teacher_state = reset_rows(
+                    self.teacher_state, self.speed_teacher_initial, reset
+                )
         rollout = Rollout(
             **buffers,
             last_features=self._features(self._privileged()),
@@ -527,6 +631,12 @@ class PPOCollector(RolloutCollector):
             "episode_collision_rate": stats["collision"] / denominator,
             "reward_per_step": reward_sum / (steps * rows),
         }
+        if self.speed_on:
+            # The student's mode speed minus the label, per group (m/s), and the step shares.
+            counts = speed_group_counts(buffers["speed_group"])
+            for code_id, name in enumerate(SPEED_GROUPS):
+                metrics[f"speed_bias_{name}"] = bias[code_id] / counts[code_id].clamp_min(1)
+                metrics[f"speed_share_{name}"] = counts[code_id] / (steps * rows)
         return rollout, metrics
 
 
@@ -676,6 +786,8 @@ class PPORun:
                     self.policy, self.critic, self.actor_optimizer, self.critic_optimizer,
                     rollout, self.settings, actor_on=plan.actor_on, kick_lambda=plan.kick_lambda,
                     micro_batch=config["micro_batch"], generator=self.update_rng,
+                    speed_coef=config["occlusion_speed"]["coef"],
+                    speed_scale_m_s=config["occlusion_speed"]["scale_m_s"],
                 )  # fmt: skip
                 del rollout
                 self.update += 1

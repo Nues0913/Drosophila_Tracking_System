@@ -369,3 +369,107 @@ def test_the_warm_up_needs_one_actor_update_not_a_finished_ramp():
     assert schedule(39, config).actor_on and schedule(39, config).actor_lr > 0
     with pytest.raises(ValueError, match="no actor updates after the critic warm-up"):
         ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "4070", [steps(20)])
+
+
+# ---------------------------------------------------------------------------------------------
+# #138 A2 third version: the occlusion speed term
+
+
+def test_speed_groups_split_present_odor_by_the_teachers_slowdown():
+    cases = torch.tensor([0, 1, 1, 2, 3, 1], dtype=torch.uint8)
+    # mean odor / near (2.0): 0.25, 0.25, 0.05, -, -, exactly 0.1
+    odor = torch.tensor([[0.5, 0.5], [0.4, 0.6], [0.1, 0.1], [0.0, 0.0], [0.9, 0.9], [0.2, 0.2]])
+    groups = ppo.occlusion_speed_groups(cases, odor, near=2.0, strong_slowdown=0.1)
+    assert groups.tolist() == [0, 1, 2, 3, 0, 1]
+
+
+def test_speed_term_is_the_mean_over_groups_of_each_groups_mean_whatever_the_parts():
+    generator = torch.Generator().manual_seed(3)
+    speed = torch.rand(6, 10, generator=generator) * 0.4
+    label = torch.rand(6, 10, generator=generator) * 0.4
+    group = torch.randint(0, 3, (6, 10), generator=generator).to(torch.uint8)  # no group 3
+    counts = ppo.speed_group_counts(group)
+    assert counts[2] == 0
+    scale = 0.05
+    error = torch.nn.functional.huber_loss(
+        (speed - label) / scale, torch.zeros_like(speed), reduction="none"
+    )
+    expected = sum(error[group == g].mean() for g in (1, 2)) / 2
+    whole = ppo.occlusion_speed_term(speed, label, group, counts, scale)
+    split = sum(
+        ppo.occlusion_speed_term(speed[:, c], label[:, c], group[:, c], counts, scale)
+        for c in (slice(0, 3), slice(3, 10))
+    )
+    torch.testing.assert_close(whole, expected)
+    torch.testing.assert_close(split, expected)
+    empty = torch.zeros_like(group)
+    assert ppo.occlusion_speed_term(speed, label, empty, ppo.speed_group_counts(empty), scale) == 0
+
+
+def test_the_speed_term_pulls_the_mode_speed_to_the_teachers_label():
+    """Zero reward (no policy gradient beyond noise): only the speed term moves the speed, and
+    only on the grouped steps' label. v_max is 1 in the toy policy, so the speed starts at 0.5."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    policy, critic = _ToyPolicy(1), Critic(1, (16,))
+    actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+    value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+    generator = torch.Generator().manual_seed(4)
+    for _ in range(150):
+        rollout = _toy_rollout(policy, env, n, steps, generator)
+        rollout.speed_label = torch.full((steps, n), 0.3)
+        rollout.speed_group = torch.full((steps, n), 3, dtype=torch.uint8)
+        metrics = ppo_update(
+            policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+            micro_batch=n // 4, generator=generator, speed_coef=1.0,
+        )  # fmt: skip
+    speed = policy.forward_code(torch.ones(1, 1), torch.zeros(1, policy.hidden)).dist.mode()[0, 0]
+    assert float(speed) == pytest.approx(0.3, abs=0.02)
+    assert float(metrics["speed_loss"]) < 0.1
+
+
+def test_the_occlusion_speed_is_off_by_default():
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
+    assert config["occlusion_speed"]["coef"] == 0.0
+
+
+@pytest.mark.slow
+def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
+    from flytrack_v2.model import build_policy, export_policy
+
+    init = export_policy(
+        build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05}),
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    overrides = [
+        "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "total_env_steps=96",
+        "warmup.critic_only_updates=1", "warmup.actor_ramp_updates=1", "checkpoint_every=1",
+        "occlusion_speed.coef=1.0",
+    ]  # fmt: skip
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
+    run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / "ppo")
+    run.prepare(resume=False)
+    rollout, collected = run.collector.collect_ppo(3, kickstart=False)
+    assert rollout.speed_label.shape == rollout.speed_group.shape == (3, config["rows"])
+    assert torch.isfinite(rollout.speed_label).all()
+    assert {"speed_bias_lost", "speed_share_strong"} <= set(collected)
+    # Nothing is occluded in the first seconds: no step is grouped, and the teacher's
+    # occlusion flag (state column 4) is still 0.
+    assert int(rollout.speed_group.sum()) == 0
+    assert float(run.collector.teacher_state[:, 4].abs().sum()) == 0
+    args = ["--init", str(init), "--seed", "1", "--host", "2060", "--device", "cpu"]
+    out = tmp_path / "main"
+    args += ["--out", str(out), "--override", *overrides]
+    out.mkdir()
+    (out / "STOP").touch()
+    assert ppo.main(args) == 0
+    (out / "STOP").unlink()
+    assert ppo.main([*args, "--resume"]) == 0
+    rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
+    assert [row["update"] for row in rows] == [1, 2, 3, 4]
+    assert "speed_loss" not in rows[0] and "speed_loss" in rows[1]
+    assert all(math.isfinite(row["speed_bias_strong"]) for row in rows)

@@ -25,6 +25,12 @@
 - Occlusion turn (#138 A2 fourth version; off unless ``occlusion_turn.coef`` > 0): the same
   teacher's turn rate on the same steps and groups, a Huber loss in units of ``scale_rad_s``,
   added to the actor loss with its own coef.
+- Catch-up (#138 A2 fourth version; off unless ``occlusion_speed.catchup_min_distance_m`` is
+  set): a fourth speed group, the visible steps after an occlusion in the same episode while the
+  target is farther than that distance, labelled with the teacher's visible (pursuit) speed, so
+  that the occlusion groups cannot lower the speed everywhere at no cost (the third version's
+  speed fell to 0.198 m/s and it no longer caught up after the occlusion). The turn term leaves
+  it out.
 """
 
 from __future__ import annotations
@@ -244,7 +250,8 @@ class Rollout:
     speed_group: Tensor | None = None  # [T, N] uint8: 0 none, then SPEED_GROUPS in order
 
 
-SPEED_GROUPS = ("strong", "weak", "lost")  # codes 1, 2, 3 of Rollout.speed_group
+SPEED_GROUPS = ("strong", "weak", "lost", "catchup")  # codes 1-4 of Rollout.speed_group
+CATCHUP = 4
 
 
 def occlusion_speed_groups(
@@ -252,7 +259,8 @@ def occlusion_speed_groups(
 ) -> Tensor:
     """[B] uint8 speed groups from OcclusionTeacher.cases: odor present (case 1) splits by the
     teacher's slowdown, mean odor / near (clamped to 1), at ``strong_slowdown``; odor lost
-    (case 2) is group 3; visible steps and wall-rule steps (cases 0, 3) are 0."""
+    (case 2) is group 3; visible steps and wall-rule steps (cases 0, 3) are 0 (the collector
+    sets the catch-up group, 4, on visible steps itself)."""
     slowdown = (odor.clamp(min=0).mean(-1) / near).clamp(max=1)
     present = torch.where(slowdown >= strong_slowdown, 1, 2)
     group = torch.where(cases == 1, present, torch.where(cases == 2, 3, 0))
@@ -410,6 +418,12 @@ def ppo_update(
             terms: dict[str, Tensor] = {}
             if speed_on or turn_on:
                 counts = speed_group_counts(rollout.speed_group[:, rows])
+                # The turn term leaves the catch-up group out.
+                turn_counts = torch.where(
+                    torch.arange(len(SPEED_GROUPS), device=counts.device) == CATCHUP - 1,
+                    0.0,
+                    counts,
+                )
             for name, on in (("speed_loss", speed_on), ("turn_loss", turn_on)):
                 if on:
                     terms[name] = torch.zeros((), device=rollout.code.device)
@@ -453,11 +467,12 @@ def ppo_update(
                         exact = exact + speed_coef * term
                         terms["speed_loss"] = terms["speed_loss"] + term.detach()
                     if turn_on:
+                        group_part = rollout.speed_group[:, part]
                         term = occlusion_speed_term(
                             mode[..., 1],
                             rollout.turn_label[:, part],
-                            rollout.speed_group[:, part],
-                            counts,
+                            torch.where(group_part == CATCHUP, 0, group_part),
+                            turn_counts,
                             turn_scale_rad_s,
                         )
                         exact = exact + turn_coef * term
@@ -511,6 +526,9 @@ class PPOCollector(RolloutCollector):
         self.speed_on = speed["coef"] > 0 or self.turn_on
         self.speed_strong_slowdown = speed["strong_slowdown"]
         self.speed_limit_acceleration = speed["limit_acceleration"]
+        self.catchup_min_distance_m = speed["catchup_min_distance_m"]
+        # Whether each environment's episode has been occluded so far (the catch-up group).
+        self.seen_occlusion = torch.zeros(self.rows, dtype=torch.bool, device=device)
         # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
         # (the base collector's teacher_state starts from it and is checkpointed with it).
         self.speed_teacher_initial = self.teacher.initial_state(self.rows, device)
@@ -525,12 +543,15 @@ class PPOCollector(RolloutCollector):
         saved = super().checkpoint()
         saved["teacher_central"] = self.teacher_central.cpu()
         saved["sample_rng"] = self.sample_rng.get_state()
+        saved["seen_occlusion"] = self.seen_occlusion.cpu()
         return saved
 
     def restore(self, saved: dict) -> None:
         super().restore(saved)
         self.teacher_central = saved["teacher_central"].to(self.device)
         self.sample_rng.set_state(saved["sample_rng"])
+        if "seen_occlusion" in saved:
+            self.seen_occlusion = saved["seen_occlusion"].to(self.device)
 
     @torch.no_grad()
     def collect_ppo(self, steps: int, *, kickstart: bool) -> tuple[Rollout, dict[str, Tensor]]:
@@ -586,6 +607,13 @@ class PPOCollector(RolloutCollector):
                     self.teacher.near,
                     self.speed_strong_slowdown,
                 )
+                occluded = privileged["occluded"].to(torch.bool)
+                if self.catchup_min_distance_m is not None:
+                    offset = privileged["target_pose"][:, :2] - privileged["agent_pose"][:, :2]
+                    far = offset.norm(dim=-1) > self.catchup_min_distance_m
+                    catchup = ~occluded & self.seen_occlusion & far
+                    group = torch.where(catchup, CATCHUP, group).to(torch.uint8)
+                self.seen_occlusion |= occluded
                 buffers["speed_label"][t] = label[:, 0]
                 buffers["speed_group"][t] = group
                 mode = step.dist.mode()
@@ -651,6 +679,7 @@ class PPOCollector(RolloutCollector):
                 self.teacher_state = reset_rows(
                     self.teacher_state, self.speed_teacher_initial, reset
                 )
+                self.seen_occlusion &= ~reset
         rollout = Rollout(
             **buffers,
             last_features=self._features(self._privileged()),

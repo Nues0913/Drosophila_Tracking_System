@@ -7,9 +7,11 @@ The wind world's occlusion scenario, both motions, the first N pilot_held_out ep
 training seed 100; each artifact acts with its mode, the occlusion teacher labels the same
 states (never acting). Per phase (before, during, after the occlusion; collided episodes stop
 at the hit): the student's mean speed, the teacher label's, and the mean distance to the
-target; after the occlusion also split by distance (<= 1 m, 1-2 m, > 2 m).
+target; after the occlusion also split by distance (<= 1 m, 1-2 m, > 2 m), and > 2 m with the
+target within 45 degrees ahead (the teacher evades only inside 1.5 m, so these steps never evade).
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -48,6 +50,14 @@ def trace(policy, motion: str, n: int, seeds: list[int], protocol: dict) -> dict
         seen |= occluded
         offset = privileged["target_pose"][:, :2] - privileged["agent_pose"][:, :2]
         distance = offset.norm(dim=-1)
+        heading = privileged["agent_pose"][:, 2]
+        bearing = (
+            torch.remainder(
+                torch.atan2(offset[:, 1], offset[:, 0]) - heading + math.pi, 2 * math.pi
+            )
+            - math.pi
+        )
+        ahead = bearing.abs() <= math.pi / 4
         live = ~done
         after = live & ~occluded & seen
         masks = {
@@ -57,6 +67,7 @@ def trace(policy, motion: str, n: int, seeds: list[int], protocol: dict) -> dict
             "after d<=1": after & (distance <= 1),
             "after 1<d<=2": after & (distance > 1) & (distance <= 2),
             "after d>2": after & (distance > 2),
+            "after d>2 ahead": after & (distance > 2) & ahead,
         }
         for key, mask in masks.items():
             if mask.any():
@@ -85,7 +96,7 @@ def main() -> None:
                 policy, motion, n, seeds, protocol
             ).items():
                 print(
-                    f"   {key:13s}: steps {int(steps):6d}  student {student / steps:.3f}  "
+                    f"   {key:15s}: steps {int(steps):6d}  student {student / steps:.3f}  "
                     f"teacher {teacher / steps:.3f} m/s  distance {distance / steps:.2f} m"
                 )
 

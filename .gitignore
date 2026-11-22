@@ -46,6 +46,7 @@ artifacts/*
 !artifacts/frontend/
 !artifacts/frontend_v2/
 !artifacts/input_norm_v2/
+!artifacts/input_norm_v2_dual/
 !artifacts/data_execution/
 artifacts/data_execution/*
 !artifacts/data_execution/*.json

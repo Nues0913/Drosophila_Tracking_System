@@ -1,0 +1,12 @@
+{
+  "artifact": "artifacts/input_norm_v2_dual/input_norm.npz",
+  "sha256": "1ab50dd21af773701766fded420e288aecf2975d22d5e633ab20e4e61287552d",
+  "purpose": "#138 A3 seventh version: two ORN channels on K0 0.3 (odor_K [0.3, 0.3], odor_adaptation_fractions [1.0, 0.5])",
+  "code_layout": {"features_per_eye": 144, "odor_channels": 2},
+  "built_from": {
+    "visual, wind, ORN channel 0 (complete adaptation)": "artifacts/input_norm_v2/input_norm.npz (sha256 5d393b5c8a28...), unchanged",
+    "ORN channel 1 (partial adaptation 0.5)": "the ORN columns of a refit at odor_adaptation_fraction 0.5 (sha256 002cc4bd9956..., 2dcc499, v1compat and wind, hide_target, OcclusionTeacher with walls, 200 episodes, 239,560 samples)"
+  },
+  "column_order": "288 visual, ORN L0, L1, R0, R1, wind L, wind R",
+  "note": "The refit's visual columns differ from the default file's by at most 6e-5 (mean) and 3e-4 (std); the default file's are kept."
+}

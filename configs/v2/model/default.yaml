@@ -23,6 +23,7 @@ odor_K: [0.3]
 odor_hill_n: 2.0
 odor_adaptation_tau_s: 2.0
 odor_adaptation_fraction: 1.0
+odor_adaptation_fractions: []
 odor_shared_adaptation: true
 norm_std_floor: 0.001
 init_seed: 0

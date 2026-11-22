@@ -250,6 +250,33 @@ def test_bundled_fitted_input_norm_calibrates_resting_speed():
     assert maximum_drift <= 0.01
 
 
+DUAL_NORM = "artifacts/input_norm_v2_dual/input_norm.npz"
+
+
+def test_input_norm_setting_selects_the_dual_orn_normalization():
+    """#138 A3 seventh version: input_norm picks the fitted normalization; two ORN channels
+    need the dual file (its code layout has odor_channels 2), the default rejects them."""
+    settings = load_config(CONFIG_DIR / "dagger.yaml", "4060", [f"input_norm={DUAL_NORM}"])
+    assert settings["input_norm"] == DUAL_NORM
+    assert load_config(CONFIG_DIR / "dagger.yaml", "4060")["input_norm"] == dagger._INPUT_NORM
+    dual = {"odor_K": [0.3, 0.3], "odor_adaptation_fractions": [1.0, 0.5]}
+    policy = build_training_policy(
+        "VO2", 0, activation_checkpoint=False, model_overrides=dual, input_norm=DUAL_NORM
+    )
+    assert policy.encoder.layout.odor_channels == 2 and policy.input_norm.fitted
+    one = build_training_policy("VO2", 0, activation_checkpoint=False)
+    # The visual and wind columns keep the default file's statistics; ORN channel 0 (complete
+    # adaptation) keeps its ORN columns.
+    width = 2 * one.encoder.layout.features_per_eye
+    for name in ("mean", "std"):
+        a, b = getattr(one.input_norm, name), getattr(policy.input_norm, name)
+        torch.testing.assert_close(b[:width], a[:width], atol=0, rtol=0)
+        torch.testing.assert_close(b[width:width + 4:2], a[width:width + 2], atol=0, rtol=0)
+        torch.testing.assert_close(b[-2:], a[-2:], atol=0, rtol=0)
+    with pytest.raises(ValueError, match="input_norm layout"):
+        build_training_policy("VO2", 0, activation_checkpoint=False, model_overrides=dual)
+
+
 @pytest.mark.parametrize("key", ["init_seed", "structure_seed", "activation_checkpoint", "unknown"])
 def test_model_override_rejects_invalid_keys(tmp_path, key):
     message = "Unknown model config key" if key == "unknown" else f"model.{key} is controlled"
@@ -451,7 +478,7 @@ def test_stop_mid_round_resume_matches_uninterrupted_run_and_loads_export(tmp_pa
 
 
 def test_readout_fit_checkpoint_resume_and_diagnostics(tmp_path, monkeypatch):
-    def tiny_policy(variant, seed, *, activation_checkpoint, model_overrides):
+    def tiny_policy(variant, seed, *, activation_checkpoint, model_overrides, input_norm=None):
         config = ModelConfigV2(
             init_seed=seed,
             rest_settle_s=0.5,

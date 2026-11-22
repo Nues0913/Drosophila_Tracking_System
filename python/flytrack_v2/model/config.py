@@ -38,6 +38,10 @@ class ModelConfigV2:
     # complete adaptation (every held level reads 0.5); below 1, K follows the geometric mean
     # of the level and the baseline, so a held level keeps a code that rises with it.
     odor_adaptation_fraction: float = 1.0
+    # #138 A3 seventh version: one fraction per odor_K channel (empty: odor_adaptation_fraction
+    # for every channel). The projection sends ORN type slot i to channel i % len(odor_K), so
+    # with two channels the A graph's ORN_DM1 reads channel 0 and ORN_VA2 channel 1.
+    odor_adaptation_fractions: tuple[float, ...] = ()
     odor_shared_adaptation: bool = True
     norm_std_floor: float = 1e-3
     init_seed: int = 0
@@ -60,7 +64,9 @@ class ModelConfigV2:
         for key in ("activation_checkpoint", "odor_shared_adaptation"):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        for key in ("tau_init_range_s", "odor_K", "steer_types", "speed_types"):
+        for key in (
+            "tau_init_range_s", "odor_K", "odor_adaptation_fractions", "steer_types", "speed_types"
+        ):
             value = getattr(self, key)
             if value is None and key in ("steer_types", "speed_types"):
                 continue
@@ -114,6 +120,15 @@ class ModelConfigV2:
             or not 0 < self.odor_adaptation_fraction <= 1
         ):
             raise ValueError("odor_adaptation_fraction must lie in (0, 1]")
+        if self.odor_adaptation_fractions and (
+            len(self.odor_adaptation_fractions) != len(self.odor_K)
+            or any(
+                not _is_finite_number(f) or not 0 < f <= 1 for f in self.odor_adaptation_fractions
+            )
+        ):
+            raise ValueError(
+                "odor_adaptation_fractions must be empty or one value in (0, 1] per odor_K"
+            )
         if not self.odor_K or any(not _is_finite_number(k) or k <= 0 for k in self.odor_K):
             raise ValueError("odor_K must contain positive, finite baselines")
         if self.gain_parameterization not in ("softplus", "bounded"):

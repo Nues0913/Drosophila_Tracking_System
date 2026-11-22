@@ -135,6 +135,7 @@ def load_policy(
     missing = {field.name for field in fields(ModelConfigV2)} - config_values.keys()
     missing.discard("visual_offset_init")  # Older cards predate the optional parameter.
     missing.discard("odor_adaptation_fraction")  # Older cards: complete adaptation (1.0).
+    missing.discard("odor_adaptation_fractions")  # Older cards: one fraction for all.
     if missing:
         raise ValueError(f"Model card model_config is missing {sorted(missing)}")
     config = ModelConfigV2.from_dict(config_values)

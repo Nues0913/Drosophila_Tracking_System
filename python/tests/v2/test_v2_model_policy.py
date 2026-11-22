@@ -894,6 +894,49 @@ def test_partial_odor_adaptation_keeps_a_held_level():
             ModelConfigV2(odor_adaptation_fraction=bad)
 
 
+def test_per_channel_odor_adaptation():
+    """#138 A3 seventh version: two ORN channels on the same K0, one adapting completely and
+    one partially; each channel matches the one-channel model with its fraction."""
+    graph = small_graph()
+    frontend = NodeMajorFlyvis(ROOT / CONFIG.frontend_path, CONTRACT, CONFIG.visual_bins)
+    single = {
+        f: build_policy(
+            "VO2", replace(CONFIG, odor_adaptation_fraction=f), graph=graph, frontend=frontend
+        )
+        for f in (1.0, 0.5)
+    }
+    dual = build_policy(
+        "VO2",
+        replace(CONFIG, odor_K=(0.3, 0.3), odor_adaptation_fractions=(1.0, 0.5)),
+        graph=graph,
+        frontend=frontend,
+    )
+    assert dual.code_size == single[1.0].code_size + 2
+
+    def run(policy, columns, steps=600):
+        state = policy.initial_sensory_state(1, "cpu")
+        obs = _observations(1)
+        obs["valid"][:] = 1.0
+        codes = []
+        for step in range(steps):
+            obs["odor"][:] = torch.tensor([[0.9, 0.6]]) if step < 400 else 0.05
+            code, state = policy.sense(obs, state)
+            codes.append(code[0, columns])
+        return torch.stack(codes), state
+
+    # One channel: ORN L, R at [-8:-6]. Two: L0, L1, R0, R1 at [-10:-6].
+    codes, state = run(dual, slice(-10, -6))
+    for channel, f in enumerate((1.0, 0.5)):
+        expected, expected_state = run(single[f], slice(-8, -6))
+        torch.testing.assert_close(codes[:, [channel, 2 + channel]], expected, atol=1e-6, rtol=0)
+        torch.testing.assert_close(
+            state.odor_K[..., channel], expected_state.odor_K[..., 0], atol=1e-7, rtol=0
+        )
+    for bad in ((1.0,), (1.0, 0.0), (1.0, 1.5), (1.0, float("nan"))):
+        with pytest.raises(ValueError, match="odor_adaptation_fractions"):
+            ModelConfigV2(odor_K=(0.3, 0.3), odor_adaptation_fractions=bad)
+
+
 def test_model_config_matches_yaml_and_rejects_unknown_keys():
     with DEFAULT_CONFIG_PATH.open() as source:
         defaults = yaml.safe_load(source)

@@ -31,6 +31,11 @@
   that the occlusion groups cannot lower the speed everywhere at no cost (the third version's
   speed fell to 0.198 m/s and it no longer caught up after the occlusion). The turn term leaves
   it out.
+- Readout (#138 A2 fifth version): with ``occlusion_speed.trains_readout`` false, the speed
+  term's gradient does not reach the speed readout's weights (PPO still trains them): it moves
+  the graph's learnable parameters and the speed bias only. The third and fourth versions shrank
+  those weights (Stage 1 [+0.035, -0.057], the second version's PPO [-0.061, -0.109], the third
+  [-0.026, -0.020]), so the speed hardly depended on the DNs any more.
 """
 
 from __future__ import annotations
@@ -342,8 +347,10 @@ def gaussian_kl(mean_p: Tensor, log_std_p: Tensor, mean_q: Tensor, log_std_q: Te
     )
 
 
-def _actor_replay(policy, rollout: Rollout, rows: Tensor):
-    """Replay the rollout's steps for ``rows`` from the stored state, with gradients."""
+def _actor_replay(policy, rollout: Rollout, rows: Tensor, *, speed_readout: bool = True):
+    """Replay the rollout's steps for ``rows`` from the stored state, with gradients. The mode's
+    speed column (the occlusion speed term's) carries no gradient to the speed readout weights
+    when ``speed_readout`` is false (graph policies; its value is the same)."""
     graph = isinstance(policy, ConnectomePolicyV2)
     state = rollout.central[rows]
     initial = rollout.initial
@@ -358,7 +365,14 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
         logp.append(step.dist.log_prob(rollout.latent[t, rows]))
         entropy.append(step.dist.entropy())
         means.append(step.dist.mean)
-        mode.append(step.dist.mode())
+        step_mode = step.dist.mode()
+        if graph and not speed_readout:
+            readout = policy.readout
+            rates = readout.normalize_rates(step.aux["dn_rates"]) @ readout.speed_means
+            latent = rates @ readout.speed_weight.detach() + readout.speed_bias
+            speed = step.dist.v_max * torch.sigmoid(latent)
+            step_mode = torch.stack((speed, step_mode[..., 1]), -1)
+        mode.append(step_mode)
         ended = rollout.terminated[t, rows] | rollout.truncated[t, rows]
         state = reset_rows(step.central_state, initial, ended)
     stacked = (logp, entropy, means, activity, mode)
@@ -392,6 +406,7 @@ def ppo_update(
     speed_scale_m_s: float = 0.05,
     turn_coef: float = 0.0,
     turn_scale_rad_s: float = 0.5,
+    speed_trains_readout: bool = True,
 ) -> dict[str, Tensor]:
     """Epochs of minibatch updates over environments; returns the means of the last epoch.
     ``speed_coef`` > 0 adds the occlusion speed term while the actor trains, ``turn_coef`` > 0
@@ -435,7 +450,9 @@ def ppo_update(
                 # Terms already summed to the minibatch's value over its parts (not weighted).
                 exact = loss.new_zeros(())
                 if actor_on:
-                    logp, entropy, means, activity, mode = _actor_replay(policy, rollout, part)
+                    logp, entropy, means, activity, mode = _actor_replay(
+                        policy, rollout, part, speed_readout=speed_trains_readout
+                    )
                     log_ratio = logp - rollout.logp[:, part]
                     ratio = log_ratio.exp()
                     adv = normalized[:, part]
@@ -860,6 +877,7 @@ class PPORun:
                     speed_scale_m_s=config["occlusion_speed"]["scale_m_s"],
                     turn_coef=config["occlusion_turn"]["coef"],
                     turn_scale_rad_s=config["occlusion_turn"]["scale_rad_s"],
+                    speed_trains_readout=config["occlusion_speed"]["trains_readout"],
                 )  # fmt: skip
                 del rollout
                 self.update += 1

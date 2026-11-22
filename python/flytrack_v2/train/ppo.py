@@ -255,8 +255,9 @@ class Rollout:
     speed_group: Tensor | None = None  # [T, N] uint8: 0 none, then SPEED_GROUPS in order
 
 
-SPEED_GROUPS = ("strong", "weak", "lost", "catchup")  # codes 1-4 of Rollout.speed_group
+SPEED_GROUPS = ("strong", "weak", "lost", "catchup", "near")  # codes 1-5 of Rollout.speed_group
 CATCHUP = 4
+NEAR = 5  # #138: visible and within occlusion_speed.visible_near_m (off unless it is set)
 TURN_GROUPS = ("strong", "weak", "lost")  # the turn term's default: the catch-up group stays out
 
 
@@ -281,6 +282,14 @@ def occlusion_speed_groups(
     present = torch.where(slowdown >= strong_slowdown, 1, 2)
     group = torch.where(cases == 1, present, torch.where(cases == 2, 3, 0))
     return group.to(torch.uint8)
+
+
+def add_near_group(group: Tensor, occluded: Tensor, distance: Tensor, near_m: float) -> Tensor:
+    """#138: steps with the target visible, closer than ``near_m`` and in no other group get
+    the near code; their labels are the privileged teacher's (OcclusionTeacher.act off
+    occlusion), which keeps its following distance and dodges a target coming head-on."""
+    near = ~occluded & (distance < near_m) & (group == 0)
+    return torch.where(near, NEAR, group).to(torch.uint8)
 
 
 def speed_group_counts(group: Tensor) -> Tensor:
@@ -557,6 +566,11 @@ class PPOCollector(RolloutCollector):
         self.speed_strong_slowdown = speed["strong_slowdown"]
         self.speed_limit_acceleration = speed["limit_acceleration"]
         self.catchup_min_distance_m = speed["catchup_min_distance_m"]
+        self.visible_near_m = speed["visible_near_m"]
+        if self.visible_near_m is not None and not (
+            isinstance(self.visible_near_m, (int, float)) and self.visible_near_m > 0
+        ):
+            raise ValueError("occlusion_speed.visible_near_m must be null or a positive distance")
         # Whether each environment's episode has been occluded so far (the catch-up group).
         self.seen_occlusion = torch.zeros(self.rows, dtype=torch.bool, device=device)
         # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
@@ -643,6 +657,11 @@ class PPOCollector(RolloutCollector):
                     far = offset.norm(dim=-1) > self.catchup_min_distance_m
                     catchup = ~occluded & self.seen_occlusion & far
                     group = torch.where(catchup, CATCHUP, group).to(torch.uint8)
+                if self.visible_near_m is not None:
+                    offset = privileged["target_pose"][:, :2] - privileged["agent_pose"][:, :2]
+                    group = add_near_group(
+                        group, occluded, offset.norm(dim=-1), self.visible_near_m
+                    )
                 self.seen_occlusion |= occluded
                 buffers["speed_label"][t] = label[:, 0]
                 buffers["speed_group"][t] = group

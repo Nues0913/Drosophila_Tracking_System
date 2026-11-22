@@ -27,4 +27,6 @@ kickstart: {initial_lambda: 1.0, anneal_fraction: 0.3}
 # #138 A2 third version: a Huber loss on the occlusion teacher's m/s on occluded steps (ppo.py);
 # coef 0 leaves it off and runs no teacher
 occlusion_speed: {coef: 0.0, scale_m_s: 0.05, strong_slowdown: 0.1, limit_acceleration: false}
+# #138 A2 fourth version: the same teacher's turn rate on the same steps and groups
+occlusion_turn: {coef: 0.0, scale_rad_s: 0.5}
 checkpoint_every: 25

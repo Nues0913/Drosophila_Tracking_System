@@ -22,6 +22,9 @@
   left out) of a Huber loss on the student's mode speed minus that label, in units of
   ``scale_m_s``. Unlike kickstarting it stays on to the end. The teacher only labels: the
   student acts, and the evaluation never runs it.
+- Occlusion turn (#138 A2 fourth version; off unless ``occlusion_turn.coef`` > 0): the same
+  teacher's turn rate on the same steps and groups, a Huber loss in units of ``scale_rad_s``,
+  added to the actor loss with its own coef.
 """
 
 from __future__ import annotations
@@ -237,6 +240,7 @@ class Rollout:
     teacher_mean: Tensor | None = None  # [T, N, 2] when kickstarting
     teacher_log_std: Tensor | None = None  # [2]
     speed_label: Tensor | None = None  # [T, N] m/s, the occlusion teacher's speed
+    turn_label: Tensor | None = None  # [T, N] rad/s, its turn rate
     speed_group: Tensor | None = None  # [T, N] uint8: 0 none, then SPEED_GROUPS in order
 
 
@@ -265,7 +269,8 @@ def speed_group_counts(group: Tensor) -> Tensor:
 def occlusion_speed_term(
     speed: Tensor, label: Tensor, group: Tensor, counts: Tensor, scale_m_s: float
 ) -> Tensor:
-    """Sum over these steps of Huber((speed - label) / scale_m_s) / counts[group], divided by
+    """Sum over these steps of Huber((speed - label) / scale_m_s) / counts[group] (the turn
+    term uses it too, on the turn rate in rad/s), divided by
     the number of groups with steps, so that summed over a minibatch's parts it is the mean
     over groups of each group's mean (``counts`` from speed_group_counts of the minibatch)."""
     error = torch.nn.functional.huber_loss(
@@ -334,7 +339,7 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
     graph = isinstance(policy, ConnectomePolicyV2)
     state = rollout.central[rows]
     initial = rollout.initial
-    logp, entropy, means, activity, speed = [], [], [], [], []
+    logp, entropy, means, activity, mode = [], [], [], [], []
     for t in range(len(rollout.code)):
         if graph:
             step = policy.forward_code(rollout.code[t, rows], state, non_readout_activity=True)
@@ -345,10 +350,10 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
         logp.append(step.dist.log_prob(rollout.latent[t, rows]))
         entropy.append(step.dist.entropy())
         means.append(step.dist.mean)
-        speed.append(step.dist.mode()[..., 0])
+        mode.append(step.dist.mode())
         ended = rollout.terminated[t, rows] | rollout.truncated[t, rows]
         state = reset_rows(step.central_state, initial, ended)
-    stacked = (logp, entropy, means, activity, speed)
+    stacked = (logp, entropy, means, activity, mode)
     return tuple(torch.stack(values) for values in stacked)
 
 
@@ -377,9 +382,12 @@ def ppo_update(
     generator: torch.Generator,
     speed_coef: float = 0.0,
     speed_scale_m_s: float = 0.05,
+    turn_coef: float = 0.0,
+    turn_scale_rad_s: float = 0.5,
 ) -> dict[str, Tensor]:
     """Epochs of minibatch updates over environments; returns the means of the last epoch.
-    ``speed_coef`` > 0 adds the occlusion speed term while the actor trains (module doc)."""
+    ``speed_coef`` > 0 adds the occlusion speed term while the actor trains, ``turn_coef`` > 0
+    the turn term (module doc)."""
     advantages, returns, values = advantages_and_returns(
         critic, rollout, settings.gamma, settings.gae_lambda
     )
@@ -390,6 +398,7 @@ def ppo_update(
     minibatch = n // settings.minibatches
     kick = kick_lambda > 0 and rollout.teacher_mean is not None
     speed_on = actor_on and speed_coef > 0 and rollout.speed_group is not None
+    turn_on = actor_on and turn_coef > 0 and rollout.turn_label is not None
     metrics: dict[str, Tensor] = {}
     for _epoch in range(settings.epochs):
         order = torch.randperm(n, generator=generator, device="cpu").to(rollout.code.device)
@@ -399,9 +408,11 @@ def ppo_update(
             actor_optimizer.zero_grad(set_to_none=True)
             critic_optimizer.zero_grad(set_to_none=True)
             terms: dict[str, Tensor] = {}
-            if speed_on:
+            if speed_on or turn_on:
                 counts = speed_group_counts(rollout.speed_group[:, rows])
-                terms["speed_loss"] = torch.zeros((), device=rollout.code.device)
+            for name, on in (("speed_loss", speed_on), ("turn_loss", turn_on)):
+                if on:
+                    terms[name] = torch.zeros((), device=rollout.code.device)
             for part in rows.split(micro_batch):
                 weight = len(part) / len(rows)
                 value_loss = 0.5 * (critic(rollout.features[:, part]) - target[:, part]).square()
@@ -410,7 +421,7 @@ def ppo_update(
                 # Terms already summed to the minibatch's value over its parts (not weighted).
                 exact = loss.new_zeros(())
                 if actor_on:
-                    logp, entropy, means, activity, speed = _actor_replay(policy, rollout, part)
+                    logp, entropy, means, activity, mode = _actor_replay(policy, rollout, part)
                     log_ratio = logp - rollout.logp[:, part]
                     ratio = log_ratio.exp()
                     adv = normalized[:, part]
@@ -433,7 +444,7 @@ def ppo_update(
                         parts["kl_teacher"] = kl.detach()
                     if speed_on:
                         term = occlusion_speed_term(
-                            speed,
+                            mode[..., 0],
                             rollout.speed_label[:, part],
                             rollout.speed_group[:, part],
                             counts,
@@ -441,6 +452,16 @@ def ppo_update(
                         )
                         exact = exact + speed_coef * term
                         terms["speed_loss"] = terms["speed_loss"] + term.detach()
+                    if turn_on:
+                        term = occlusion_speed_term(
+                            mode[..., 1],
+                            rollout.turn_label[:, part],
+                            rollout.speed_group[:, part],
+                            counts,
+                            turn_scale_rad_s,
+                        )
+                        exact = exact + turn_coef * term
+                        terms["turn_loss"] = terms["turn_loss"] + term.detach()
                     with torch.no_grad():
                         parts.update(
                             policy_loss=policy_loss.detach(),
@@ -485,7 +506,9 @@ class PPOCollector(RolloutCollector):
         self.episode_seconds = config["episode_seconds"]
         self.v_max = policy.contract.v_max
         speed = config["occlusion_speed"]
-        self.speed_on = speed["coef"] > 0
+        self.turn_on = config["occlusion_turn"]["coef"] > 0
+        # The teacher labels both actions whenever either term is on.
+        self.speed_on = speed["coef"] > 0 or self.turn_on
         self.speed_strong_slowdown = speed["strong_slowdown"]
         self.speed_limit_acceleration = speed["limit_acceleration"]
         # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
@@ -530,6 +553,10 @@ class PPOCollector(RolloutCollector):
             buffers["speed_label"] = torch.empty(steps, rows, device=device)
             buffers["speed_group"] = torch.empty(steps, rows, dtype=torch.uint8, device=device)
             bias = torch.zeros(len(SPEED_GROUPS), device=device)
+            if self.turn_on:
+                buffers["turn_label"] = torch.empty(steps, rows, device=device)
+                turn_gap = torch.zeros(len(SPEED_GROUPS), device=device)
+                turn_agree = torch.zeros(len(SPEED_GROUPS), device=device)
         ended = torch.zeros((), device=device)
         stats = {name: torch.zeros((), device=device) for name in ("success", "collision")}
         reward_sum = torch.zeros((), device=device)
@@ -561,9 +588,17 @@ class PPOCollector(RolloutCollector):
                 )
                 buffers["speed_label"][t] = label[:, 0]
                 buffers["speed_group"][t] = group
-                gap = step.dist.mode()[:, 0] - label[:, 0]
+                mode = step.dist.mode()
+                gap = mode[:, 0] - label[:, 0]
                 for code_id in range(1, len(SPEED_GROUPS) + 1):
                     bias[code_id - 1] += torch.where(group == code_id, gap, 0.0).sum()
+                if self.turn_on:
+                    buffers["turn_label"][t] = label[:, 1]
+                    off = (mode[:, 1] - label[:, 1]).abs()
+                    same = (torch.sign(mode[:, 1]) == torch.sign(label[:, 1])).to(off.dtype)
+                    for code_id in range(1, len(SPEED_GROUPS) + 1):
+                        turn_gap[code_id - 1] += torch.where(group == code_id, off, 0.0).sum()
+                        turn_agree[code_id - 1] += torch.where(group == code_id, same, 0.0).sum()
             if kickstart:
                 taught = self.teacher_policy.forward_code(code, self.teacher_central)
                 teacher_mean[t] = taught.dist.mean
@@ -637,6 +672,12 @@ class PPOCollector(RolloutCollector):
             for code_id, name in enumerate(SPEED_GROUPS):
                 metrics[f"speed_bias_{name}"] = bias[code_id] / counts[code_id].clamp_min(1)
                 metrics[f"speed_share_{name}"] = counts[code_id] / (steps * rows)
+                if self.turn_on:
+                    # Mean |turn - label| (rad/s) and the share with the label's sign.
+                    metrics[f"turn_gap_{name}"] = turn_gap[code_id] / counts[code_id].clamp_min(1)
+                    metrics[f"turn_agree_{name}"] = turn_agree[code_id] / counts[code_id].clamp_min(
+                        1
+                    )
         return rollout, metrics
 
 
@@ -788,6 +829,8 @@ class PPORun:
                     micro_batch=config["micro_batch"], generator=self.update_rng,
                     speed_coef=config["occlusion_speed"]["coef"],
                     speed_scale_m_s=config["occlusion_speed"]["scale_m_s"],
+                    turn_coef=config["occlusion_turn"]["coef"],
+                    turn_scale_rad_s=config["occlusion_turn"]["scale_rad_s"],
                 )  # fmt: skip
                 del rollout
                 self.update += 1

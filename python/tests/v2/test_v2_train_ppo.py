@@ -433,7 +433,7 @@ def test_the_speed_term_pulls_the_mode_speed_to_the_teachers_label():
 
 def test_the_occlusion_speed_is_off_by_default():
     config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
-    assert config["occlusion_speed"]["coef"] == 0.0
+    assert config["occlusion_speed"]["coef"] == config["occlusion_turn"]["coef"] == 0.0
 
 
 @pytest.mark.slow
@@ -448,7 +448,7 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
     overrides = [
         "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "total_env_steps=96",
         "warmup.critic_only_updates=1", "warmup.actor_ramp_updates=1", "checkpoint_every=1",
-        "occlusion_speed.coef=1.0",
+        "occlusion_speed.coef=1.0", "occlusion_turn.coef=1.0",
     ]  # fmt: skip
     config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
     run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / "ppo")
@@ -456,7 +456,8 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
     rollout, collected = run.collector.collect_ppo(3, kickstart=False)
     assert rollout.speed_label.shape == rollout.speed_group.shape == (3, config["rows"])
     assert torch.isfinite(rollout.speed_label).all()
-    assert {"speed_bias_lost", "speed_share_strong"} <= set(collected)
+    assert {"speed_bias_lost", "speed_share_strong", "turn_gap_weak"} <= set(collected)
+    assert rollout.turn_label.shape == rollout.speed_label.shape
     # Nothing is occluded in the first seconds: no step is grouped, and the teacher's
     # occlusion flag (state column 4) is still 0.
     assert int(rollout.speed_group.sum()) == 0
@@ -471,5 +472,33 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
     assert ppo.main([*args, "--resume"]) == 0
     rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
     assert [row["update"] for row in rows] == [1, 2, 3, 4]
-    assert "speed_loss" not in rows[0] and "speed_loss" in rows[1]
+    assert "speed_loss" not in rows[0] and "speed_loss" in rows[1] and "turn_loss" in rows[1]
     assert all(math.isfinite(row["speed_bias_strong"]) for row in rows)
+
+
+def test_the_turn_term_pulls_the_mode_turn_to_the_teachers_label():
+    """#138 A2 fourth version: the turn term alone moves the turn rate (omega_max 1 in the toy
+    policy, so it starts at 0) to the grouped steps' label, and leaves the speed alone."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    policy, critic = _ToyPolicy(1), Critic(1, (16,))
+    actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+    value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+    generator = torch.Generator().manual_seed(5)
+    for _ in range(150):
+        rollout = _toy_rollout(policy, env, n, steps, generator)
+        rollout.speed_label = torch.full((steps, n), 0.3)
+        rollout.turn_label = torch.full((steps, n), -0.4)
+        rollout.speed_group = torch.full((steps, n), 1, dtype=torch.uint8)
+        metrics = ppo_update(
+            policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+            micro_batch=n // 4, generator=generator, turn_coef=1.0,
+        )  # fmt: skip
+    with torch.no_grad():
+        mode = policy.forward_code(torch.ones(1, 1), torch.zeros(1, policy.hidden)).dist.mode()[0]
+    assert float(mode[1]) == pytest.approx(-0.4, abs=0.03)
+    assert float(mode[0]) == pytest.approx(0.5, abs=0.1)  # no speed term: only PPO noise
+    assert "turn_loss" in metrics and "speed_loss" not in metrics

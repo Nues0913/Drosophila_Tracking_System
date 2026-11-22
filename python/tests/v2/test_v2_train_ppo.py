@@ -660,12 +660,34 @@ def test_the_speed_term_can_leave_the_speed_readout_weights_alone():
 
 def test_group_table_keeps_only_the_named_groups():
     """#138 A2 eighth version: the defaults keep every earlier version's groups."""
-    assert ppo.group_table(ppo.SPEED_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 4]
-    assert ppo.group_table(ppo.TURN_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 0]
-    assert ppo.group_table(("strong", "weak"), "cpu").tolist() == [0, 1, 2, 0, 0]
-    for bad in ((), ("near",), ("weak", "weak")):
+    assert ppo.group_table(ppo.SPEED_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 4, 5]
+    assert ppo.group_table(ppo.TURN_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 0, 0]
+    assert ppo.group_table(("strong", "weak"), "cpu").tolist() == [0, 1, 2, 0, 0, 0]
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
+    assert config["occlusion_speed"]["groups"] == ["strong", "weak", "lost", "catchup"]
+    assert config["occlusion_speed"]["visible_near_m"] is None
+    for bad in ((), ("far",), ("weak", "weak")):
         with pytest.raises(ValueError, match="groups"):
             ppo.group_table(bad, "cpu")
+
+
+def test_near_group_takes_close_visible_steps_in_no_other_group():
+    """#138: visible, closer than near_m and ungrouped -> near; occluded or grouped steps keep
+    their code; a null visible_near_m (the default) never assigns it."""
+    group = torch.tensor([0, 0, 0, 3, 4, 0], dtype=torch.uint8)
+    occluded = torch.tensor([False, False, True, True, False, False])
+    distance = torch.tensor([0.5, 1.5, 0.5, 0.5, 0.5, 0.99])
+    out = ppo.add_near_group(group, occluded, distance, 1.0)
+    assert out.tolist() == [ppo.NEAR, 0, 0, 3, 4, ppo.NEAR] and out.dtype == torch.uint8
+    assert ppo.SPEED_GROUPS[ppo.NEAR - 1] == "near"
+    counts = ppo.speed_group_counts(out)
+    assert counts.tolist() == [0, 0, 1, 1, 2]
+    # A group with no steps changes nothing: the term is the same with and without it.
+    label = torch.zeros(6)
+    speed = torch.linspace(0, 0.5, 6)
+    without = ppo.occlusion_speed_term(speed, label, group, ppo.speed_group_counts(group), 0.05)
+    padded = torch.cat((ppo.speed_group_counts(group)[:4], torch.zeros(1)))
+    assert torch.equal(ppo.occlusion_speed_term(speed, label, group, padded, 0.05), without)
 
 
 def test_training_on_some_groups_equals_dropping_the_others():

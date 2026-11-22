@@ -27,7 +27,9 @@ kickstart: {initial_lambda: 1.0, anneal_fraction: 0.3}
 # #138 A2 third version: a Huber loss on the occlusion teacher's m/s on occluded steps (ppo.py);
 # coef 0 leaves it off and runs no teacher
 occlusion_speed: {coef: 0.0, scale_m_s: 0.05, strong_slowdown: 0.1, limit_acceleration: false, catchup_min_distance_m: null,
-  trains_readout: true, groups: [strong, weak, lost, catchup]}
+  trains_readout: true, groups: [strong, weak, lost, catchup], visible_near_m: null}
+# #138: visible_near_m (metres) puts visible steps closer than it in the near group, labelled by the
+# privileged teacher; a group trains only when listed in occlusion_speed.groups / occlusion_turn.groups
 # #138 A2 fourth version: the same teacher's turn rate on the same steps and groups
 # #138 A2 eighth version: each term trains only on the listed groups (ppo.SPEED_GROUPS; the
 # turn term never on catch-up); the defaults are every earlier version's

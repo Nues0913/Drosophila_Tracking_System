@@ -261,6 +261,17 @@ class Rollout:
 
 SPEED_GROUPS = ("strong", "weak", "lost", "catchup")  # codes 1-4 of Rollout.speed_group
 CATCHUP = 4
+TURN_GROUPS = ("strong", "weak", "lost")  # the turn term's default: the catch-up group stays out
+
+
+def group_table(names: Sequence[str], device) -> Tensor:
+    """[1 + len(SPEED_GROUPS)] uint8: each group code maps to itself if its name is in
+    ``names``, else to 0 (#138 A2 eighth version: a term can train on some groups only)."""
+    unknown = set(names) - set(SPEED_GROUPS)
+    if unknown or not names or len(set(names)) != len(names):
+        raise ValueError(f"groups must be distinct names from {SPEED_GROUPS}, got {names!r}")
+    codes = [code if name in names else 0 for code, name in enumerate(SPEED_GROUPS, 1)]
+    return torch.tensor([0, *codes], dtype=torch.uint8, device=device)
 
 
 def occlusion_speed_groups(
@@ -411,6 +422,8 @@ def ppo_update(
     turn_coef: float = 0.0,
     turn_scale_rad_s: float = 0.5,
     speed_trains_readout: bool = True,
+    speed_groups: Sequence[str] = SPEED_GROUPS,
+    turn_groups: Sequence[str] = TURN_GROUPS,
 ) -> dict[str, Tensor]:
     """Epochs of minibatch updates over environments; returns the means of the last epoch.
     ``speed_coef`` > 0 adds the occlusion speed term while the actor trains, ``turn_coef`` > 0
@@ -427,6 +440,10 @@ def ppo_update(
     speed_on = actor_on and speed_coef > 0 and rollout.speed_group is not None
     turn_on = actor_on and turn_coef > 0 and rollout.turn_label is not None
     metrics: dict[str, Tensor] = {}
+    if "catchup" in turn_groups:
+        raise ValueError("the turn term has no catch-up labels")
+    speed_table = group_table(speed_groups, rollout.code.device)
+    turn_table = group_table(turn_groups, rollout.code.device)
     for _epoch in range(settings.epochs):
         order = torch.randperm(n, generator=generator, device="cpu").to(rollout.code.device)
         sums: dict[str, Tensor] = {}
@@ -437,12 +454,9 @@ def ppo_update(
             terms: dict[str, Tensor] = {}
             if speed_on or turn_on:
                 counts = speed_group_counts(rollout.speed_group[:, rows])
-                # The turn term leaves the catch-up group out.
-                turn_counts = torch.where(
-                    torch.arange(len(SPEED_GROUPS), device=counts.device) == CATCHUP - 1,
-                    0.0,
-                    counts,
-                )
+                # Each term counts only its own groups (the turn term never the catch-up one).
+                turn_counts = torch.where(turn_table[1:] > 0, counts, 0.0)
+                counts = torch.where(speed_table[1:] > 0, counts, 0.0)
             for name, on in (("speed_loss", speed_on), ("turn_loss", turn_on)):
                 if on:
                     terms[name] = torch.zeros((), device=rollout.code.device)
@@ -481,18 +495,17 @@ def ppo_update(
                         term = occlusion_speed_term(
                             mode[..., 0],
                             rollout.speed_label[:, part],
-                            rollout.speed_group[:, part],
+                            speed_table[rollout.speed_group[:, part].long()],
                             counts,
                             speed_scale_m_s,
                         )
                         exact = exact + speed_coef * term
                         terms["speed_loss"] = terms["speed_loss"] + term.detach()
                     if turn_on:
-                        group_part = rollout.speed_group[:, part]
                         term = occlusion_speed_term(
                             mode[..., 1],
                             rollout.turn_label[:, part],
-                            torch.where(group_part == CATCHUP, 0, group_part),
+                            turn_table[rollout.speed_group[:, part].long()],
                             turn_counts,
                             turn_scale_rad_s,
                         )
@@ -885,6 +898,8 @@ class PPORun:
                     turn_coef=config["occlusion_turn"]["coef"],
                     turn_scale_rad_s=config["occlusion_turn"]["scale_rad_s"],
                     speed_trains_readout=config["occlusion_speed"]["trains_readout"],
+                    speed_groups=tuple(config["occlusion_speed"]["groups"]),
+                    turn_groups=tuple(config["occlusion_turn"]["groups"]),
                 )  # fmt: skip
                 del rollout
                 self.update += 1

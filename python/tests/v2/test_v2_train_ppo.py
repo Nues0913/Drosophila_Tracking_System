@@ -656,3 +656,50 @@ def test_the_speed_term_can_leave_the_speed_readout_weights_alone():
     assert float(found[True][1].abs().sum()) > 0
     assert found[False][1] is None or float(found[False][1].abs().sum()) == 0
     torch.testing.assert_close(found[True][2], found[False][2])
+
+
+def test_group_table_keeps_only_the_named_groups():
+    """#138 A2 eighth version: the defaults keep every earlier version's groups."""
+    assert ppo.group_table(ppo.SPEED_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 4]
+    assert ppo.group_table(ppo.TURN_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 0]
+    assert ppo.group_table(("strong", "weak"), "cpu").tolist() == [0, 1, 2, 0, 0]
+    for bad in ((), ("near",), ("weak", "weak")):
+        with pytest.raises(ValueError, match="groups"):
+            ppo.group_table(bad, "cpu")
+
+
+def test_training_on_some_groups_equals_dropping_the_others():
+    """Speed and turn terms on (strong, weak) only train exactly as if the lost and catch-up
+    steps had no group (same seed, same updates)."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    groups = torch.tensor([1, 2, 3, 4], dtype=torch.uint8).repeat(steps, n // 4)
+
+    def train(group, **kwargs):
+        torch.manual_seed(7)
+        policy, critic = _ToyPolicy(1), Critic(1, (16,))
+        actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+        value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+        generator = torch.Generator().manual_seed(6)
+        for _ in range(20):
+            rollout = _toy_rollout(policy, env, n, steps, generator)
+            rollout.speed_label = torch.linspace(0.1, 0.4, n).repeat(steps, 1)
+            rollout.turn_label = torch.linspace(-0.5, 0.5, n).repeat(steps, 1)
+            rollout.speed_group = group.clone()
+            metrics = ppo_update(
+                policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+                micro_batch=n // 4, generator=generator, speed_coef=1.0, turn_coef=1.0, **kwargs
+            )  # fmt: skip
+        return policy, metrics
+
+    chosen, metrics = train(groups, speed_groups=("strong", "weak"), turn_groups=("strong", "weak"))
+    dropped, reference = train(torch.where(groups > 2, 0, groups).to(torch.uint8))
+    for a, b in zip(chosen.parameters(), dropped.parameters(), strict=True):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    for key in ("speed_loss", "turn_loss"):
+        torch.testing.assert_close(metrics[key], reference[key], rtol=0, atol=0)
+    with pytest.raises(ValueError, match="catch-up"):
+        train(groups, turn_groups=("strong", "catchup"))

@@ -134,6 +134,7 @@ def load_policy(
     hidden_size = config_values.pop("hidden_size", None) if variant in GRAPH_FREE_VARIANTS else None
     missing = {field.name for field in fields(ModelConfigV2)} - config_values.keys()
     missing.difference_update(PLASTIC_DEFAULTS, {"visual_offset_init"})
+    missing.discard("odor_adaptation_fraction")  # Older cards: complete adaptation (1.0).
     if missing:
         raise ValueError(f"Model card model_config is missing {sorted(missing)}")
     config = ModelConfigV2.from_dict(config_values)

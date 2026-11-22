@@ -66,6 +66,11 @@ class SensoryEncoderV2(nn.Module):
         self.adaptation_ratio = min(contract.control_dt / config.odor_adaptation_tau_s, 1)
         self.shared_adaptation = config.odor_shared_adaptation
         self.adaptation_fraction = config.odor_adaptation_fraction
+        # Per-channel fractions (#138 A3 seventh version); None keeps the scalar path above.
+        fractions = config.odor_adaptation_fractions
+        self.channel_fractions = (
+            torch.tensor(fractions, dtype=torch.float32) if fractions else None
+        )
         self.register_buffer(
             "odor_baseline", torch.tensor(config.odor_K, dtype=torch.float32), persistent=False
         )
@@ -114,7 +119,12 @@ class SensoryEncoderV2(nn.Module):
         target = (
             (concentration * 0.5).sum(1, keepdim=True) if self.shared_adaptation else concentration
         )
-        if self.adaptation_fraction != 1:
+        if self.channel_fractions is not None:
+            # One fraction per channel; a channel at 1.0 adapts completely (target unchanged).
+            fraction = self.channel_fractions.to(target.device)
+            partial = target.clamp_min(1e-12).pow(fraction) * self.odor_baseline.pow(1 - fraction)
+            target = torch.where(fraction == 1, target.expand_as(partial), partial)
+        elif self.adaptation_fraction != 1:
             # Partial adaptation (#138 A2 seventh version): K moves toward
             # level^f * K0^(1 - f), so a held level C settles at sigmoid(n (1 - f) log(C / K0)).
             fraction = self.adaptation_fraction

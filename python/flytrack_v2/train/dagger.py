@@ -72,6 +72,7 @@ def build_training_policy(
     *,
     activation_checkpoint: bool,
     model_overrides: Mapping | None = None,
+    input_norm: str = _INPUT_NORM,
 ):
     if model_overrides is None:
         model_overrides = {}
@@ -85,7 +86,7 @@ def build_training_policy(
     )
     config = ModelConfigV2.from_dict(values)
     contract = SensorContractV2.from_json(ROOT / "configs/v2/sensor_contract.json")
-    norm = InputNorm.load(ROOT / _INPUT_NORM, config.norm_std_floor)
+    norm = InputNorm.load(ROOT / input_norm, config.norm_std_floor)
     if not norm.fitted:
         raise ValueError("DAgger requires fitted input normalization")
     return build_policy(variant, config, contract=contract, input_norm=norm)
@@ -127,6 +128,7 @@ class DAggerRun:
             seed,
             activation_checkpoint=config["activation_checkpoint"],
             model_overrides=config["model"],
+            input_norm=config.get("input_norm", _INPUT_NORM),
         ).to(device)
         self.seed = seed
         self.resolved = {
@@ -136,8 +138,8 @@ class DAggerRun:
             "device": str(device),
             "model_config": self.policy.config.to_dict(),
             "sensor_contract_sha256": self.policy.contract.sha256(),
-            "input_norm": _INPUT_NORM,
-            "input_norm_sha256": file_sha256(ROOT / _INPUT_NORM),
+            "input_norm": config.get("input_norm", _INPUT_NORM),
+            "input_norm_sha256": file_sha256(ROOT / config.get("input_norm", _INPUT_NORM)),
             "round_plan": [asdict(plan) for plan in self.plans],
         }
         self.config_text = (

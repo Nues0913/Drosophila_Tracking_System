@@ -34,6 +34,10 @@ class ModelConfigV2:
     odor_K: tuple[float, ...] = (0.3,)
     odor_hill_n: float = 2.0
     odor_adaptation_tau_s: float = 2.0
+    # #138 A2 seventh version: the fraction of a held odor level the ORN adapts away. 1.0 is
+    # complete adaptation (every held level reads 0.5); below 1, K follows the geometric mean
+    # of the level and the baseline, so a held level keeps a code that rises with it.
+    odor_adaptation_fraction: float = 1.0
     odor_shared_adaptation: bool = True
     norm_std_floor: float = 1e-3
     init_seed: int = 0
@@ -105,6 +109,11 @@ class ModelConfigV2:
             <= self.tau_max_s
         ):
             raise ValueError("tau_init_range_s must lie in (tau_min_s, tau_max_s]")
+        if (
+            not _is_finite_number(self.odor_adaptation_fraction)
+            or not 0 < self.odor_adaptation_fraction <= 1
+        ):
+            raise ValueError("odor_adaptation_fraction must lie in (0, 1]")
         if not self.odor_K or any(not _is_finite_number(k) or k <= 0 for k in self.odor_K):
             raise ValueError("odor_K must contain positive, finite baselines")
         if self.gain_parameterization not in ("softplus", "bounded"):

@@ -856,6 +856,44 @@ def test_visual_offset_matches_post_normalization_shift(frontend, main_graph):
     torch.testing.assert_close(rest_mode, torch.tensor([[0.2, 0.0]]), atol=1e-5, rtol=0)
 
 
+def test_partial_odor_adaptation_keeps_a_held_level():
+    """#138 A2 seventh version: with fraction f < 1 a held concentration C settles at
+    sigmoid(n (1 - f) log(C / K0)) instead of 0.5 (the default f = 1)."""
+    graph = small_graph()
+    # Its own front end: an earlier test moves the module-scoped one to float64.
+    frontend = NodeMajorFlyvis(ROOT / CONFIG.frontend_path, CONTRACT, CONFIG.visual_bins)
+    full = build_policy("VO2", graph=graph, frontend=frontend)
+    half = build_policy(
+        "VO2", replace(CONFIG, odor_adaptation_fraction=0.5), graph=graph, frontend=frontend
+    )
+
+    def settle(policy, level, steps=600):
+        state = policy.initial_sensory_state(1, "cpu")
+        obs = _observations(1)
+        obs["valid"][:] = 1.0
+        obs["odor"][:] = level
+        codes = []
+        for _ in range(steps):
+            code, state = policy.sense(obs, state)
+            codes.append(code[0, -8:-6])
+        return torch.stack(codes), state
+
+    held, _ = settle(full, 0.9)
+    torch.testing.assert_close(held[-1], torch.full((2,), 0.5), atol=1e-3, rtol=0)
+    low, _ = settle(half, 0.3)
+    high, high_state = settle(half, 0.9)
+    torch.testing.assert_close(low[-1], torch.full((2,), 0.5), atol=1e-3, rtol=0)
+    torch.testing.assert_close(high[-1], torch.full((2,), 0.75), atol=1e-3, rtol=0)
+    torch.testing.assert_close(
+        high_state.odor_K, torch.full_like(high_state.odor_K, (0.9 * 0.3) ** 0.5), atol=1e-4, rtol=0
+    )
+    # The first step's code is the same: only how K follows the level changes.
+    torch.testing.assert_close(high[0], held[0])
+    for bad in (0, -0.5, 1.5, float("nan"), True):
+        with pytest.raises(ValueError, match="odor_adaptation_fraction"):
+            ModelConfigV2(odor_adaptation_fraction=bad)
+
+
 def test_model_config_matches_yaml_and_rejects_unknown_keys():
     with DEFAULT_CONFIG_PATH.open() as source:
         defaults = yaml.safe_load(source)

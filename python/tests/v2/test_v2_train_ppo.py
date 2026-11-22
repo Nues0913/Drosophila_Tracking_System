@@ -528,6 +528,7 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
         "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "total_env_steps=96",
         "warmup.critic_only_updates=1", "warmup.actor_ramp_updates=1", "checkpoint_every=1",
         "occlusion_speed.coef=1.0", "occlusion_turn.coef=1.0",
+        "occlusion_speed.catchup_min_distance_m=1.0",
     ]  # fmt: skip
     config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
     run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / "ppo")
@@ -541,6 +542,8 @@ def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
     # occlusion flag (state column 4) is still 0.
     assert int(rollout.speed_group.sum()) == 0
     assert float(run.collector.teacher_state[:, 4].abs().sum()) == 0
+    assert not run.collector.seen_occlusion.any()
+    assert "seen_occlusion" in run.collector.checkpoint()
     args = ["--init", str(init), "--seed", "1", "--host", "2060", "--device", "cpu"]
     out = tmp_path / "main"
     args += ["--out", str(out), "--override", *overrides]
@@ -581,3 +584,39 @@ def test_the_turn_term_pulls_the_mode_turn_to_the_teachers_label():
     assert float(mode[1]) == pytest.approx(-0.4, abs=0.03)
     assert float(mode[0]) == pytest.approx(0.5, abs=0.1)  # no speed term: only PPO noise
     assert "turn_loss" in metrics and "speed_loss" not in metrics
+
+
+def test_the_turn_term_leaves_the_catchup_group_out():
+    """Catch-up steps (group 4) carry a speed label only: with every step in that group, the
+    turn coefficient changes nothing (same seed, same updates), and the speed reaches its label."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    def train(turn_coef):
+        torch.manual_seed(7)
+        policy, critic = _ToyPolicy(1), Critic(1, (16,))
+        actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+        value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+        generator = torch.Generator().manual_seed(6)
+        for _ in range(100):
+            rollout = _toy_rollout(policy, env, n, steps, generator)
+            rollout.speed_label = torch.full((steps, n), 0.3)
+            rollout.turn_label = torch.full((steps, n), -0.4)
+            rollout.speed_group = torch.full((steps, n), ppo.CATCHUP, dtype=torch.uint8)
+            metrics = ppo_update(
+                policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+                micro_batch=n // 4, generator=generator, speed_coef=1.0, turn_coef=turn_coef,
+            )  # fmt: skip
+        return policy, metrics
+
+    with_turn, metrics = train(1.0)
+    without, _ = train(0.0)
+    for a, b in zip(with_turn.parameters(), without.parameters(), strict=True):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    assert float(metrics["turn_loss"]) == 0.0
+    with torch.no_grad():
+        state = torch.zeros(1, with_turn.hidden)
+        mode = with_turn.forward_code(torch.ones(1, 1), state).dist.mode()[0]
+    assert float(mode[0]) == pytest.approx(0.3, abs=0.02)

@@ -19,7 +19,7 @@
 | M4 協定凍結、正式派工 | 11-24 04:00（原訂） | 11-23 22:09 合併 #211，#143 已發布開跑令 |
 | M4b 正式訓練完成 | 11-25 10:00 | 進行中，30 條訓練鏈按 seed、主機與固定版本收件 |
 | M5 正式評估與統計 | 11-25 16:00 | 未開始 |
-| M6 Gazebo v2、報告初稿 | 11-25 22:00 | [報告草稿 #216](https://github.com/Nues0913/Drosophila_Tracking_System/pull/216) 已開，4070 已安排 G1 與延遲量測（#140） |
+| M6 Gazebo v2、報告初稿 | 11-25 22:00 | [報告草稿 #216](https://github.com/Nues0913/Drosophila_Tracking_System/pull/216) 已開，G1 一致率與延遲 p95 待 #140 交件 |
 | M7 交付 | 11-26 10:00 | 未開始 |
 
 ## 協定
@@ -35,6 +35,6 @@
 | GPUtw RTX 3090 | 1、2 | 12 | `3982fbc`，依序跑兩個完整 seed；#215 的合併版是 `7137d66` |
 | 4060 | 3 | 6 | `f8e8c21`，11-23 23:27 啟動 seed 3；已釋出 seed 2 並確認該機未曾開跑。[4060 回報](https://github.com/Nues0913/Drosophila_Tracking_System/issues/143#issuecomment-7106983613) |
 | 2060 | 4 | 6 | `f8e8c21`，11-23 啟動 |
-| 4070 | 5 | 6 | `f8e8c21`，先做 G1、延遲量測，再跑矩陣 |
+| 4070 | 5 | 6 | `f8e8c21`，11-24 01:05 開跑，09:00 停 runner，續跑時段待回報。[4070 開跑回報](https://github.com/Nues0913/Drosophila_Tracking_System/issues/143#issuecomment-7108126085) |
 
 每個 seed 的六變體在同一台主機完成並保留同機 v1 bench。主機上傳證據、權重和 SHA-256 清單後才算交件。G-A 至 G-E 等 #144 正式判定。[四台主機派工](https://github.com/Nues0913/Drosophila_Tracking_System/issues/143#issuecomment-7105260602)、[4070 的 G1 與延遲安排](https://github.com/Nues0913/Drosophila_Tracking_System/issues/140#issuecomment-7105752727)、[正式收件區](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)。

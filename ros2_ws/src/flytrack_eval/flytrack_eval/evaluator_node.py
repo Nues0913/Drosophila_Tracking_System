@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
-from flytrack_core.contracts import VARIANTS
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_interfaces.msg import (
     ControlTrace,
@@ -26,6 +25,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 
+from .card import card_identity
 from .latency import CausalLatency, SensorTimingCache
 
 
@@ -55,14 +55,7 @@ class EvaluatorNode(Node):
         if artifact:
             card_bytes = (Path(artifact) / "model_card.json").read_bytes()
             card = json.loads(card_bytes)
-            if card.get("schema_version") != 1 or card.get("variant") not in VARIANTS:
-                raise ValueError("Evaluator artifact has an unsupported model card")
-            seed = card.get("metadata", {}).get("seed")
-            if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-                raise ValueError(
-                    "Evaluator artifact model card must identify its nonnegative training seed"
-                )
-            self.variant, self.training_seed = card["variant"], seed
+            self.variant, self.training_seed = card_identity(card)
             self.model_card_sha256 = hashlib.sha256(card_bytes).hexdigest()
             self.get_logger().info(
                 f"Artifact model card sets variant={self.variant}, "

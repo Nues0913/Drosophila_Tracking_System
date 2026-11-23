@@ -1,12 +1,12 @@
 # v2 evaluation protocol, schema 4, following docs/v2/大實驗計劃書.md sections 3.9-3.11. Frozen
-# at M4 (2026-11-23 22:00 UTC+8) by #142: the formal runs use it as it stands at the M4
+# at M4 (2026-11-24 04:00 UTC+8, half a day later than planned, #213) by #142: the formal runs use it as it stands at the M4
 # Decision's SHA, and a later change is a new protocol version, never an edit of this one.
 # Pilots (seeds 100 and 101) before the freeze used the draft; pilot results are never formal.
 schema_version: 4
 spec_version: v2
 status: frozen
 declared_date: '2026-11-18'
-frozen_date: '2026-11-23'
+frozen_date: '2026-11-24'
 freeze_issue: 142
 plan: docs/v2/大實驗計劃書.md
 model_variants: [VO2, V2, O2, RW2, ER2, GRU2]
@@ -256,5 +256,6 @@ host_assignment: {'4070': [5, 1], '4060': [2, 3], '2060': [4]}
 # #161 F, registered before the M2 bench: estimate the formal training time from the measured
 # combined throughput of the three hosts with a 20% margin (evaluation included: 48,000 main
 # episodes plus the noise sensitivity and the v1 comparison). Above 32 hours, the formal
-# matrix runs stage 1 only and PPO is reported from the pilots.
-compute_rule: {margin: 0.20, max_hours_m4_to_m4b: 32, over_budget: stage 1 only}
+# matrix runs stage 1 only and PPO is reported from the pilots. The window is M4 (11-24 04:00) to
+# M4b (11-25 10:00): 30 hours since the half-day postponement (#213; 32 before).
+compute_rule: {margin: 0.20, max_hours_m4_to_m4b: 30, over_budget: stage 1 only}

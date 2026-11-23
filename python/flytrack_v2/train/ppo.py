@@ -287,6 +287,15 @@ def occlusion_speed_groups(
     return group.to(torch.uint8)
 
 
+def collision_shaped_reward(reward: Tensor, terminated: Tensor, extra_penalty: float) -> Tensor:
+    """#138: the world's reward minus ``extra_penalty`` on each collision step. A collision is
+    the only termination (the 60 s limit truncates), so ``terminated`` marks the hit; with 0
+    the reward is unchanged."""
+    if extra_penalty == 0:
+        return reward
+    return reward - extra_penalty * terminated.to(reward.dtype)
+
+
 def speed_group_counts(group: Tensor) -> Tensor:
     """[len(SPEED_GROUPS)] float step counts of each group."""
     return torch.stack([(group == code).sum() for code in range(1, len(SPEED_GROUPS) + 1)]).to(
@@ -561,6 +570,13 @@ class PPOCollector(RolloutCollector):
         self.speed_strong_slowdown = speed["strong_slowdown"]
         self.speed_limit_acceleration = speed["limit_acceleration"]
         self.catchup_min_distance_m = speed["catchup_min_distance_m"]
+        self.collision_extra_penalty = config["collision_extra_penalty"]
+        if not (
+            isinstance(self.collision_extra_penalty, (int, float))
+            and math.isfinite(self.collision_extra_penalty)
+            and self.collision_extra_penalty >= 0
+        ):
+            raise ValueError("collision_extra_penalty must be a finite number >= 0")
         # Whether each environment's episode has been occluded so far (the catch-up group).
         self.seen_occlusion = torch.zeros(self.rows, dtype=torch.bool, device=device)
         # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
@@ -689,7 +705,11 @@ class PPOCollector(RolloutCollector):
             self._first_episode_resets(observations, resets, before_reset)
             reset = torch.cat(resets)
             forced = reset & ~(terminated | truncated)
-            buffers["reward"][t] = torch.cat([r.reward for r in results]).to(torch.float32)
+            buffers["reward"][t] = collision_shaped_reward(
+                torch.cat([r.reward for r in results]).to(torch.float32),
+                terminated,
+                self.collision_extra_penalty,
+            )
             # The 60 s limit is the task's end (evaluation episodes are 60 s too) and the critic
             # sees the episode time, so it terminates; only a forced first-episode end, which
             # the task does not have, bootstraps (#188 review).

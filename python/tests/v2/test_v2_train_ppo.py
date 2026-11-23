@@ -510,6 +510,18 @@ def test_the_speed_term_pulls_the_mode_speed_to_the_teachers_label():
     assert float(metrics["speed_loss"]) < 0.1
 
 
+def test_collision_extra_penalty_only_lowers_collision_steps():
+    """#138: the extra penalty is subtracted on terminated (collision) steps only; 0, the
+    default, returns the reward unchanged."""
+    reward = torch.tensor([1.0, -9.5, 0.7, -10.2])
+    terminated = torch.tensor([False, True, False, True])
+    assert ppo.collision_shaped_reward(reward, terminated, 0.0) is reward
+    shaped = ppo.collision_shaped_reward(reward, terminated, 20.0)
+    assert shaped.tolist() == pytest.approx([1.0, -29.5, 0.7, -30.2])
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
+    assert config["collision_extra_penalty"] == 0.0
+
+
 def test_the_occlusion_speed_is_off_by_default():
     config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
     assert config["occlusion_speed"]["coef"] == config["occlusion_turn"]["coef"] == 0.0

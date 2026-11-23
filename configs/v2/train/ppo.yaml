@@ -32,4 +32,6 @@ occlusion_speed: {coef: 0.0, scale_m_s: 0.05, strong_slowdown: 0.1, limit_accele
 # #138 A2 eighth version: each term trains only on the listed groups (ppo.SPEED_GROUPS; the
 # turn term never on catch-up); the defaults are every earlier version's
 occlusion_turn: {coef: 0.0, scale_rad_s: 0.5, groups: [strong, weak, lost]}
+# #138: subtracted from the reward on each collision step, on top of track_v2's 10 (0: unchanged)
+collision_extra_penalty: 0.0
 checkpoint_every: 25

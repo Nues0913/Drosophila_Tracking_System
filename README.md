@@ -1,12 +1,16 @@
 # 果蠅連接體多感官追蹤系統（FlyTrack）
 
-以 flyvis 預訓練早期視覺前端（方案 A）加上 MaleCNS v1.0 中央子圖組成感測策略：先在 2D 模擬器訓練，再匯出模型，最後透過 ROS 2 Lyrical／Gazebo Jetty 做閉環評估。研究問題是比較六個變體（V、O、VO、VO-late、GRU、RS）在相同感測前端之後的追蹤表現。
+FlyTrack 以 MaleCNS v1.0 子圖與 flyvis 視覺前端建立追蹤策略，在 2D 模擬中訓練，並用 ROS 2／Gazebo 檢驗部署行為。v2 研究視覺、氣味和風在移動目標遮蔽期間的作用。
 
-> **目前進度（2026-11-18）：** formal-v1 之後的研究（#35：速度 S2–S8、遮蔽 M1、可見度閘門 T1）都照登記的規則判定不成立，formal-v1 的結論不變；4070 的 CPU 版延遲重測 p95 43.4–44.9 ms（#110），但成功率沒有改善，G3 仍未達成；Gazebo 的 3D 展示影片 V2 已交付（#123）。未解決的問題、擱置的研究和建議順序見 [後續計畫.md](後續計畫.md)。以下是 formal-v1 的狀態（2026-11-14）：正式規格是 no-KC＋P2/B3、pretrain → BC/DAgger。團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應與負面結果；PPO／P3 留待後續研究。**正式訓練和 2D 正式評估都已在 main `35432c3` 完成並驗收**（release `formal-v1`）：VO、VO-late 對 V 的遮蔽優越性都不成立，沒有變體達到 G3 的 normal 成功率 0.8，GRU／RS 對照組退化（[#85](https://github.com/Nues0913/Drosophila_Tracking_System/issues/85)）。GRU 修正後的事後、未登記結果（#87）：curved 的 VO-late 對它四個情境都不劣，VO 在 noise 不成立。協定必交的 lesion 分析已驗收（[#90](https://github.com/Nues0913/Drosophila_Tracking_System/issues/90)）：VO／VO-late 的前進速度是常數（只由 DNp09 讀出），是 normal 跟不上目標的主因；速度讀出的兩個探索實驗 S1（[#95](https://github.com/Nues0913/Drosophila_Tracking_System/issues/95)，放大輸入）和 D3（[#104](https://github.com/Nues0913/Drosophila_Tracking_System/issues/104)，切斷梯度的 DN 列）都判定無效，在遮蔽時給氣味轉向標籤的 BC 配方實驗 R1 也判定無效（[#4](https://github.com/Nues0913/Drosophila_Tracking_System/issues/4)）。D2 的探索到此結束，formal-v2 不觸發。Gazebo 主要比較 G2 已完成（[#88](https://github.com/Nues0913/Drosophila_Tracking_System/issues/88)，報告見 [docs/formal_v1_report.md](docs/formal_v1_report.md)）：已登記比較的判讀和 2D 完全相同，G3 在 Gazebo 也未達成（curved normal 最高 0.450，參考主機 4070 上 VO-late 的延遲 p95 51.5 ms）。之前的經過（policy 的執行緒爭用和計時對應已由 G0b 修正（PR #99），兩台主機的 G1 範圍，valid、頻率與計時都通過（行為因明暗相反沒有意義）；G2 派工後發現 Gazebo 的視覺輸入和 2D 明暗相反而暫停，修正 G0c 已合併（PR #102）；三台主機用新世界的 G1 範圍，行為都和 2D 一致，G2 在 4070、4060 上跑完。G2 的世界還有兩個和 2D 的差異：斜角撞牆記不到碰撞、轉向比指令快 12%；處理方式在資料出來之前登記；漏記撞牆的保守重算沒有改變判讀，轉向快 12% 沒有對判讀做敏感度分析，只有 G1 範圍的 47/48 一致（揭露第 25 點）；修正 G0d 已在 G2 結束後合併，PR #107）。詳細進度見 [docs/status.md](docs/status.md)，formal-v1 的總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)（已關閉），後續研究在 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)，協作規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)。
+**v2 正式訓練進行中。** A3 第十五版已凍結，六個變體（VO2、V2、O2、RW2、ER2、GRU2）各跑五個 seed，依序執行 DAgger 與 PPO。負責執行矩陣的組員請依主機派工與固定 SHA 操作。研究進度與正式評估條件見 [v2 狀態](docs/v2/status.md)、[訓練手冊](docs/v2/train.md) 和[凍結協定](configs/v2/evaluation_protocol.yaml)。
+
+**formal-v1 已交付。** 2D 與 Gazebo 的已登記比較均未支持 VO、VO-late 對 V 的遮蔽優越性，G3 的 normal 成功率門檻也未達成。完整數據、事後研究與展示紀錄見 [formal-v1 報告](docs/formal_v1_report.md)和 [v1 進度紀錄](docs/status.md)。
 
 > **版本**：v1 的最終狀態是 tag [`v1-final`](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/v1-final)（main `4304571`），之後的維護在分支 `release/v1`。大實驗 v2 在分支 `v2`，追蹤在 [#127](https://github.com/Nues0913/Drosophila_Tracking_System/issues/127)。分支規則見 [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md) 第 3.1 節。
 
 ## 組員快速上手
+
+以下為重現 v1 的安裝、訓練與部署說明。v2 的版本、模型、主機及正式指令見上方 v2 入口。
 
 ### 0. 需求
 
@@ -49,7 +53,7 @@ python -m flytrack_train audit-env --config configs/train/evaluate.yaml      # t
 python -m flytrack_train ppo --config configs/train/smoke.yaml --device cuda   # 約 10 秒的小流程
 ```
 
-### 4. 正式訓練
+### 4. 重現 formal-v1 訓練
 
 正式啟動以 #28 的 PM Decision 與共同 main SHA 為準。#77 已修正有效預算：有效 VO 為 14,546，GRU hidden=16 加 bottleneck=18 的 effective 為 14,904（相對 VO +2.46%），六個變體都在 ±5% 內，不能把零學習率參數當成可更新參數。修正內容已由 PR #79 合併（main `35432c3`）；下列是正式矩陣的執行方式。
 
@@ -70,7 +74,7 @@ O／VO／VO-late 在 BC 後要求氣味左右交換的平均 |Δω| ≥1e−3 ra
 
 WSL2 預設只分到主機約一半記憶體；16 GB 筆電建議在 Windows 的 `C:\Users\<帳號>\.wslconfig` 寫入 `[wsl2]`、`memory=12GB`，再於 PowerShell 執行 `wsl --shutdown` 後重開 Ubuntu。筆電訓練時請插電並使用最佳效能電源模式。
 
-先跑單一變體、單一種子確認穩定性與速度，再分工跑完整矩陣。分工方式與注意事項見 [docs/gpu_hosts.md](docs/gpu_hosts.md#分工跑正式訓練)，誰跑哪些組以 PM 開的 GPU 執行 Issue 為準（[AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md#3-算力與重度測試分配)）。`runs/` 不進 git；訓練完成後請把各自的 `runs/<variant>/seed_<n>/actor` 與 log 交回整合。
+先跑單一變體、單一種子確認穩定性與速度，再分工跑完整矩陣。分工方式與注意事項見 [docs/gpu_hosts.md](docs/gpu_hosts.md#分工跑正式訓練)，誰跑哪些組以 PM 開的 GPU 執行 Issue 為準（[AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md#5-正式研究gpu-資源與跨主機交付)）。`runs/` 不進 git；訓練完成後請把各自的 `runs/<variant>/seed_<n>/actor` 與 log 交回整合。
 
 ## 已確認的實作決策
 
@@ -209,7 +213,8 @@ lesion 的來源電流分析是描述性診斷，不能當成因果貢獻證明�
 
 ## 文件索引
 
-- [docs/status.md](docs/status.md)：目前進度、已知問題、下一步（**先讀這份**）
+- [v2 狀態與派工](docs/v2/status.md)及 [v2 計劃書](docs/v2/大實驗計劃書.md)
+- [v1 進度與已知問題](docs/status.md)
 - [AGENT_TEAM_WORKFLOW.md](AGENT_TEAM_WORKFLOW.md)：三人（Agent）分工、Issue／PR 與審查規範（參與開發前先讀）
 - [後續計畫.md](後續計畫.md)：未解決的問題、擱置的研究和建議順序（原本的分階段檢查清單見 main `ed71149` 的版本）
 - [docs/gpu_hosts.md](docs/gpu_hosts.md)：在 Linux／WSL2／Colab 跑訓練與分工

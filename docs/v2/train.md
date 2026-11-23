@@ -1,6 +1,6 @@
 # DAgger-v2 訓練
 
-在 repository 根目錄執行。六個變體共用 trainer。RW2 和 ER2 的結構 seed 同訓練 seed。Trainer 先載入 `artifacts/input_norm_v2/input_norm.npz`，再建立 policy，由模型用擬合後的中性 code 校準靜息狀態和讀出偏置。
+在 repository 根目錄執行。六個變體共用 trainer。RW2 和 ER2 的結構 seed 同訓練 seed。以下獨立 trainer 範例使用開發預設值。正式矩陣由本文末的 runner 套用 A3 第十五版與雙通道正規化。預設 trainer 先載入 `artifacts/input_norm_v2/input_norm.npz`，再建立 policy，由模型用擬合後的中性 code 校準靜息狀態和讀出偏置。
 
 ```sh
 PYTHONPATH=python python -m flytrack_v2.train.dagger \
@@ -33,7 +33,7 @@ OMP_NUM_THREADS=1 PYTHONPATH=python python -m flytrack_v2.train.dagger \
 - 每輪至少收集一條完整視窗所需的時間步，之後以整批環境為計數單位。正式設定每輪 733 個控制步，共 750,592 個環境步。更新次數依實際環境步計算，每輪 184 次。前 16 步在 `no_grad` 下重建中央狀態，後 64 步計算 loss。reset 旗標作用於下一步。
 - 標籤依各維度的動作範圍內縮。設 `m = label_margin`，速度限制在 `[m × v_max, (1 − m) × v_max]`，轉向限制在 `[−(1 − m) × ω_max, (1 − m) × ω_max]`。內縮後用 `unsquash` 算潛在高斯 NLL。預設 `m = 1e-3` 時，速度的潛在值範圍為 `[logit(1e-3), logit(1 − 1e-3)] ≈ [−6.9, 6.9]`。 預設 `label_latent_bound: 3.0`（#184 Decision、#189 review）：速度的 m = sigmoid(−3) ≈ 0.0474、轉向的 m = 1 − tanh(3) ≈ 0.0049，所以每個標籤的潛在值都在 ±3 以內，貼在動作上下限的標籤不會主導 NLL；沒有這個 key 的設定照舊用 `label_margin`。
 - 活動懲罰對圖變體使用所有讀出 DN 以外的神經元速率平方平均，GRU2 使用隱狀態平方平均。梯度累積以 micro-batch 的序列數加權。有限的梯度做全域範數裁剪後交給 Adam。Cosine 排程涵蓋四輪，以參數群組的 LR 比例一起下降。
-- `hosts.yaml` 設 4060、2060、4070 的 micro-batch 為 128、64、128。若縮小 effective batch 至主機值以下，整批作為一個 micro-batch。實際的 micro-batch 必須整除 effective batch。Activation checkpoint 預設關，並在設定與 model card 記錄實際值。
+- `hosts.yaml` 設 4060、2060、4070、gputw3090 的 micro-batch 分別為 128、64、128、128。若縮小 effective batch 至主機值以下，整批作為一個 micro-batch。實際的 micro-batch 必須整除 effective batch。Activation checkpoint 預設關，並在設定與 model card 記錄實際值。
 
 `replay_ratio=4` 及 held-out 每 50 次更新、至多 256 條序列、保留 5% 是計劃書交辦的 Claude 預設。固定保留的列以 seed 抽取，四輪皆保留同一批列，避免其狀態歷史進入訓練。列數四捨五入且至少保留 1 列。資料量小時，held-out 使用所有可用的不同視窗。
 
@@ -138,10 +138,18 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
 跑完之後，用 `scripts/v2/evaluate_v2.py --seeds pilot_held_out` 分別評估 Stage 1 和 Stage 2 的產物，再照協定的 `stage2_replaces_stage1` 判定：Stage 2 − Stage 1 依訓練 seed 配對，非劣性 margin 0.05。trainer 本身不做這個判定。
 
 # 正式矩陣的執行（WP9，#143）
-每台主機用 `scripts/v2/run_formal.py` 跑分配到的 seed，指令照 M4 的 Decision：
 
-```
-python scripts/v2/run_formal.py --host 4070 --seeds 5 1 --sha <Decision 的 SHA> --out runs/v2_formal
+本機三台沿用 M4 核准的 `f8e8c2180d202d355e4b87cfb4e686ceceae771f`，4070 只傳 seed 5、4060 只傳 3、2060 只傳 4。雲端在另一個固定 checkout 執行 seed 1、2，需傳入派工檔。以下兩例只列印計畫。續跑須沿用該次啟動的輸出目錄。[正式開跑令](https://github.com/Nues0913/Drosophila_Tracking_System/issues/143#issuecomment-7103593055)、[四台主機派工](https://github.com/Nues0913/Drosophila_Tracking_System/issues/143#issuecomment-7105260602)。
+
+```bash
+# 4070，M4 checkout
+python scripts/v2/run_formal.py --host 4070 --seeds 5 \
+  --sha f8e8c2180d202d355e4b87cfb4e686ceceae771f --dry-run
+
+# GPUtw，#143 改派的 checkout
+python scripts/v2/run_formal.py --host gputw3090 --seeds 1 2 \
+  --sha 3982fbc0572a21f5d0cbdcf7ace3c776d40b34fc \
+  --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml --dry-run
 ```
 
 - **開跑前的檢查**：任何一項不符就拒絕執行，exit 2。

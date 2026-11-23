@@ -1,5 +1,7 @@
 # 目前進度與已知問題
 
+本文記錄v1 結果與研究紀錄。v2 的正式矩陣請見[目前進度](v2/status.md)。
+
 最後更新：2026-11-18（formal-v1 之後的研究和工程都不改 formal-v1 的結論，見下方 2026-11-18、2026-11-17、2026-11-16 三節。以下是 formal-v1 的狀態：正式矩陣的 30 條訓練鏈和 2D 正式評估（curved、wander）都在 main `35432c3` 完成並驗收，交付在 release `formal-v1`；已登記比較依 PR #83 重新彙總。GRU 對照組已依 #85 修正（PR #86）並完成事後、未登記的重新訓練與評估（#87）。協定必交的分析 A1 已驗收（#90），發現 VO／VO-late 的前進速度是常數；接著的探索實驗 S1（速度讀出校準，#95）和 R1（BC 配方，#4）都判定無效；formal 配方原樣重訓（R0）顯示基準在重訓下穩定。D2 的探索到此結束，formal-v2 不觸發；使用者 11-10 要求再試速度讀出，探索實驗 D3（#104，切斷梯度的 DN 列）也判定不成立。Gazebo 的 wander 接線已合併（PR #94），G1 試跑發現 policy 跟不上 20 Hz、因果計時大多沒有對上，已由 G0b（PR #99）修正；2060 和 4070 的 G1 範圍，valid、頻率與計時都通過（行為因明暗相反沒有意義）；G2 派工後，PM 量到 Gazebo 的視覺輸入和 2D 明暗相反，G2 暫停；修正 G0c 已合併（PR #102），2060、4070、4060 用新世界的 G1 範圍，行為都和 2D 一致，G2 在 4070、4060 上跑完並通過收件（#88）：已登記比較的判讀和 2D 完全相同，只用 4070 的 seed、漏記撞牆的保守重算都沒有改變判讀；G3 在 Gazebo 也未達成（curved normal 最高 0.450，4070 上 VO-late 的延遲 p95 51.5 ms）。G2 期間 PM 在 G2 的世界量到兩個和 2D 的差異：斜角撞牆記不到碰撞、轉向比指令快 12%，處理方式在資料出來之前登記；修正 G0d 已在 G2 結束後合併（PR #107）。2D 展示素材 V1 已交付並驗收（#97）。正式規格維持 no-KC＋P2/B3、pretrain → BC/DAgger（#35），團隊選 F：保留全部已登記比較，如實報告 VO 的有限氣味反應及負面結果。待辦與分工以 GitHub Issue 為準。formal-v1 的總追蹤 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28) 已關閉，之後的研究在 [#35](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35)，未解決的問題和擱置的研究列在 [後續計畫.md](../後續計畫.md)。協作規則見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md)，驗證證據見 [execution_log.md](execution_log.md)。
 
 ## 2026-11-18 T1／S8 結果、G3 延遲重測、G0g 與 Gazebo 3D 展示（#35、#110、#121、#123）

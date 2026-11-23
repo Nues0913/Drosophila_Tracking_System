@@ -1,5 +1,7 @@
 # 在其他主機跑訓練
 
+本文記錄v1 訓練環境與分工。v2 的正式矩陣請見[目前執行手冊](v2/train.md)。
+
 訓練只需要 ML 環境（Python 3.12 + PyTorch）。ROS／Gazebo 不用在訓練主機上。
 
 ## 選哪種主機
@@ -57,7 +59,7 @@ bash runs/experiment_configs/run_all.sh --variants VO --seeds 0 --jobs 1
 
 規則：
 
-- 誰跑哪些「變體／種子」，以 PM 開的 GPU 執行 Issue 為準；同一組只有一位執行負責人（見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md#gpu-任務派工)）。
+- 誰跑哪些「變體／種子」，以 PM 開的 GPU 執行 Issue 為準；同一組只有一位執行負責人（見 [AGENT_TEAM_WORKFLOW.md](../AGENT_TEAM_WORKFLOW.md#5-正式研究gpu-資源與跨主機交付)）。
 - **不要修改** `configs/`、`python/` 後再跑正式實驗；要改就先提 PR，合併後所有人一起重跑，否則六變體不可比較。
 - 開跑前記下 `git rev-parse HEAD`；訓練產物的 `model_card.json` 也會記錄程式指紋。
 - 先跑 `pytest python/tests`，確認與其他人結果一致（2026-10-19 的 `main` 為 165 passed）。

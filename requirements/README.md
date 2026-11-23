@@ -23,6 +23,8 @@ uv pip check --python .venv/bin/python
 `runs/validation/pytest_with_frontend.xml`、`docs/frontend_execution.md`。
 這組依賴已在本機通過相容性與真實前端測試；乾淨容器重建仍需以實際 Docker 建置結果核對。
 
+v2 的 GitHub Actions 使用 [CPU 雜湊鎖檔](ml-cpu-py312.lock) 建立 Python 3.12 環境。GPU 訓練環境與每台主機的套件版本由正式 runner 記錄在 `ENVIRONMENT_<host>.txt`。[CI 設定](../.github/workflows/ci.yml)、[正式訓練手冊](../docs/v2/train.md)。
+
 # ROS Python 3.14 映像的版本快照（2026-11-16）
 
 ROS 端沒有 uv 產生的雜湊鎖定，這裡記的是**安裝後的版本快照**，和 `ml-cu126-py312.txt` 同類，用來核對重建的映像是否相同。

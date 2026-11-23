@@ -1,5 +1,7 @@
 # WP3c 中央核心、DN 讀出與感覺編碼 v2（Issue #136）
 
+本頁記載 WP3c 的預設模型。正式 A3 第十五版採用 `v2_cx_lat`、雙 ORN 通道及 DNp09＋DNb05 速度讀出。VO2 匹配預算為 34,805，GRU2 為 35,249（+1.28%）；下方 `v2_main` 表保留開發時的量測基準。[正式配方](../../configs/v2/train/a3_v15.yaml)、[對照試跑收件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/141#issuecomment-7103054795)。
+
 六個變體共用 [Policy 介面](interfaces.md#5-policy)，預設設定見 [default.yaml](../../configs/v2/model/default.yaml)。`build_policy` 可傳入已驗證的 `GraphV2` 和固定的 `InputNorm`。`describe()` 提供模型設定、狀態尺寸、正規化擬合狀態及有效參數數量。圖策略也列出速度和轉向讀出實際使用的型別與各側 bodyId。
 
 ## 中央核心
@@ -136,7 +138,7 @@ RW2 在 1,826,780 次嘗試中成功交換 1,670,709 次，與原圖不同的邊
 | VO2 | 1,024 | 103.3 | 16.2 | 0.157（通過） |
 | GRU2 | 1,024 | — | 0.29 | 0.003 |
 
-NOT RUN 項目為 2060／4070 的效能量測及 WP4a 的 `input_norm` 擬合。
+表內為 WP3c 當時的 4060 核心量測。WP4a 已產生正規化統計，正式雙 ORN 統計的欄位來源與 SHA-256 見[產物紀錄](../../artifacts/input_norm_v2_dual/input_norm.json)。各主機端到端吞吐量另外依 G-E 判定。
 
 ```bash
 PYTHONPATH=python python scripts/v2/bench_core.py --device cuda --train-batch 128 --output bench_core_gpu.json < /dev/null

@@ -262,7 +262,7 @@ def bench_rollout_v2(
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("pipeline", choices=["v1", "v2"])
-    parser.add_argument("--host-label", required=True, help="2060, 4060 or 4070")
+    parser.add_argument("--host-label", required=True, help="host label for the benchmark")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batches", default="1,8,256,1024")
     parser.add_argument("--skip", default="", help="comma list of env, policy, ppo")

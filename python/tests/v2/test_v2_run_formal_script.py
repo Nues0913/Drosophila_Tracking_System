@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flytrack_v2.train.config import load_config
+from flytrack_v2.train.ppo import load_ppo_config
 
 ROOT = Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("run_formal", ROOT / "scripts/v2/run_formal.py")
@@ -120,6 +122,36 @@ def test_smoke_chain_is_tiny(tmp_path):
     assert "rounds.env_steps_per_round=72" in steps[0]["cmd"]
     assert "total_env_steps=96" in steps[2]["cmd"]
     assert steps[1]["cmd"][-2:] == ["--episodes", "2"] == steps[3]["cmd"][-2:]
+
+
+@pytest.mark.parametrize(("host", "variant", "checkpoint"), [
+    ("2060", "VO2", True), ("4070", "ER2", True), ("4060", "RW2", False),
+    ("2060", "GRU2", False),
+])  # fmt: skip
+def test_frozen_a3_recipe_reaches_both_trainers(tmp_path, host, variant, checkpoint):
+    recipe = yaml.safe_load((ROOT / PROTOCOL["training"]["recipe"]).read_text())
+    stage1, _, stage2, _ = run_formal.chain(args(tmp_path, host=host), variant, 4, recipe)
+    dagger_args = stage1["cmd"][stage1["cmd"].index("--override") + 1 :]
+    ppo_args = stage2["cmd"][stage2["cmd"].index("--override") + 1 :]
+    config_dir = ROOT / "configs/v2/train"
+    dagger = load_config(config_dir / "dagger.yaml", host, dagger_args)
+    ppo = load_ppo_config(config_dir / "ppo.yaml", host, ppo_args)
+    assert dagger["activation_checkpoint"] is checkpoint
+    assert dagger["pair_weight"] == 10 and dagger["pair_window"] == 16
+    assert dagger["model"]["odor_adaptation_fractions"] == [1.0, 0.5]
+    if variant == "GRU2":
+        assert dagger["model"]["plastic_labels"] is None
+        assert dagger["model"]["budget_target"] == 34805
+    else:
+        source = ROOT / "scripts/v2/explore/a3_plastic_labels.json"
+        rows = json.loads(source.read_text())["labels"]
+        assert dagger["model"]["plastic_labels"] == [
+            [row["pre"], row["post"], row["code"], row["cap"]] for row in rows
+        ]
+    assert ppo["occlusion_speed"]["coef"] == 0.02
+    assert ppo["occlusion_turn"]["coef"] == 0.2
+    assert not ppo["occlusion_speed"]["trains_readout"]
+    assert ppo["kickstart"]["anneal_fraction"] == 0.3
 
 
 def test_artifact_done_needs_every_checksum_to_match(tmp_path):

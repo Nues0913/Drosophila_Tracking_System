@@ -65,6 +65,10 @@ class SensoryEncoderV2(nn.Module):
         self.hill_n = config.odor_hill_n
         self.adaptation_ratio = min(contract.control_dt / config.odor_adaptation_tau_s, 1)
         self.shared_adaptation = config.odor_shared_adaptation
+        self.adaptation_fraction = config.odor_adaptation_fraction
+        # Per-channel fractions (#138 A3 seventh version); None keeps the scalar path above.
+        fractions = config.odor_adaptation_fractions
+        self.channel_fractions = torch.tensor(fractions, dtype=torch.float32) if fractions else None
         self.register_buffer(
             "odor_baseline", torch.tensor(config.odor_K, dtype=torch.float32), persistent=False
         )
@@ -113,6 +117,16 @@ class SensoryEncoderV2(nn.Module):
         target = (
             (concentration * 0.5).sum(1, keepdim=True) if self.shared_adaptation else concentration
         )
+        if self.channel_fractions is not None:
+            # One fraction per channel; a channel at 1.0 adapts completely (target unchanged).
+            fraction = self.channel_fractions.to(target.device)
+            partial = target.clamp_min(1e-12).pow(fraction) * self.odor_baseline.pow(1 - fraction)
+            target = torch.where(fraction == 1, target.expand_as(partial), partial)
+        elif self.adaptation_fraction != 1:
+            # Partial adaptation (#138 A2 seventh version): K moves toward
+            # level^f * K0^(1 - f), so a held level C settles at sigmoid(n (1 - f) log(C / K0)).
+            fraction = self.adaptation_fraction
+            target = target.clamp_min(1e-12).pow(fraction) * self.odor_baseline.pow(1 - fraction)
         evolved_k = (k + self.adaptation_ratio * (target - k)).clamp_min(1e-4)
         new_k = torch.where(odor_valid, evolved_k, state.odor_K)
 
@@ -121,6 +135,31 @@ class SensoryEncoderV2(nn.Module):
             (visual.flatten(1), response.flatten(1), wind, valid.to(vision.dtype)), dim=1
         )
         return code, SensoryState(frontend_state, new_k)
+
+    @torch.no_grad()
+    def chemical_code(self, obs: dict[str, Tensor], state: SensoryState) -> Tensor:
+        """The ORN and wind columns ``sense`` gives for ``obs`` from ``state``, without stepping
+        any state or running the visual frontend (#138 A2: a transformed observation's code
+        is the step's code with these columns replaced). [B, 2 * odor_channels + 2]."""
+        batch = validate_obs(obs, self.contract)
+        odor, wind, flags = (obs[key] for key in ("odor", "wind", "valid"))
+        if state.odor_K.shape != (batch, 2, self.layout.odor_channels):
+            raise ValueError("Incorrect ORN state shape")
+        finite = torch.cat(
+            (odor.isfinite().all(-1, keepdim=True), wind.isfinite().all(-1, keepdim=True)), dim=1
+        )
+        valid = (flags[:, 2:] > 0.5) & flags[:, 2:].isfinite() & finite & self.enabled[2:]
+        concentration = torch.where(valid[:, 0, None], odor.clamp_min(0), 0.0).unsqueeze(-1)
+        k = state.odor_K.clamp_min(1e-4)
+        response = torch.sigmoid(self.hill_n * (concentration.log() - k.log()))
+        wind = torch.where(valid[:, 1, None], wind, 0.0)
+        return torch.cat((response.flatten(1), wind), dim=1)
+
+    @property
+    def chemical_columns(self) -> slice:
+        """Where ``chemical_code`` sits in the code: after both eyes, before the flags."""
+        start = 2 * self.layout.features_per_eye
+        return slice(start, start + 2 * self.layout.odor_channels + 2)
 
 
 class InputNorm(nn.Module):

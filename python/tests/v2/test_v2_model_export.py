@@ -233,3 +233,15 @@ def test_export_detects_modified_card(artifact_copy, change, message):
     _write_vo2_card(artifact_copy, card)
     with pytest.raises(ValueError, match=message):
         load_policy(artifact_copy)
+
+
+@torch.no_grad()
+def test_load_card_before_partial_odor_adaptation(artifact_copy):
+    """#138 A2 eighth version: a card written before odor_adaptation_fraction loads with 1.0."""
+    reference = load_policy(artifact_copy)
+    card = json.loads((artifact_copy / "model_card.json").read_text(encoding="utf-8"))
+    assert card["model_config"].pop("odor_adaptation_fraction") == 1.0
+    _write_vo2_card(artifact_copy, card)
+    restored = load_policy(artifact_copy)
+    assert restored.config.odor_adaptation_fraction == 1.0
+    torch.testing.assert_close(restored.state_dict(), reference.state_dict(), atol=0, rtol=0)

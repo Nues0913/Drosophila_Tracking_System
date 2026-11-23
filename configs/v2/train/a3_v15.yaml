@@ -1,0 +1,82 @@
+# Recipe from #138, commit 868c373. Dotted keys are existing trainer settings.
+name: a3_v15
+exploration_commit: 868c373
+activation_checkpoint_hosts: ['2060', '4070']
+stage1:
+  model.graph_path: data/subgraphs/v2_cx_lat/graph.npz
+  model.speed_types: [DNp09, DNb05]
+  pair_weight: 10.0
+  pair_window: 16
+  model.plastic_lr_scale: 10.0
+  model.odor_K: [0.3, 0.3]
+  model.odor_adaptation_fractions: [1.0, 0.5]
+  input_norm: artifacts/input_norm_v2_dual/input_norm.npz
+  # Chemical-sense paths from #138's registered A3 list (52 labels, cap in the last column).
+  model.plastic_labels:
+    - ["ALIN5", "DNb05", 0, 24.0]
+    - ["CB0432", "DNb05", 0, 24.0]
+    - ["CB0591", "DNb05", 0, 21.05405405405407]
+    - ["CB1145", "DNb05", 0, 24.0]
+    - ["CB3673a", "DNb05", 0, 18.547619047619058]
+    - ["CB3673b", "DNb05", 0, 15.37500000000001]
+    - ["CB3745", "DNb05", 0, 24.0]
+    - ["CB3870", "DNb05", 0, 24.0]
+    - ["CB4176", "DNb05", 0, 22.515151515151516]
+    - ["DNg09_a", "DNa02", 0, 5.159420289855072]
+    - ["GNG100", "DNa02", 0, 2.5611510791366903]
+    - ["GNG100", "DNa03", 0, 10.944444444444445]
+    - ["JO-CA1", "CB3673a", 0, 1.1693121693121693]
+    - ["JO-CA1", "CB3673b", 0, 2.822222222222222]
+    - ["JO-CL", "CB1145", 0, 1.3492063492063493]
+    - ["JO-CM", "CB4176", 0, 2.833333333333333]
+    - ["JO-ED1", "CB3870", 0, 1.0]
+    - ["JO-ED2_a", "CB3870", 0, 1.0]
+    - ["JO-ED2_a", "WED099", 0, 1.0]
+    - ["JO-EV1", "CB3745", 0, 1.5853658536585364]
+    - ["JO-EV1", "DNg09_a", 0, 1.0]
+    - ["JO-EV2", "CB3673a", 0, 1.0]
+    - ["JO-EV2", "CB3673b", 0, 1.0]
+    - ["JO-EV2", "pIP1", 0, 1.0]
+    - ["JO-EV3", "ALIN5", 0, 1.0]
+    - ["JO-EV3", "CB0432", 0, 1.6122448979591835]
+    - ["JO-EV3", "CB0591", 0, 3.7222222222222223]
+    - ["JO-EV5", "CB0432", 0, 1.0]
+    - ["JO-EV5", "PS230", 0, 1.6285714285714288]
+    - ["JO-EV6", "GNG100", 0, 1.5185185185185186]
+    - ["M_l2PNl20", "DNb05", 0, 24.0]
+    - ["ORN_DM1", "M_l2PNl20", 1, 4.146050670640833]
+    - ["ORN_DM1", "M_l2PNl20", 2, 6.977272727272728]
+    - ["ORN_DM1", "lLN2T_b", 1, 2.192118226600985]
+    - ["ORN_DM1", "lLN2T_b", 2, 1.435164835164835]
+    - ["ORN_DM1", "lLN2T_c", 1, 24.0]
+    - ["ORN_DM1", "lLN2T_c", 2, 4.990909090909091]
+    - ["ORN_DM1", "lLN2X04", 1, 24.0]
+    - ["ORN_DM1", "lLN2X04", 2, 19.26315789473684]
+    - ["ORN_VA2", "VA2_adPN", 1, 1.5472602739726022]
+    - ["ORN_VA2", "VA2_adPN", 2, 1.8525345622119813]
+    - ["ORN_VA2", "lLN2T_b", 1, 4.0090090090090085]
+    - ["ORN_VA2", "lLN2T_b", 2, 1.1563421828908553]
+    - ["ORN_VA2", "lLN2T_c", 1, 24.0]
+    - ["ORN_VA2", "lLN2T_c", 2, 12.708333333333336]
+    - ["PS230", "DNa02", 0, 1.2851985559566788]
+    - ["VA2_adPN", "DNb05", 0, 23.138613861386155]
+    - ["WED099", "DNb05", 0, 24.0]
+    - ["lLN2T_b", "DNb05", 0, 24.0]
+    - ["lLN2T_c", "DNb05", 0, 24.0]
+    - ["lLN2X04", "DNb05", 0, 24.0]
+    - ["pIP1", "DNa01", 0, 6.236111111111111]
+stage1_by_variant:
+  GRU2:
+    model.plastic_labels: null
+    model.plastic_lr_scale: 1.0
+    # VO2's Stage 1 effective parameters, including its 52 learned gain deltas.
+    model.budget_target: 34805
+stage2:
+  occlusion_speed.coef: 0.02
+  occlusion_turn.coef: 0.2
+  occlusion_speed.catchup_min_distance_m: 1.0
+  occlusion_speed.trains_readout: false
+  occlusion_speed.groups: [strong, weak, lost, catchup]
+  occlusion_turn.groups: [strong, weak, lost]
+  kickstart.initial_lambda: 1.0
+  kickstart.anneal_fraction: 0.3

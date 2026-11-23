@@ -218,6 +218,8 @@ reacquisition:
 training:
   stage1: dagger_v2  # plan 3.8
   stage2: ppo_v2
+  # PM selection before M4 (#138, #141): A3 v15. Pilot thresholds are descriptive.
+  recipe: configs/v2/train/a3_v15.yaml
   # Plan 3.8: stage 2 replaces stage 1 only if its held-out success does not drop. Per
   # variant, on the pilot held-out episodes (normal and occlusion, both worlds and motions):
   # stage 2 - stage 1, paired by training seed, noninferior with margin 0.05 (one-sided t

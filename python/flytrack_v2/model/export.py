@@ -17,7 +17,7 @@ from flytrack_v2.artifacts import GRAPH_FREE_VARIANTS, required_files, validate_
 from flytrack_v2.contracts import SensorContractV2
 from flytrack_v2.frontend import NodeMajorFlyvis
 
-from .config import ModelConfigV2
+from .config import PLASTIC_DEFAULTS, ModelConfigV2
 from .graph import GraphV2
 from .policy import ConnectomePolicyV2, GRUPolicyV2, build_policy
 from .sensory import InputNorm
@@ -52,7 +52,7 @@ def export_policy(
         policy.input_norm.save(staging / "input_norm.npz")
         policy.contract.write_json(staging / "sensor_contract.json")
 
-        model_config = policy.config.to_dict()
+        model_config = policy.config.to_dict(include_plastic_defaults=True)
         model_config.update(
             variant=variant,
             visual_bins=frontend.frozen.visual_bins,
@@ -133,7 +133,9 @@ def load_policy(
     readout_body_ids = config_values.pop("readout_body_ids", None)
     hidden_size = config_values.pop("hidden_size", None) if variant in GRAPH_FREE_VARIANTS else None
     missing = {field.name for field in fields(ModelConfigV2)} - config_values.keys()
-    missing.discard("visual_offset_init")  # Older cards predate the optional parameter.
+    missing.difference_update(PLASTIC_DEFAULTS, {"visual_offset_init"})
+    missing.discard("odor_adaptation_fraction")  # Older cards: complete adaptation (1.0).
+    missing.discard("odor_adaptation_fractions")  # Older cards: one fraction for all.
     if missing:
         raise ValueError(f"Model card model_config is missing {sorted(missing)}")
     config = ModelConfigV2.from_dict(config_values)

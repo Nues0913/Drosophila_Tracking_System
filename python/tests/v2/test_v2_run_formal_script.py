@@ -99,16 +99,21 @@ def test_host_assignment_keys_may_be_numbers(tmp_path):
     assert run_formal.preflight(args(tmp_path), numeric, HOSTS, HEAD, "", {}) == []
 
 
-def test_cloud_assignment_only_moves_the_complete_seed(tmp_path):
-    path = ROOT / "configs/v2/execution/cloud-seed-1.yaml"
+def test_cloud_assignment_only_moves_the_two_complete_seeds(tmp_path):
+    path = ROOT / "configs/v2/execution/cloud-seeds-1-2.yaml"
     doc = yaml.safe_load(path.read_text())
     digest = run_formal.sha256(run_formal.PROTOCOL)
     protocol = run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
     assert protocol == PROTOCOL | {"host_assignment": doc["host_assignment"]}
-    cloud = args(tmp_path, host="gputw3090", seeds=[1])
+    assert protocol["host_assignment"] == {
+        "4070": [5], "4060": [3], "2060": [4], "gputw3090": [1, 2],
+    }
+    cloud = args(tmp_path, host="gputw3090", seeds=[1, 2])
     assert run_formal.preflight(cloud, protocol, HOSTS, HEAD, "", {}) == []
     assert run_formal.preflight(cloud, PROTOCOL, HOSTS, HEAD, "", {})
-    assert run_formal.preflight(args(tmp_path), protocol, HOSTS, HEAD, "", {})
+    for host, seed in (("4070", 1), ("4060", 2)):
+        old_host = args(tmp_path, host=host, seeds=[seed])
+        assert run_formal.preflight(old_host, protocol, HOSTS, HEAD, "", {})
 
 
 @pytest.mark.parametrize(

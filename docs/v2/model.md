@@ -1,6 +1,6 @@
 # WP3c 中央核心、DN 讀出與感覺編碼 v2（Issue #136）
 
-本頁記載 WP3c 的預設模型。正式 A3 第十五版採用 `v2_cx_lat`、雙 ORN 通道及 DNp09＋DNb05 速度讀出。VO2 匹配預算為 34,805，GRU2 為 35,249（+1.28%）；下方 `v2_main` 表保留開發時的量測基準。[正式配方](../../configs/v2/train/a3_v15.yaml)、[對照試跑收件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/141#issuecomment-7103054795)。
+本頁記載 WP3c 的預設模型。正式 A3 第十五版的圖變體採用 `v2_cx_lat` 或其接線對照圖，速度由 DNp09＋DNb05 讀出。配方使用雙 ORN 通道。Stage 1 的 VO2 有效參數預算為 34,805，與之匹配的 GRU2 有 35,249 個有效參數（+1.28%）；下方 `v2_main` 表保留開發時的量測基準。[正式配方](../../configs/v2/train/a3_v15.yaml)、[對照試跑收件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/141#issuecomment-7103054795)。
 
 六個變體共用 [Policy 介面](interfaces.md#5-policy)，預設設定見 [default.yaml](../../configs/v2/model/default.yaml)。`build_policy` 可傳入已驗證的 `GraphV2` 和固定的 `InputNorm`。`describe()` 提供模型設定、狀態尺寸、正規化擬合狀態及有效參數數量。圖策略也列出速度和轉向讀出實際使用的型別與各側 bodyId。
 

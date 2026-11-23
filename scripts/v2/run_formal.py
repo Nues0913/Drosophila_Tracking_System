@@ -1,7 +1,7 @@
 """Run one host's share of the v2 formal matrix (#143, WP9).
 
     python scripts/v2/run_formal.py --host 4070 --seeds 5 \
-        --sha f8e8c2180d202d355e4b87cfb4e686ceceae771f --out runs/v2_formal --dry-run
+        --sha f8e8c2180d202d355e4b87cfb4e686ceceae771f --out runs/v2_formal_a3_v15 --dry-run
 
 For each assigned training seed, and each protocol variant in order (VO2, V2, O2, RW2, ER2,
 GRU2): Stage 1 (DAgger), Stage 1 on the pilot_held_out episodes, Stage 2 (PPO from Stage 1's

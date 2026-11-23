@@ -106,7 +106,10 @@ def test_cloud_assignment_only_moves_the_two_complete_seeds(tmp_path):
     protocol = run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
     assert protocol == PROTOCOL | {"host_assignment": doc["host_assignment"]}
     assert protocol["host_assignment"] == {
-        "4070": [5], "4060": [3], "2060": [4], "gputw3090": [1, 2],
+        "4070": [5],
+        "4060": [3],
+        "2060": [4],
+        "gputw3090": [1, 2],
     }
     cloud = args(tmp_path, host="gputw3090", seeds=[1, 2])
     assert run_formal.preflight(cloud, protocol, HOSTS, HEAD, "", {}) == []

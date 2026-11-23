@@ -99,6 +99,35 @@ def test_host_assignment_keys_may_be_numbers(tmp_path):
     assert run_formal.preflight(args(tmp_path), numeric, HOSTS, HEAD, "", {}) == []
 
 
+def test_cloud_assignment_only_moves_the_complete_seed(tmp_path):
+    path = ROOT / "configs/v2/execution/cloud-seed-1.yaml"
+    doc = yaml.safe_load(path.read_text())
+    digest = run_formal.sha256(run_formal.PROTOCOL)
+    protocol = run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
+    assert protocol == PROTOCOL | {"host_assignment": doc["host_assignment"]}
+    cloud = args(tmp_path, host="gputw3090", seeds=[1])
+    assert run_formal.preflight(cloud, protocol, HOSTS, HEAD, "", {}) == []
+    assert run_formal.preflight(cloud, PROTOCOL, HOSTS, HEAD, "", {})
+    assert run_formal.preflight(args(tmp_path), protocol, HOSTS, HEAD, "", {})
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"protocol_sha256": "stale"}, "does not match"),
+        ({"training": {}}, "expected only"),
+        ({"host_assignment": {"ghost": [1, 2, 3, 4, 5]}}, "configured hosts"),
+        ({"host_assignment": {"2060": [1, 1, 2, 3, 4, 5]}}, "exactly one host"),
+        ({"host_assignment": {"2060": [1, 2, 3, 4]}}, "exactly one host"),
+    ],
+)
+def test_execution_assignment_rejects_stale_or_invalid_maps(changes, expected):
+    digest = run_formal.sha256(run_formal.PROTOCOL)
+    doc = {"protocol_sha256": digest, "host_assignment": ASSIGNMENT} | changes
+    with pytest.raises(ValueError, match=expected):
+        run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
+
+
 def test_each_stage_is_evaluated_on_the_held_out_episodes_right_after_it(tmp_path):
     out = ROOT / "runs/v2_formal"
     steps = run_formal.chain(args(tmp_path, out=out), "RW2", 5)

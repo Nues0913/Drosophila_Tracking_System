@@ -67,6 +67,58 @@ def test_matrix_forwards_motion_checks_rows_and_records_full_cell(tmp_path, monk
     assert any("up" in c for c in commands) and any("down" in c for c in commands)
 
 
+def test_matrix_runs_a_v2_card_with_its_own_contract_and_v1compat(tmp_path, monkeypatch):
+    # #140 G1 scope for v2: seed from provenance.train_seed, the card's sensor contract, and
+    # the world named in the manifest and passed to Compose.
+    matrix = matrix_module()
+    monkeypatch.setattr(matrix, "__file__", str(tmp_path / "scripts/run_gazebo_matrix.py"))
+    artifact = tmp_path / "runs/v2/VO2/seed_100/final"
+    artifact.mkdir(parents=True)
+    card = artifact / "model_card.json"
+    card.write_text(
+        json.dumps({"variant": "VO2", "spec_version": "v2", "provenance": {"train_seed": 100}})
+    )
+    digest = matrix.sha256(card)
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            env = kwargs["env"]
+            seen.update(env)
+            cell = tmp_path / env["EVAL_OUTPUT"].removeprefix("/workspace/")
+            row = {"variant": "VO2", "seed": 100, "model_card_sha256": digest}
+            (cell / "episodes.jsonl").write_text(
+                json.dumps({**row, "target_motion": "curved"}) + "\n"
+            )
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(matrix.subprocess, "run", fake_run)
+    argv = ["matrix", "--variants", "VO2", "--scenarios", "normal", "--seeds", "100"]
+    argv += ["--episodes", "1", "--artifact-template", "runs/v2/{variant}/seed_{seed}/final"]
+    monkeypatch.setattr(sys, "argv", argv)
+    matrix.main()
+    assert seen["SENSOR_CONTRACT"] == "/workspace/runs/v2/VO2/seed_100/final/sensor_contract.json"
+    assert seen["FLYTRACK_WORLD"] == "v1compat"
+    assert seen["ENVIRONMENT_SEED"] == str(1700000000 + 100 * 100000)
+    manifest = json.loads((tmp_path / "runs/gazebo_eval/gazebo_matrix_manifest.json").read_text())
+    assert manifest["world"] == "v1compat"
+
+
+def test_matrix_card_seed_and_spec_must_match_the_variant(tmp_path, monkeypatch):
+    matrix = matrix_module()
+    assert matrix.card_seed({"metadata": {"seed": 3}}) == 3
+    assert matrix.card_seed({"spec_version": "v2", "provenance": {"train_seed": 101}}) == 101
+    monkeypatch.setattr(matrix, "__file__", str(tmp_path / "scripts/run_gazebo_matrix.py"))
+    artifact = tmp_path / "runs/bc/VO2/seed_0/actor"
+    artifact.mkdir(parents=True)
+    (artifact / "model_card.json").write_text(
+        json.dumps({"variant": "VO2", "metadata": {"seed": 0}})
+    )
+    monkeypatch.setattr(sys, "argv", ["matrix", "--variants", "VO2", "--seeds", "0"])
+    with pytest.raises(ValueError, match="spec_version"):
+        matrix.main()
+
+
 def test_matrix_rejects_missing_or_incorrect_motion():
     matrix = matrix_module()
     base = {"variant": "V", "seed": 0, "model_card_sha256": "abc"}

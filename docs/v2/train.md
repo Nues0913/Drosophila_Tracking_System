@@ -153,6 +153,7 @@ python scripts/v2/run_formal.py --host 4070 --seeds 5 1 --sha <Decision 的 SHA>
   - 主機在 `hosts.yaml` 裡。
   - 子程序的 `GIT_COMMIT` 由腳本設定，model card 會記錄正確的 SHA。
 - **配方**：腳本讀取協定的 `training.recipe`，將 `configs/v2/train/a3_v15.yaml` 的固定設定傳給兩個 trainer。六個變體共用雙 ORN 編碼、配對訓練與 PPO 輔助監督；RW2、ER2 從同一張 `v2_cx_lat` 圖產生，GRU2 的預算以該圖的 VO2 重新匹配。2060 和 4070 的圖模型在 Stage 1 使用 activation checkpoint；部署時只載入訓練產物。
+  - #211 修正了第十五版試跑（`868c373`）的配對損失分母。正式 Stage 1 以每個完整 batch 的有效配對步數正規化，NLL 和活動損失依序列數加權。依主機切分的 micro-batch 不再改變配對樣本的權重。試跑結果保留原版本的紀錄。
 - **順序**：每個 seed 依協定的 `model_variants`（VO2、V2、O2、RW2、ER2、GRU2）各跑一條鏈，依序是：
   1. Stage 1；
   2. Stage 1 的 `evaluate_v2.py --seeds pilot_held_out --no-sensitivity`，輸出到 `heldout_stage1/`；

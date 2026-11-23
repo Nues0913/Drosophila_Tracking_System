@@ -33,6 +33,9 @@ PAIR_KINDS = {"odor": (PAIR_SWAP, 1), "wind": (PAIR_ROTATE, 1), "intensity": (PA
 PAIR_SUMS = tuple(PAIR_KINDS)
 PAIR_SUBSETS = ("all", "present", "present_d1_4", "present_d5_8", "present_d9_16")
 PAIR_CASES = {1: "present", 2: "lost", 3: "wall"}
+PAIR_STEP_MEANS = {"pair_loss", "pair_turn_loss", "pair_speed_loss"} | {
+    f"pair_case_{name}" for name in PAIR_CASES.values()
+}
 
 
 def label_margins(config) -> tuple[float, float]:
@@ -87,20 +90,22 @@ def _latent_log_prob_by_action(dist: ActionDistribution, latent: Tensor) -> Tens
     return -0.5 * z.square() - log_std - 0.5 * math.log(2 * math.pi)
 
 
-def _pair_steps(policy, batch: SequenceBatch, burn_in: int) -> tuple[Tensor, dict[str, Tensor]]:
+def _pair_steps(policy, batch: SequenceBatch, burn_in: int) -> Tensor:
     """#138 A2: the steps the paired loss uses, [T, B]: every step after the burn-in that is
     occluded (the teacher's label then comes from the observation, so the transformed one has
-    its own label) and whose transformed chemical columns differ from the step's; and those
-    steps by transform (StepData.pair_kind)."""
+    its own label) and whose transformed chemical columns differ from the step's."""
     columns = policy.encoder.chemical_columns
     changed = (batch.chem_pair[burn_in:] != batch.code[burn_in:, :, columns]).any(-1)
-    use = batch.occluded[burn_in:] & changed
-    kind = batch.pair_kind[burn_in:]
-    return use, {name: use & (kind == code) for name, (code, _) in PAIR_KINDS.items()}
+    return batch.occluded[burn_in:] & changed
 
 
 def sequence_loss(
-    policy, batch: SequenceBatch, initial: Tensor, settings: LossSettings
+    policy,
+    batch: SequenceBatch,
+    initial: Tensor,
+    settings: LossSettings,
+    *,
+    pair_mask: Tensor | None = None,
 ) -> dict[str, Tensor]:
     """The NLL of the teacher's labels over the sequence after the burn-in, plus the activity
     penalty, plus (#138 A2, pair_weight > 0) the paired loss:
@@ -134,7 +139,7 @@ def sequence_loss(
     if paired:
         if not policy.config.odor_shared_adaptation:
             raise ValueError("The paired branch needs the shared odor adaptation")
-        use, kind_masks = _pair_steps(policy, batch, burn_in)
+        use = _pair_steps(policy, batch, burn_in) if pair_mask is None else pair_mask
         rows = torch.where(use.any(0))[0]
         columns = policy.encoder.chemical_columns
         held = batch.occluded[burn_in:, rows, None]
@@ -180,9 +185,7 @@ def sequence_loss(
     pair = {}
     pair_loss = nll.new_zeros(())
     if paired:
-        pair, pair_loss = _pair_loss(
-            dist, latent, pair_means, rows, use, kind_masks, batch, burn_in, settings
-        )
+        pair, pair_loss = _pair_loss(dist, latent, pair_means, rows, use, batch, burn_in, settings)
     return {
         "loss": nll.mean() + penalty + settings.pair_weight * pair_loss,
         "nll": nll.mean(),
@@ -198,10 +201,8 @@ def sequence_loss(
     }
 
 
-def _pair_loss(dist, latent, pair_means, rows, use, kind_masks, batch, burn_in, settings):
-    """The paired loss of sequence_loss, and its metrics as sums over the steps, divided by
-    their counts in finish_pair_metrics (batch_metrics weights micro-batches by their size, so
-    equal micro-batches combine exactly)."""
+def _pair_loss(dist, latent, pair_means, rows, use, batch, burn_in, settings):
+    """Return the differentiable mean pair loss and diagnostics for this sequence batch."""
     zero = latent.new_zeros(())
     metrics = {"pair_loss": zero, "pair_turn_loss": zero, "pair_speed_loss": zero}
     metrics |= {"pair_steps": zero} | {f"pair_case_{name}": zero for name in PAIR_CASES.values()}
@@ -222,7 +223,7 @@ def _pair_loss(dist, latent, pair_means, rows, use, kind_masks, batch, burn_in, 
     turn = torch.where(mask, error[..., 1], 0.0).sum() / count
     speed = torch.where(mask, error[..., 0], 0.0).sum() / count
     loss = turn + speed
-    metrics["pair_loss"] = loss.detach()
+    metrics["pair_loss"] = loss
     metrics["pair_turn_loss"], metrics["pair_speed_loss"] = turn.detach(), speed.detach()
     metrics["pair_steps"] = mask.sum() / use.numel()
     case = batch.pair_case[burn_in:, rows]
@@ -241,10 +242,12 @@ def _pair_loss(dist, latent, pair_means, rows, use, kind_masks, batch, burn_in, 
         "present_d5_8": present & (delay > 4) & (delay <= 8),
         "present_d9_16": present & (delay > 8) & (delay <= 16),
     }
-    for kind, (_, component) in PAIR_KINDS.items():
+    kinds = batch.pair_kind[burn_in:, rows]
+    for kind, (code, component) in PAIR_KINDS.items():
+        selected = mask & (kinds == code)
         x_all, y_all = teacher.detach()[..., component], student.detach()[..., component]
         for subset, subset_mask in subsets.items():
-            chosen = kind_masks[kind][:, rows] & subset_mask
+            chosen = selected & subset_mask
             x, y = x_all[chosen], y_all[chosen]
             metrics[f"pair_{kind}_{subset}_n"] = chosen.sum().to(latent.dtype)
             metrics[f"pair_{kind}_{subset}_sxy"] = (x * y).sum()
@@ -296,18 +299,44 @@ def _micro_batches(batch: SequenceBatch, size: int):
 def batch_metrics(
     policy, batch: SequenceBatch, settings: LossSettings, micro_batch: int, *, backward: bool
 ) -> dict[str, Tensor]:
+    """Accumulate sequence means and paired-step means with their full-batch denominators."""
     device = policy.log_std.device
+    batch = batch.to(device)
     total = batch.initial.size(0)
     initial = policy.initial_central_state(1, device)
-    metrics = {}
-    for part in _micro_batches(batch.to(device), micro_batch):
+    pair_mask = None
+    if settings.pair_weight > 0 and batch.chem_pair is not None:
+        pair_mask = _pair_steps(policy, batch, settings.burn_in)
+        total_pairs = pair_mask.sum().clamp(min=1)
+    metrics: dict[str, Tensor] = {}
+    for index, part in enumerate(_micro_batches(batch, micro_batch)):
         fraction = part.initial.size(0) / total
-        values = sequence_loss(policy, part, initial, settings)
+        part_mask = None
+        pair_fraction = None
+        if pair_mask is not None:
+            start = index * micro_batch
+            part_mask = pair_mask[:, start : start + part.initial.size(0)]
+            pair_fraction = part_mask.sum() / total_pairs
+        values = sequence_loss(policy, part, initial, settings, pair_mask=part_mask)
         if backward:
-            (values["loss"] * fraction).backward()
+            loss = (values["nll"] + values["activity_penalty"]) * fraction
+            if pair_fraction is not None:
+                loss = loss + settings.pair_weight * values["pair_loss"] * pair_fraction
+            loss.backward()
         for name, value in values.items():
-            weighted = value.detach() * fraction
+            if name == "loss":
+                continue
+            if pair_fraction is not None and name in PAIR_STEP_MEANS:
+                weighted = value.detach() * pair_fraction
+            elif name.startswith("pair_") and name != "pair_steps":
+                # Per-kind counts and cross-products are additive sums.
+                weighted = value.detach()
+            else:
+                weighted = value.detach() * fraction
             metrics[name] = metrics[name] + weighted if name in metrics else weighted
+    metrics["loss"] = metrics["nll"] + metrics["activity_penalty"]
+    if "pair_loss" in metrics:
+        metrics["loss"] += settings.pair_weight * metrics["pair_loss"]
     return metrics
 
 

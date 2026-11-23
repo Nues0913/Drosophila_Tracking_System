@@ -271,6 +271,31 @@ def test_micro_batches_keep_the_pair_metrics(monkeypatch):
         torch.testing.assert_close(whole[key], split[key])
 
 
+@pytest.mark.parametrize("micro_batch", [3, 4])
+def test_uneven_pairs_keep_the_same_objective_and_gradients(monkeypatch, micro_batch):
+    run = collector(monkeypatch, 1.0)
+    model, batch = run.policy, batch_from(run)
+    occluded = batch.occluded.clone()
+    occluded[:, 4:] = False  # the right half has no paired steps
+    batch = batch._replace(occluded=occluded)
+    settings = LossSettings(4, 1e-4, 1e-3, pair_weight=10.0)
+
+    whole = finish_pair_metrics(batch_metrics(model, batch, settings, 8, backward=True))
+    grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    assert whole["pair_loss"] > 0 and 0 < whole["pair_steps"] <= 0.5
+    assert "core.gain_theta" in grads
+
+    model.zero_grad(set_to_none=True)
+    split = finish_pair_metrics(batch_metrics(model, batch, settings, micro_batch, backward=True))
+    for key in whole:
+        torch.testing.assert_close(whole[key], split[key], msg=lambda msg, key=key: f"{key}: {msg}")
+    for name, p in model.named_parameters():
+        if name in grads:
+            torch.testing.assert_close(grads[name], p.grad, atol=2e-7, rtol=2e-5)
+        else:
+            assert p.grad is None
+
+
 def test_the_bilateral_speed_readout_holds_on_as_graph():
     """#138 A2 second version reads the speed from every bilateral DN pair on v2_cx_lat."""
     from flytrack_v2.model.graph import GraphV2

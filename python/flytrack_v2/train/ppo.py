@@ -144,6 +144,9 @@ def schedule(update: int, config: Mapping) -> Schedule:
     kick = config["kickstart"]
     span = kick["anneal_fraction"] * actor_updates
     kick_lambda = kick["initial_lambda"] * (max(0.0, 1 - max(k, 0) / span) if span > 0 else 0.0)
+    # #138 A3 nineteenth version: the weight anneals to final_lambda instead of 0, so the KL to
+    # the Stage 1 policy stays on; 0 (the default) is every earlier version's schedule.
+    kick_lambda = max(kick_lambda, float(kick.get("final_lambda", 0.0)))
     return Schedule(k >= 0, actor_lr, critic_lr, kick_lambda)
 
 

@@ -15,6 +15,7 @@ from flytrack_v2.train.ppo import (
     gaussian_kl,
     ppo_update,
     schedule,
+    steps_teacher,
 )
 from test_v2_model_core import small_graph
 from torch import nn
@@ -99,6 +100,30 @@ def test_schedule_warms_up_the_critic_then_ramps_and_anneals_the_actor():
     # 90 actor updates, annealed over the first 27
     assert schedule(10 + 27, config).kick_lambda == 0.0
     assert schedule(10 + 9, config).kick_lambda == pytest.approx(1 - 9 / 27)
+
+
+def test_kickstart_anneals_to_its_floor():
+    """#138 A3 nineteenth version: with final_lambda the weight never drops below it, so the
+    KL to the Stage 1 policy (and the teacher's rollout) stays on; 0 is the old schedule."""
+    config = {
+        "updates": 100,
+        "warmup": {"critic_only_updates": 10, "actor_ramp_updates": 10},
+        "actor_lr": 3e-4,
+        "critic_lr": 1e-3,
+        "kickstart": {"initial_lambda": 1.0, "anneal_fraction": 0.3, "final_lambda": 0.2},
+    }
+    assert schedule(0, config).kick_lambda == 1.0
+    assert schedule(10 + 9, config).kick_lambda == pytest.approx(1 - 9 / 27)
+    assert schedule(10 + 24, config).kick_lambda == pytest.approx(0.2)  # 1 - 24/27 < 0.2
+    for update in (10 + 27, 60, 99):
+        plan = schedule(update, config)
+        assert plan.kick_lambda == pytest.approx(0.2) and steps_teacher(plan)
+    config["kickstart"]["final_lambda"] = 0.0
+    assert schedule(10 + 27, config).kick_lambda == 0.0 and not steps_teacher(schedule(60, config))
+    del config["kickstart"]["final_lambda"]
+    assert schedule(99, config).kick_lambda == 0.0
+    defaults = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
+    assert defaults["kickstart"]["final_lambda"] == 0.0
 
 
 def test_gaussian_kl_is_zero_for_equal_and_closed_form_otherwise():

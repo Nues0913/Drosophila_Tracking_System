@@ -12,8 +12,8 @@ host (G-E), ENVIRONMENT_<host>.txt and two archives: the evidence (configs, logs
 model cards, SHA256SUMS, held-out evaluation outputs; no weights) and the weights (each stage's
 final/).
 
-- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (its status is
-  no longer draft_until_m4), its host_assignment maps this host to every seed given, and every
+- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (status:
+  frozen), its host_assignment maps this host to every seed given, and every
   seed is one of its training seeds; no FLYTRACK_* environment override is set (container
   settings aside); the host is in hosts.yaml. GIT_COMMIT is set for the cards.
 - A stage whose final/ verifies against its SHA256SUMS is kept and a held-out evaluation with a
@@ -146,8 +146,9 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
         problems.append(f"seeds {wrong} are not the protocol's {kind} seeds {allowed}")
     if len(set(args.seeds)) != len(args.seeds):
         problems.append("a seed is listed twice")
-    if not args.smoke and protocol.get("status") == "draft_until_m4":
-        problems.append("the protocol is still a draft (status: draft_until_m4); M4 freezes it")
+    if not args.smoke and protocol.get("status") != "frozen":
+        status = protocol.get("status")
+        problems.append(f"the protocol is not frozen (status: {status}); M4 freezes it")
     assignment = protocol.get("host_assignment")
     if not args.smoke:
         if not isinstance(assignment, dict):
@@ -165,7 +166,7 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
     return problems
 
 
-def chain(args, variant: str, seed: int) -> list[dict]:
+def chain(args, variant: str, seed: int, recipe: dict | None = None) -> list[dict]:
     """The steps of one (variant, seed) chain, in order."""
     run = args.out / variant / f"seed_{seed}"
     py = sys.executable
@@ -174,9 +175,22 @@ def chain(args, variant: str, seed: int) -> list[dict]:
     stage1 += ["--variant", variant, *common, "--out", rel(run / "stage1")]
     stage2 = [py, "-m", "flytrack_v2.train.ppo", "--init", rel(run / "stage1/final"), *common]
     stage2 += ["--out", rel(run / "stage2")]
-    if args.smoke:
-        stage1 += ["--override", *SMOKE_STAGE1]
-        stage2 += ["--override", *SMOKE_STAGE2]
+    recipe = recipe or {}
+    stage1_settings = dict(recipe.get("stage1", {}))
+    stage1_settings.update(recipe.get("stage1_by_variant", {}).get(variant, {}))
+    if variant != "GRU2" and args.host in recipe.get("activation_checkpoint_hosts", []):
+        stage1_settings["activation_checkpoint"] = True
+    for cmd, settings, smoke in (
+        (stage1, stage1_settings, SMOKE_STAGE1),
+        (stage2, recipe.get("stage2", {}), SMOKE_STAGE2),
+    ):
+        overrides = [
+            f"{key}={json.dumps(value, separators=(',', ':'))}" for key, value in settings.items()
+        ]
+        if args.smoke:
+            overrides.extend(smoke)
+        if overrides:
+            cmd.extend(["--override", *overrides])
     steps = []
     for stage, cmd in (("stage1", stage1), ("stage2", stage2)):
         steps.append({"name": stage, "kind": "train", "run": run, "out": run / stage, "cmd": cmd})
@@ -408,7 +422,11 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"refused: {problem}", file=sys.stderr)
         return 2
-    chains = [(v, s, chain(args, v, s)) for s in args.seeds for v in args.variants]
+    recipe_path = protocol.get("training", {}).get("recipe")
+    recipe = (
+        yaml.safe_load((ROOT / recipe_path).read_text(encoding="utf-8")) if recipe_path else None
+    )
+    chains = [(v, s, chain(args, v, s, recipe)) for s in args.seeds for v in args.variants]
     if args.dry_run:
         for variant, seed, steps in chains:
             print(f"{variant} seed {seed}")

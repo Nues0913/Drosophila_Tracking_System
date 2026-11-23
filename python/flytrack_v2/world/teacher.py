@@ -274,3 +274,26 @@ class OcclusionTeacher:
         flag = occluded.to(f64)
         state = torch.stack((held_v, held_w, lost, side, flag), -1).to(state.dtype)
         return action, state
+
+    def cases(self, privileged: dict[str, Tensor], obs: dict[str, Tensor]) -> Tensor:
+        """Which rule ``act`` uses for each row, [B] uint8 (#138 A2's pair records): 0 visible
+        (privileged teacher), 1 occluded with the odor present, 2 occluded with the odor lost,
+        3 occluded and the wall rule turning (it overrides 1 and 2)."""
+        f64 = torch.float64
+        occluded = privileged["occluded"].to(torch.bool)
+        odor = obs["odor"].to(f64).clamp(min=0)
+        present = (obs["valid"][:, 2] > 0) & (odor.max(-1).values > self.detect)
+        case = torch.where(present, 1, 2)
+        if self.walls is not None:
+            pose = privileged["agent_pose"].to(f64)
+            ahead = pose[:, :2] + self.wall_lookahead_m * torch.stack(
+                (torch.cos(pose[:, 2]), torch.sin(pose[:, 2])), -1
+            )
+            xmin, ymin, xmax, ymax = self.walls
+            m = self.wall_margin_m
+            out = (
+                (ahead[:, 0] < xmin + m) | (ahead[:, 0] > xmax - m)
+                | (ahead[:, 1] < ymin + m) | (ahead[:, 1] > ymax - m)
+            )  # fmt: skip
+            case = torch.where(out, 3, case)
+        return torch.where(occluded, case, 0).to(torch.uint8)

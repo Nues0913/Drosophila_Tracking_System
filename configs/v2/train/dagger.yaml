@@ -22,4 +22,10 @@ label_margin: 1.0e-3  # used only when label_latent_bound is null
 label_latent_bound: 3.0
 held_out: {every_updates: 50, sequences: 256, fraction: 0.05}
 activation_checkpoint: false
+# #138 A2 (paired-observation DAgger): weight of the paired turn loss; 0 collects no pairs and
+# trains exactly as before. See flytrack_v2.train.update.sequence_loss.
+pair_weight: 0.0
+pair_window: 16  # control steps (0.8 s) the transformed branch runs before it forks again
 model: {}
+# #138 A3 seventh version: the fitted input normalization (its code layout must match the model's)
+input_norm: artifacts/input_norm_v2/input_norm.npz

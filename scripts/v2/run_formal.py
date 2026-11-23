@@ -12,10 +12,12 @@ host (G-E), ENVIRONMENT_<host>.txt and two archives: the evidence (configs, logs
 model cards, SHA256SUMS, held-out evaluation outputs; no weights) and the weights (each stage's
 final/).
 
-- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (its status is
-  no longer draft_until_m4), its host_assignment maps this host to every seed given, and every
+- Preflight: HEAD is --sha and the tracked tree is clean; the protocol is frozen (status:
+  frozen), its host_assignment maps this host to every seed given, and every
   seed is one of its training seeds; no FLYTRACK_* environment override is set (container
   settings aside); the host is in hosts.yaml. GIT_COMMIT is set for the cards.
+- An approved, tracked --execution-assignment can reassign whole seeds. It binds to the frozen
+  evaluation protocol SHA-256 and must list each formal seed once.
 - A stage whose final/ verifies against its SHA256SUMS is kept and a held-out evaluation with a
   manifest is kept, so running the same command again picks up where it stopped. A stage
   stopped by a crash or a reboot resumes with --resume from its own checkpoint: Stage 1 when
@@ -112,6 +114,25 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def apply_execution_assignment(protocol: dict, hosts: dict, document: dict, digest: str) -> dict:
+    """Replace only the host map. Leave the training and evaluation settings frozen."""
+    if not isinstance(document, dict) or set(document) != {"protocol_sha256", "host_assignment"}:
+        raise ValueError("expected only protocol_sha256 and host_assignment in the assignment")
+    if document["protocol_sha256"] != digest:
+        raise ValueError("execution assignment does not match the frozen protocol SHA-256")
+    mapping = document["host_assignment"]
+    if not isinstance(mapping, dict) or any(
+        host not in hosts or not isinstance(seeds, list) or not seeds
+        or any(type(seed) is not int for seed in seeds)
+        for host, seeds in mapping.items()
+    ):  # fmt: skip
+        raise ValueError("execution assignment must map configured hosts to nonempty seed lists")
+    assigned = [seed for seeds in mapping.values() for seed in seeds]
+    if sorted(assigned) != sorted(protocol["training_seeds"]):
+        raise ValueError("execution assignment must give each formal seed to exactly one host")
+    return {**protocol, "host_assignment": mapping}
+
+
 def artifact_done(final: Path) -> bool:
     """final/ exists and every file in its SHA256SUMS matches."""
     sums = final / "SHA256SUMS"
@@ -146,8 +167,9 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
         problems.append(f"seeds {wrong} are not the protocol's {kind} seeds {allowed}")
     if len(set(args.seeds)) != len(args.seeds):
         problems.append("a seed is listed twice")
-    if not args.smoke and protocol.get("status") == "draft_until_m4":
-        problems.append("the protocol is still a draft (status: draft_until_m4); M4 freezes it")
+    if not args.smoke and protocol.get("status") != "frozen":
+        status = protocol.get("status")
+        problems.append(f"the protocol is not frozen (status: {status}); M4 freezes it")
     assignment = protocol.get("host_assignment")
     if not args.smoke:
         if not isinstance(assignment, dict):
@@ -165,7 +187,7 @@ def preflight(args, protocol: dict, hosts: dict, head: str, dirty: str, env: dic
     return problems
 
 
-def chain(args, variant: str, seed: int) -> list[dict]:
+def chain(args, variant: str, seed: int, recipe: dict | None = None) -> list[dict]:
     """The steps of one (variant, seed) chain, in order."""
     run = args.out / variant / f"seed_{seed}"
     py = sys.executable
@@ -174,9 +196,22 @@ def chain(args, variant: str, seed: int) -> list[dict]:
     stage1 += ["--variant", variant, *common, "--out", rel(run / "stage1")]
     stage2 = [py, "-m", "flytrack_v2.train.ppo", "--init", rel(run / "stage1/final"), *common]
     stage2 += ["--out", rel(run / "stage2")]
-    if args.smoke:
-        stage1 += ["--override", *SMOKE_STAGE1]
-        stage2 += ["--override", *SMOKE_STAGE2]
+    recipe = recipe or {}
+    stage1_settings = dict(recipe.get("stage1", {}))
+    stage1_settings.update(recipe.get("stage1_by_variant", {}).get(variant, {}))
+    if variant != "GRU2" and args.host in recipe.get("activation_checkpoint_hosts", []):
+        stage1_settings["activation_checkpoint"] = True
+    for cmd, settings, smoke in (
+        (stage1, stage1_settings, SMOKE_STAGE1),
+        (stage2, recipe.get("stage2", {}), SMOKE_STAGE2),
+    ):
+        overrides = [
+            f"{key}={json.dumps(value, separators=(',', ':'))}" for key, value in settings.items()
+        ]
+        if args.smoke:
+            overrides.extend(smoke)
+        if overrides:
+            cmd.extend(["--override", *overrides])
     steps = []
     for stage, cmd in (("stage1", stage1), ("stage2", stage2)):
         steps.append({"name": stage, "kind": "train", "run": run, "out": run / stage, "cmd": cmd})
@@ -344,6 +379,8 @@ def environment_text(args, head: str) -> str:
         "packages:",
         *(f"  {line}" for line in freeze.splitlines()),
     ]
+    if args.execution_assignment is not None:
+        lines.insert(2, f"execution_assignment_sha256: {sha256(args.execution_assignment)}")
     return "\n".join(lines) + "\n"
 
 
@@ -385,9 +422,10 @@ def archive(out: Path, host: str, runs: list[Path], extra: list[Path]) -> list[P
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--host", required=True, help="2060, 4060 or 4070")
+    parser.add_argument("--host", required=True, help="host label from configs/v2/train/hosts.yaml")
     parser.add_argument("--seeds", type=int, nargs="+", required=True)
     parser.add_argument("--sha", required=True, help="the commit the M4 Decision names")
+    parser.add_argument("--execution-assignment", type=Path, help="approved host map at --sha")
     parser.add_argument("--out", type=Path, default=ROOT / "runs/v2_formal")
     parser.add_argument("--variants", nargs="+", help="default: the protocol's model_variants")
     parser.add_argument("--device", default="cuda")
@@ -403,12 +441,25 @@ def main(argv: list[str] | None = None) -> int:
     args.out = args.out.resolve()
     head = git("rev-parse", "HEAD")
     dirty = git("status", "--porcelain", "--untracked-files=no")
+    if args.execution_assignment is not None:
+        try:
+            path = args.execution_assignment.resolve()
+            git("ls-files", "--error-unmatch", "--", str(path.relative_to(ROOT)))
+            assignment = yaml.safe_load(path.read_text(encoding="utf-8"))
+            protocol = apply_execution_assignment(protocol, hosts, assignment, sha256(PROTOCOL))
+        except (OSError, ValueError, subprocess.CalledProcessError, yaml.YAMLError) as error:
+            print(f"refused execution assignment: {error}", file=sys.stderr)
+            return 2
     problems = preflight(args, protocol, hosts, head, dirty, os.environ)
     if problems:
         for problem in problems:
             print(f"refused: {problem}", file=sys.stderr)
         return 2
-    chains = [(v, s, chain(args, v, s)) for s in args.seeds for v in args.variants]
+    recipe_path = protocol.get("training", {}).get("recipe")
+    recipe = (
+        yaml.safe_load((ROOT / recipe_path).read_text(encoding="utf-8")) if recipe_path else None
+    )
+    chains = [(v, s, chain(args, v, s, recipe)) for s in args.seeds for v in args.variants]
     if args.dry_run:
         for variant, seed, steps in chains:
             print(f"{variant} seed {seed}")
@@ -425,6 +476,8 @@ def main(argv: list[str] | None = None) -> int:
         min_free = 1 if args.smoke else MIN_FREE_GB
         outcome[f"{variant}/seed_{seed}"] = run_chain(steps, log, env, min_free, past)
     extra = [log]
+    if args.execution_assignment is not None:
+        extra.append(args.execution_assignment)
     bench_status = "not run (smoke)"
     if not args.smoke:
         bench = args.out / f"bench_v1_{args.host}.json"

@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from flytrack_v2.eval.runner import rotate_wind, swap_odor
 from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model.sensory import SensoryState
 from flytrack_v2.world.teacher import OcclusionTeacher, PrivilegedTeacher
@@ -38,6 +39,7 @@ EPISODE_SEED_BIT = 1 << 40
 _TRANSFER_TICKS = 32
 _PACK_ROWS = 64
 _REPLAY_LAYOUT = "env_major_f16"
+_PAIRED_LAYOUT = "env_major_f16_paired"  # #138 A2: with chem_pair and action_pair
 _READOUT_SAMPLE_STRIDE = 4
 _TEACHER_KEYS = ("agent_pose", "agent_velocity", "target_pose", "target_velocity", "occluded")
 _MADVISE_WARNING_LOCK = Lock()
@@ -54,6 +56,53 @@ class StepData(NamedTuple):
     action: Tensor
     reset: Tensor
     occluded: Tensor
+    # #138 A2, only when pair_weight > 0: the chemical columns of the step's code for the
+    # transformed observation (even rows: odor swapped; odd rows: wind rotated by 90 degrees),
+    # and the teacher's label for it from the same teacher state.
+    chem_pair: Tensor | None = None
+    action_pair: Tensor | None = None
+    pair_case: Tensor | None = None  # OcclusionTeacher.cases, uint8
+    pair_kind: Tensor | None = None  # PAIR_SWAP, PAIR_ROTATE or PAIR_INTENSITY, uint8
+
+
+# A2 second version (#138 7062303679): three transforms. Swap and rotate are E1's ablations
+# (flytrack_v2.eval.runner); intensity scales both antennae's odor by a factor, which keeps the
+# left/right ratio (the teacher's turn) and changes the teacher's speed near the source.
+PAIR_SWAP, PAIR_ROTATE, PAIR_INTENSITY = 1, 2, 3
+INTENSITY_FACTORS = (2.0, 0.5)
+
+
+def pair_assignment(world_kinds: list[str], rows_per_world: int) -> tuple[Tensor, Tensor]:
+    """Each row's transform and intensity factor, fixed for the run. v1compat has no valid
+    wind, so its rows alternate swap and intensity; a wind-world row is swap on half its rows,
+    rotate and intensity on a quarter each, so half of all rows swap the odor, as in A2's first
+    version (#138 7067941360: with 3/8 the occluded turn lost the odor's side). Intensity rows
+    alternate the factors."""
+    kinds, factors = [], []
+    for kind in world_kinds:
+        for local in range(rows_per_world):
+            if kind == "wind":
+                kinds.append((PAIR_SWAP, PAIR_ROTATE, PAIR_SWAP, PAIR_INTENSITY)[local % 4])
+                factors.append(INTENSITY_FACTORS[(local // 4) % 2])
+            else:
+                kinds.append((PAIR_SWAP, PAIR_INTENSITY)[local % 2])
+                factors.append(INTENSITY_FACTORS[(local // 2) % 2])
+    return torch.tensor(kinds, dtype=torch.uint8), torch.tensor(factors, dtype=torch.float32)
+
+
+def pair_transform(
+    obs: dict[str, Tensor], kinds: Tensor, factors: Tensor, antenna_angle_deg: float
+) -> dict[str, Tensor]:
+    """Each row's transform (pair_assignment) applied to one observation."""
+    swapped, rotated = swap_odor(obs), rotate_wind(90.0, antenna_angle_deg)(obs)
+    kinds = kinds.to(obs["odor"].device)[:, None]
+    scaled = obs["odor"] * factors.to(obs["odor"].device, obs["odor"].dtype)[:, None]
+    odor = torch.where(kinds == PAIR_SWAP, swapped["odor"], obs["odor"])
+    return {
+        **obs,
+        "odor": torch.where(kinds == PAIR_INTENSITY, scaled, odor),
+        "wind": torch.where(kinds == PAIR_ROTATE, rotated["wind"], obs["wind"]),
+    }
 
 
 @dataclass
@@ -66,7 +115,9 @@ class ReplayShard:
     readout_rates: Tensor | None = None  # [samples, DNs], only for the first fit
 
     def checkpoint(self) -> dict:
-        saved = {**vars(self), "layout": _REPLAY_LAYOUT, "steps": self.steps._asdict()}
+        steps = {key: value for key, value in self.steps._asdict().items() if value is not None}
+        layout = _REPLAY_LAYOUT if self.steps.chem_pair is None else _PAIRED_LAYOUT
+        saved = {**vars(self), "layout": layout, "steps": steps}
         if self.readout_rates is None:
             del saved["readout_rates"]
         return saved
@@ -75,7 +126,7 @@ class ReplayShard:
     def restore(cls, saved: dict) -> ReplayShard:
         values = saved.copy()
         layout = values.pop("layout", "legacy time-major float32")
-        if layout != _REPLAY_LAYOUT:
+        if layout not in (_REPLAY_LAYOUT, _PAIRED_LAYOUT):
             raise ValueError(
                 f"Unsupported replay layout {layout!r}; expected {_REPLAY_LAYOUT!r}. "
                 "Start a new DAgger run in a new output directory."
@@ -92,6 +143,8 @@ class ReplayShard:
         madvise.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
         madvise.restype = ctypes.c_int
         for tensor in (*shard.steps, shard.states, shard.tags, shard.held_out):
+            if tensor is None:
+                continue
             storage = tensor.untyped_storage()
             size = storage.nbytes()
             if size:
@@ -118,17 +171,35 @@ class SequenceBatch(NamedTuple):
     initial: Tensor
     tags: Tensor
     occluded: Tensor
+    chem_pair: Tensor | None = None  # #138 A2, see StepData
+    action_pair: Tensor | None = None
+    pair_case: Tensor | None = None
+    pair_kind: Tensor | None = None
 
     def to(self, device: torch.device) -> SequenceBatch:
-        return SequenceBatch(*(value.to(device) for value in self))
+        return SequenceBatch(*(None if value is None else value.to(device) for value in self))
 
 
-def _allocate_steps(ticks: int, rows: int, width: int, device: torch.device | str) -> StepData:
+def _allocate_steps(
+    ticks: int, rows: int, width: int, device: torch.device | str, chem_width: int = 0
+) -> StepData:
+    """chem_width > 0 also allocates the #138 A2 pair fields."""
+    pair = (
+        (
+            torch.empty(ticks, rows, chem_width, dtype=torch.float32, device=device),
+            torch.empty(ticks, rows, 2, dtype=torch.float32, device=device),
+            torch.empty(ticks, rows, dtype=torch.uint8, device=device),
+            torch.empty(ticks, rows, dtype=torch.uint8, device=device),
+        )
+        if chem_width
+        else (None, None, None, None)
+    )
     return StepData(
         torch.empty(ticks, rows, width, dtype=torch.float32, device=device),
         torch.empty(ticks, rows, 2, dtype=torch.float32, device=device),
         torch.empty(ticks, rows, dtype=torch.bool, device=device),
         torch.empty(ticks, rows, dtype=torch.bool, device=device),
+        *pair,
     )
 
 
@@ -152,6 +223,14 @@ class RolloutCollector:
         self.rows = rows * len(WORLD_NAMES) * len(MOTION_NAMES)
         self.mix_rng = torch.Generator(device=device).manual_seed(seed)
         self.limit_acceleration = config.get("teacher_limit_acceleration", True)
+        self.chem_width = 0
+        if config.get("pair_weight", 0.0) > 0:  # #138 A2
+            columns = policy.encoder.chemical_columns
+            self.chem_width = columns.stop - columns.start
+            world_kinds = [k for k in WORLD_NAMES for _ in MOTION_NAMES]
+            self.pair_kinds, self.pair_factors = pair_assignment(
+                world_kinds, config["envs_per_instance"]
+            )
         split_rng = torch.Generator().manual_seed(seed ^ 0x5EED)
         reserve = max(1, round(self.rows * config["held_out"]["fraction"]))
         self.held_out = torch.zeros(self.rows, dtype=torch.bool)
@@ -295,12 +374,14 @@ class RolloutCollector:
         episode_steps: Tensor | None = None,
         readout_sample: tuple[Tensor, Tensor] | None = None,
     ) -> StepData:
+        sensory_before = self.sensory
         code, self.sensory = self.policy.sense(self.obs, self.sensory)
         student = self.policy.forward_code(code, self.central)
         if readout_sample is not None:
             rows, output = readout_sample
             torch.index_select(student.aux["dn_rates"], 0, rows, out=output)
         privileged = _concatenate([world.privileged() for world in self.worlds], _TEACHER_KEYS)
+        teacher_before = self.teacher_state
         label, self.teacher_state = self.teacher.act(
             privileged,
             self.obs,
@@ -308,6 +389,23 @@ class RolloutCollector:
             self.teacher_state,
             limit_acceleration=self.limit_acceleration,
         )
+        pair = (None, None, None, None)
+        if self.chem_width:
+            # The same sensory and teacher state, one transformed observation; neither state
+            # advances from it (#138 A2).
+            shown = pair_transform(
+                self.obs, self.pair_kinds, self.pair_factors, self.policy.contract.antenna_angle_deg
+            )
+            chem = self.policy.encoder.chemical_code(shown, sensory_before)
+            label_pair, _ = self.teacher.act(
+                privileged,
+                shown,
+                privileged["agent_velocity"],
+                teacher_before,
+                limit_acceleration=self.limit_acceleration,
+            )
+            kinds = self.pair_kinds.to(self.device)
+            pair = (chem, label_pair, self.teacher.cases(privileged, self.obs), kinds)
         action = mix_actions(label, student.dist.mode(), beta, self.mix_rng)
         results = [
             world.step(rows)
@@ -323,14 +421,16 @@ class RolloutCollector:
         self.sensory = self.policy.reset_sensory_state(self.sensory, reset)
         self.central = reset_rows(student.central_state, initial, reset)
         self.teacher_state = reset_rows(self.teacher_state, self.teacher_initial, reset)
-        return StepData(code, label, reset, privileged["occluded"])
+        return StepData(code, label, reset, privileged["occluded"], *pair)
 
     @torch.no_grad()
     def collect(
         self, plan: RoundPlan, *, sample_readout_rates: bool = False
     ) -> tuple[ReplayShard, dict[str, float], dict[str, float]]:
         start = time.perf_counter()
-        steps = _allocate_steps(plan.ticks, self.rows, self.policy.code_size, "cpu")
+        steps = _allocate_steps(
+            plan.ticks, self.rows, self.policy.code_size, "cpu", self.chem_width
+        )
         episode_steps = torch.empty(plan.ticks, self.rows, dtype=torch.int64, device=self.device)
         snapshots = range(plan.first_snapshot, plan.ticks, STATE_STRIDE)
         states = torch.empty(
@@ -358,7 +458,9 @@ class RolloutCollector:
                 self.policy.readout.rate_mean.numel(),
             )
         staging = (
-            _allocate_steps(_TRANSFER_TICKS, self.rows, self.policy.code_size, self.device)
+            _allocate_steps(
+                _TRANSFER_TICKS, self.rows, self.policy.code_size, self.device, self.chem_width
+            )
             if is_cuda
             else steps
         )
@@ -378,11 +480,13 @@ class RolloutCollector:
                     plan.beta, initial, episode_steps=episode_steps[tick], readout_sample=sample
                 )
                 for buffer, value in zip(staging, data, strict=True):
-                    buffer[slot].copy_(value)
+                    if buffer is not None:
+                        buffer[slot].copy_(value)
             saved_count = next_snapshot - first_saved
             if is_cuda:
                 for dest, source in zip(steps, staging, strict=True):
-                    dest[start_tick:end].copy_(source[: end - start_tick])
+                    if dest is not None:
+                        dest[start_tick:end].copy_(source[: end - start_tick])
                 cpu_states[:saved_count].copy_(staged_states[:saved_count])
             # Pack into the shard as we collect, keeping the float16 cast on CPU.
             states[:, first_saved:next_snapshot].copy_(cpu_states[:saved_count].transpose(0, 1))
@@ -401,7 +505,7 @@ class RolloutCollector:
             "episode_time_std_s": std.item() * dt,
         }
         samples = readout_rates.flatten(0, 1).cpu() if readout_rates is not None else None
-        code, action, reset, occluded = steps
+        code, action, reset, occluded, chem_pair, action_pair, pair_case, pair_kind = steps
         del steps, staging
         stats = normalization_stats(code, self.policy.input_norm)
         code = _env_major(code, torch.float16)
@@ -410,6 +514,17 @@ class RolloutCollector:
             _env_major(action, action.dtype),
             _env_major(reset, reset.dtype),
             _env_major(occluded, occluded.dtype),
+            *(
+                (None, None, None, None)
+                if chem_pair is None
+                # float16 like the code, so an unchanged column compares equal to the code's
+                else (
+                    _env_major(chem_pair, torch.float16),
+                    _env_major(action_pair, torch.float32),
+                    _env_major(pair_case, torch.uint8),
+                    _env_major(pair_kind, torch.uint8),
+                )
+            ),
         )
         return (
             ReplayShard(steps, states, self.tags, self.held_out, plan.first_snapshot, samples),
@@ -443,7 +558,14 @@ class Replay:
         else:
             draws = torch.randint(total, (size,), generator=generator)
         first = self.shards[0]
-        steps = _allocate_steps(self.window, len(draws), first.steps.code.size(-1), "cpu")
+        chem = first.steps.chem_pair
+        steps = _allocate_steps(
+            self.window,
+            len(draws),
+            first.steps.code.size(-1),
+            "cpu",
+            0 if chem is None else chem.size(-1),
+        )
         states = first.states.new_empty((len(draws), first.states.size(-1)), dtype=torch.float32)
         tags = first.tags.new_empty((len(draws), first.tags.size(-1)))
         offset = 0
@@ -456,6 +578,8 @@ class Replay:
                 positions, env, snaps = positions[order], env[order], snaps[order]
                 reads = list(zip(positions.tolist(), env.tolist(), snaps.tolist(), strict=True))
                 for dest, source in zip(steps, shard.steps, strict=True):
+                    if dest is None:
+                        continue
                     for position, row, snap in reads:
                         tick = shard.first_snapshot + STATE_STRIDE * snap
                         dest[:, position].copy_(source[row, tick : tick + self.window])
@@ -463,7 +587,10 @@ class Replay:
                     states[position].copy_(shard.states[row, snap])
                 tags[positions] = shard.tags[env]
             offset += count
-        return SequenceBatch(steps.code, steps.action, steps.reset, states, tags, steps.occluded)
+        return SequenceBatch(
+            steps.code, steps.action, steps.reset, states, tags, steps.occluded,
+            steps.chem_pair, steps.action_pair, steps.pair_case, steps.pair_kind,
+        )  # fmt: skip
 
 
 def normalization_stats(code: Tensor, norm) -> dict[str, float]:

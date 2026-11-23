@@ -19,6 +19,11 @@ from .graph import GraphV2
 _BILATERAL_DN_PATH = (
     Path(__file__).resolve().parents[3] / "configs/v2/model/readout_bilateral_dn.yaml"
 )
+# Graphs the listed pairs (chosen on v2_main) also hold on: each keeps every listed cell with the
+# list's coverage rule (>= 0.40, checked 2026-11-21); every bodyId and side is checked anyway.
+_BILATERAL_ALSO_VALID_FOR = {
+    "f14ae59534f60bf4dafeaafa1c41ef50a8fb8be7a211054864158b43bce391d1": "v2_cx_lat (#138 A2 v2)",
+}
 
 
 def initial_speed_latent(config: ModelConfigV2, contract: SensorContractV2) -> float:
@@ -211,11 +216,11 @@ def _bilateral_speed_groups(graph: GraphV2) -> dict[str, tuple[np.ndarray, np.nd
 
     with _BILATERAL_DN_PATH.open() as stream:
         spec = yaml.safe_load(stream)
-    expected = spec["source"]["graph_sha256"]
-    if graph.source_sha256 is None or graph.source_sha256 != expected:
+    expected = [spec["source"]["graph_sha256"], *_BILATERAL_ALSO_VALID_FOR]
+    if graph.source_sha256 is None or graph.source_sha256 not in expected:
         raise ValueError(
             "Bilateral readout graph_sha256 mismatch: "
-            f"expected {expected}, loaded {graph.source_sha256}"
+            f"expected one of {expected}, loaded {graph.source_sha256}"
         )
 
     index_by_id = {body_id: index for index, body_id in enumerate(graph.node_ids.tolist())}

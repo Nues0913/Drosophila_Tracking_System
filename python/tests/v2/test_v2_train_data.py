@@ -309,7 +309,7 @@ def test_replay_round_trip_preserves_draw_order(tmp_path):
         shard = ReplayShard(
             StepData(
                 _env_major(steps.code, torch.float16),
-                *(_env_major(value, value.dtype) for value in steps[1:]),
+                *(_env_major(value, value.dtype) for value in steps[1:4]),
             ),
             _env_major(states, torch.float16),
             tags,
@@ -321,7 +321,7 @@ def test_replay_round_trip_preserves_draw_order(tmp_path):
         saved = torch.load(path, weights_only=True)
         assert saved["layout"] == "env_major_f16"
         loaded = ReplayShard.load(path)
-        assert all(tensor.is_contiguous() for tensor in (*loaded.steps, loaded.states))
+        assert all(tensor.is_contiguous() for tensor in (*loaded.steps[:4], loaded.states))
         assert loaded.steps.code.dtype == loaded.states.dtype == torch.float16
         replay.shards.append(loaded)
         originals.append((steps, states, tags, held_out, first))
@@ -352,7 +352,7 @@ def test_replay_round_trip_preserves_draw_order(tmp_path):
                 ],
                 dim=1,
             )
-            for field in range(len(StepData._fields))
+            for field in range(4)  # the #138 A2 pair fields are None here
         )
         initial = torch.stack([states[snap, row] for _, states, _, row, snap, _ in picked])
         tags = torch.stack([tags[row] for _, _, tags, row, _, _ in picked])

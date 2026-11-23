@@ -14,6 +14,28 @@
 - Reward: the world's track_v2 (#181). A time limit, and the forced end of a desynchronised
   first episode, bootstrap from the value of the state before the reset; only a collision
   terminates.
+- Occlusion speed (#138 A2 third version; off unless ``occlusion_speed.coef`` > 0): on the
+  student's own rollouts, the DAgger teacher (OcclusionTeacher, its state carried per
+  environment across rollouts) labels each occluded step's forward speed in m/s. The actor
+  loss adds coef * the mean over three groups (odor present with the teacher slowing by at
+  least ``strong_slowdown``, odor present and slowing less, odor lost; wall-rule steps are
+  left out) of a Huber loss on the student's mode speed minus that label, in units of
+  ``scale_m_s``. Unlike kickstarting it stays on to the end. The teacher only labels: the
+  student acts, and the evaluation never runs it.
+- Occlusion turn (#138 A2 fourth version; off unless ``occlusion_turn.coef`` > 0): the same
+  teacher's turn rate on the same steps and groups, a Huber loss in units of ``scale_rad_s``,
+  added to the actor loss with its own coef.
+- Catch-up (#138 A2 fourth version; off unless ``occlusion_speed.catchup_min_distance_m`` is
+  set): a fourth speed group, the visible steps after an occlusion in the same episode while the
+  target is farther than that distance, labelled with the teacher's visible (pursuit) speed, so
+  that the occlusion groups cannot lower the speed everywhere at no cost (the third version's
+  speed fell to 0.198 m/s and it no longer caught up after the occlusion). The turn term leaves
+  it out.
+- Readout (#138 A2 fifth version): with ``occlusion_speed.trains_readout`` false, the speed
+  term's gradient does not reach the speed readout's weights (PPO still trains them): it moves
+  the graph's learnable parameters and the speed bias only. The third and fourth versions shrank
+  those weights (Stage 1 [+0.035, -0.057], the second version's PPO [-0.061, -0.109], the third
+  [-0.026, -0.020]), so the speed hardly depended on the DNs any more.
 """
 
 from __future__ import annotations
@@ -34,7 +56,11 @@ from torch import Tensor, nn
 
 from flytrack_v2.interfaces import reset_rows
 from flytrack_v2.model import export_policy, load_policy, parameter_groups
-from flytrack_v2.model.policy import ConnectomePolicyV2
+from flytrack_v2.model.policy import (
+    ConnectomePolicyV2,
+    attach_plastic_projection,
+    has_plastic_gains,
+)
 from flytrack_v2.monitor import EngineeringFailure, RunMonitor
 
 from .config import CONFIG_DIR, MOTION_NAMES, STOP_INTERVAL, WORLD_NAMES, _override, read_yaml
@@ -63,7 +89,7 @@ def load_ppo_config(path: Path, host: str, overrides: Sequence[str] = ()) -> dic
     """The PPO settings with --override applied, and the host's micro-batch (hosts.yaml)."""
     defaults = read_yaml(CONFIG_DIR / "ppo.yaml")
     config = read_yaml(path)
-    if set(config) != set(defaults):
+    if config.keys() != defaults.keys():
         raise ValueError("PPO config must have the same keys as ppo.yaml")
     for expression in overrides:
         _override(config, expression)
@@ -228,6 +254,59 @@ class Rollout:
     initial: Tensor  # [1, S], the rest state rows restart from
     teacher_mean: Tensor | None = None  # [T, N, 2] when kickstarting
     teacher_log_std: Tensor | None = None  # [2]
+    speed_label: Tensor | None = None  # [T, N] m/s, the occlusion teacher's speed
+    turn_label: Tensor | None = None  # [T, N] rad/s, its turn rate
+    speed_group: Tensor | None = None  # [T, N] uint8: 0 none, then SPEED_GROUPS in order
+
+
+SPEED_GROUPS = ("strong", "weak", "lost", "catchup")  # codes 1-4 of Rollout.speed_group
+CATCHUP = 4
+TURN_GROUPS = ("strong", "weak", "lost")  # the turn term's default: the catch-up group stays out
+
+
+def group_table(names: Sequence[str], device) -> Tensor:
+    """[1 + len(SPEED_GROUPS)] uint8: each group code maps to itself if its name is in
+    ``names``, else to 0 (#138 A2 eighth version: a term can train on some groups only)."""
+    unknown = set(names) - set(SPEED_GROUPS)
+    if unknown or not names or len(set(names)) != len(names):
+        raise ValueError(f"groups must be distinct names from {SPEED_GROUPS}, got {names!r}")
+    codes = [code if name in names else 0 for code, name in enumerate(SPEED_GROUPS, 1)]
+    return torch.tensor([0, *codes], dtype=torch.uint8, device=device)
+
+
+def occlusion_speed_groups(
+    cases: Tensor, odor: Tensor, near: float, strong_slowdown: float
+) -> Tensor:
+    """[B] uint8 speed groups from OcclusionTeacher.cases: odor present (case 1) splits by the
+    teacher's slowdown, mean odor / near (clamped to 1), at ``strong_slowdown``; odor lost
+    (case 2) is group 3; visible steps and wall-rule steps (cases 0, 3) are 0 (the collector
+    sets the catch-up group, 4, on visible steps itself)."""
+    slowdown = (odor.clamp(min=0).mean(-1) / near).clamp(max=1)
+    present = torch.where(slowdown >= strong_slowdown, 1, 2)
+    group = torch.where(cases == 1, present, torch.where(cases == 2, 3, 0))
+    return group.to(torch.uint8)
+
+
+def speed_group_counts(group: Tensor) -> Tensor:
+    """[len(SPEED_GROUPS)] float step counts of each group."""
+    return torch.stack([(group == code).sum() for code in range(1, len(SPEED_GROUPS) + 1)]).to(
+        torch.float32
+    )
+
+
+def occlusion_speed_term(
+    speed: Tensor, label: Tensor, group: Tensor, counts: Tensor, scale_m_s: float
+) -> Tensor:
+    """Sum over these steps of Huber((speed - label) / scale_m_s) / counts[group] (the turn
+    term uses it too, on the turn rate in rad/s), divided by
+    the number of groups with steps, so that summed over a minibatch's parts it is the mean
+    over groups of each group's mean (``counts`` from speed_group_counts of the minibatch)."""
+    error = torch.nn.functional.huber_loss(
+        (speed - label) / scale_m_s, torch.zeros_like(speed), reduction="none", delta=1.0
+    )
+    weights = torch.cat((counts.new_zeros(1), 1 / counts.clamp(min=1)))[group.long()]
+    present = int((counts > 0).sum())
+    return (error * weights).sum() / max(present, 1)
 
 
 @dataclass(frozen=True)
@@ -283,12 +362,14 @@ def gaussian_kl(mean_p: Tensor, log_std_p: Tensor, mean_q: Tensor, log_std_q: Te
     )
 
 
-def _actor_replay(policy, rollout: Rollout, rows: Tensor):
-    """Replay the rollout's steps for ``rows`` from the stored state, with gradients."""
+def _actor_replay(policy, rollout: Rollout, rows: Tensor, *, speed_readout: bool = True):
+    """Replay the rollout's steps for ``rows`` from the stored state, with gradients. The mode's
+    speed column (the occlusion speed term's) carries no gradient to the speed readout weights
+    when ``speed_readout`` is false (graph policies; its value is the same)."""
     graph = isinstance(policy, ConnectomePolicyV2)
     state = rollout.central[rows]
     initial = rollout.initial
-    logp, entropy, means, activity = [], [], [], []
+    logp, entropy, means, activity, mode = [], [], [], [], []
     for t in range(len(rollout.code)):
         if graph:
             step = policy.forward_code(rollout.code[t, rows], state, non_readout_activity=True)
@@ -299,9 +380,18 @@ def _actor_replay(policy, rollout: Rollout, rows: Tensor):
         logp.append(step.dist.log_prob(rollout.latent[t, rows]))
         entropy.append(step.dist.entropy())
         means.append(step.dist.mean)
+        step_mode = step.dist.mode()
+        if graph and not speed_readout:
+            readout = policy.readout
+            rates = readout.normalize_rates(step.aux["dn_rates"]) @ readout.speed_means
+            latent = rates @ readout.speed_weight.detach() + readout.speed_bias
+            speed = step.dist.v_max * torch.sigmoid(latent)
+            step_mode = torch.stack((speed, step_mode[..., 1]), -1)
+        mode.append(step_mode)
         ended = rollout.terminated[t, rows] | rollout.truncated[t, rows]
         state = reset_rows(step.central_state, initial, ended)
-    return torch.stack(logp), torch.stack(entropy), torch.stack(means), torch.stack(activity)
+    stacked = (logp, entropy, means, activity, mode)
+    return tuple(torch.stack(values) for values in stacked)
 
 
 def _clip_and_step(optimizer, max_norm: float) -> Tensor:
@@ -327,8 +417,17 @@ def ppo_update(
     kick_lambda: float,
     micro_batch: int,
     generator: torch.Generator,
+    speed_coef: float = 0.0,
+    speed_scale_m_s: float = 0.05,
+    turn_coef: float = 0.0,
+    turn_scale_rad_s: float = 0.5,
+    speed_trains_readout: bool = True,
+    speed_groups: Sequence[str] = SPEED_GROUPS,
+    turn_groups: Sequence[str] = TURN_GROUPS,
 ) -> dict[str, Tensor]:
-    """Epochs of minibatch updates over environments; returns the means of the last epoch."""
+    """Epochs of minibatch updates over environments; returns the means of the last epoch.
+    ``speed_coef`` > 0 adds the occlusion speed term while the actor trains, ``turn_coef`` > 0
+    the turn term (module doc)."""
     advantages, returns, values = advantages_and_returns(
         critic, rollout, settings.gamma, settings.gae_lambda
     )
@@ -338,7 +437,13 @@ def ppo_update(
     n = rollout.code.shape[1]
     minibatch = n // settings.minibatches
     kick = kick_lambda > 0 and rollout.teacher_mean is not None
+    speed_on = actor_on and speed_coef > 0 and rollout.speed_group is not None
+    turn_on = actor_on and turn_coef > 0 and rollout.turn_label is not None
     metrics: dict[str, Tensor] = {}
+    if "catchup" in turn_groups:
+        raise ValueError("the turn term has no catch-up labels")
+    speed_table = group_table(speed_groups, rollout.code.device)
+    turn_table = group_table(turn_groups, rollout.code.device)
     for _epoch in range(settings.epochs):
         order = torch.randperm(n, generator=generator, device="cpu").to(rollout.code.device)
         sums: dict[str, Tensor] = {}
@@ -347,13 +452,25 @@ def ppo_update(
             actor_optimizer.zero_grad(set_to_none=True)
             critic_optimizer.zero_grad(set_to_none=True)
             terms: dict[str, Tensor] = {}
+            if speed_on or turn_on:
+                counts = speed_group_counts(rollout.speed_group[:, rows])
+                # Each term counts only its own groups (the turn term never the catch-up one).
+                turn_counts = torch.where(turn_table[1:] > 0, counts, 0.0)
+                counts = torch.where(speed_table[1:] > 0, counts, 0.0)
+            for name, on in (("speed_loss", speed_on), ("turn_loss", turn_on)):
+                if on:
+                    terms[name] = torch.zeros((), device=rollout.code.device)
             for part in rows.split(micro_batch):
                 weight = len(part) / len(rows)
                 value_loss = 0.5 * (critic(rollout.features[:, part]) - target[:, part]).square()
                 loss = settings.value_coef * value_loss.mean()
                 parts = {"value_loss": value_loss.mean().detach()}
+                # Terms already summed to the minibatch's value over its parts (not weighted).
+                exact = loss.new_zeros(())
                 if actor_on:
-                    logp, entropy, means, activity = _actor_replay(policy, rollout, part)
+                    logp, entropy, means, activity, mode = _actor_replay(
+                        policy, rollout, part, speed_readout=speed_trains_readout
+                    )
                     log_ratio = logp - rollout.logp[:, part]
                     ratio = log_ratio.exp()
                     adv = normalized[:, part]
@@ -374,6 +491,26 @@ def ppo_update(
                         ).mean()
                         loss = loss + kick_lambda * kl
                         parts["kl_teacher"] = kl.detach()
+                    if speed_on:
+                        term = occlusion_speed_term(
+                            mode[..., 0],
+                            rollout.speed_label[:, part],
+                            speed_table[rollout.speed_group[:, part].long()],
+                            counts,
+                            speed_scale_m_s,
+                        )
+                        exact = exact + speed_coef * term
+                        terms["speed_loss"] = terms["speed_loss"] + term.detach()
+                    if turn_on:
+                        term = occlusion_speed_term(
+                            mode[..., 1],
+                            rollout.turn_label[:, part],
+                            turn_table[rollout.speed_group[:, part].long()],
+                            turn_counts,
+                            turn_scale_rad_s,
+                        )
+                        exact = exact + turn_coef * term
+                        terms["turn_loss"] = terms["turn_loss"] + term.detach()
                     with torch.no_grad():
                         parts.update(
                             policy_loss=policy_loss.detach(),
@@ -381,7 +518,7 @@ def ppo_update(
                             approx_kl=((ratio - 1) - log_ratio).mean(),
                             clip_fraction=((ratio - 1).abs() > settings.clip).float().mean(),
                         )
-                (loss * weight).backward()
+                (loss * weight + exact).backward()
                 for name, value in parts.items():
                     terms[name] = terms.get(name, 0.0) + value * weight
             terms["critic_grad_norm"] = _clip_and_step(critic_optimizer, settings.grad_clip)
@@ -417,6 +554,18 @@ class PPOCollector(RolloutCollector):
         self.walls = self.worlds[0].walls
         self.episode_seconds = config["episode_seconds"]
         self.v_max = policy.contract.v_max
+        speed = config["occlusion_speed"]
+        self.turn_on = config["occlusion_turn"]["coef"] > 0
+        # The teacher labels both actions whenever either term is on.
+        self.speed_on = speed["coef"] > 0 or self.turn_on
+        self.speed_strong_slowdown = speed["strong_slowdown"]
+        self.speed_limit_acceleration = speed["limit_acceleration"]
+        self.catchup_min_distance_m = speed["catchup_min_distance_m"]
+        # Whether each environment's episode has been occluded so far (the catch-up group).
+        self.seen_occlusion = torch.zeros(self.rows, dtype=torch.bool, device=device)
+        # teacher_initial above is the frozen Stage 1 policy's; this is the occlusion teacher's
+        # (the base collector's teacher_state starts from it and is checkpointed with it).
+        self.speed_teacher_initial = self.teacher.initial_state(self.rows, device)
 
     def _features(self, privileged: Mapping[str, Tensor]) -> Tensor:
         return critic_features(privileged, self.walls, self.episode_seconds, self.v_max)
@@ -428,12 +577,15 @@ class PPOCollector(RolloutCollector):
         saved = super().checkpoint()
         saved["teacher_central"] = self.teacher_central.cpu()
         saved["sample_rng"] = self.sample_rng.get_state()
+        saved["seen_occlusion"] = self.seen_occlusion.cpu()
         return saved
 
     def restore(self, saved: dict) -> None:
         super().restore(saved)
         self.teacher_central = saved["teacher_central"].to(self.device)
         self.sample_rng.set_state(saved["sample_rng"])
+        if "seen_occlusion" in saved:
+            self.seen_occlusion = saved["seen_occlusion"].to(self.device)
 
     @torch.no_grad()
     def collect_ppo(self, steps: int, *, kickstart: bool) -> tuple[Rollout, dict[str, Tensor]]:
@@ -452,6 +604,14 @@ class PPOCollector(RolloutCollector):
             "final_features": torch.zeros(steps, rows, f, device=device),
         }
         teacher_mean = torch.empty(steps, rows, 2, device=device) if kickstart else None
+        if self.speed_on:
+            buffers["speed_label"] = torch.empty(steps, rows, device=device)
+            buffers["speed_group"] = torch.empty(steps, rows, dtype=torch.uint8, device=device)
+            bias = torch.zeros(len(SPEED_GROUPS), device=device)
+            if self.turn_on:
+                buffers["turn_label"] = torch.empty(steps, rows, device=device)
+                turn_gap = torch.zeros(len(SPEED_GROUPS), device=device)
+                turn_agree = torch.zeros(len(SPEED_GROUPS), device=device)
         ended = torch.zeros((), device=device)
         stats = {name: torch.zeros((), device=device) for name in ("success", "collision")}
         reward_sum = torch.zeros((), device=device)
@@ -463,7 +623,44 @@ class PPOCollector(RolloutCollector):
             buffers["code"][t] = code
             buffers["latent"][t] = latent
             buffers["logp"][t] = step.dist.log_prob(latent)
-            buffers["features"][t] = self._features(self._privileged())
+            privileged = self._privileged()
+            buffers["features"][t] = self._features(privileged)
+            if self.speed_on:
+                # The DAgger teacher on the student's own state, every step so that its held
+                # speed is the student's applied speed when the occlusion starts.
+                label, self.teacher_state = self.teacher.act(
+                    privileged,
+                    self.obs,
+                    privileged["agent_velocity"],
+                    self.teacher_state,
+                    limit_acceleration=self.speed_limit_acceleration,
+                )
+                group = occlusion_speed_groups(
+                    self.teacher.cases(privileged, self.obs),
+                    self.obs["odor"],
+                    self.teacher.near,
+                    self.speed_strong_slowdown,
+                )
+                occluded = privileged["occluded"].to(torch.bool)
+                if self.catchup_min_distance_m is not None:
+                    offset = privileged["target_pose"][:, :2] - privileged["agent_pose"][:, :2]
+                    far = offset.norm(dim=-1) > self.catchup_min_distance_m
+                    catchup = ~occluded & self.seen_occlusion & far
+                    group = torch.where(catchup, CATCHUP, group).to(torch.uint8)
+                self.seen_occlusion |= occluded
+                buffers["speed_label"][t] = label[:, 0]
+                buffers["speed_group"][t] = group
+                mode = step.dist.mode()
+                gap = mode[:, 0] - label[:, 0]
+                for code_id in range(1, len(SPEED_GROUPS) + 1):
+                    bias[code_id - 1] += torch.where(group == code_id, gap, 0.0).sum()
+                if self.turn_on:
+                    buffers["turn_label"][t] = label[:, 1]
+                    off = (mode[:, 1] - label[:, 1]).abs()
+                    same = (torch.sign(mode[:, 1]) == torch.sign(label[:, 1])).to(off.dtype)
+                    for code_id in range(1, len(SPEED_GROUPS) + 1):
+                        turn_gap[code_id - 1] += torch.where(group == code_id, off, 0.0).sum()
+                        turn_agree[code_id - 1] += torch.where(group == code_id, same, 0.0).sum()
             if kickstart:
                 taught = self.teacher_policy.forward_code(code, self.teacher_central)
                 teacher_mean[t] = taught.dist.mean
@@ -512,6 +709,11 @@ class PPOCollector(RolloutCollector):
                 self.teacher_central = reset_rows(teacher_next, self.teacher_initial, reset)
             else:
                 self.teacher_central = reset_rows(self.teacher_central, self.teacher_initial, reset)
+            if self.speed_on:
+                self.teacher_state = reset_rows(
+                    self.teacher_state, self.speed_teacher_initial, reset
+                )
+                self.seen_occlusion &= ~reset
         rollout = Rollout(
             **buffers,
             last_features=self._features(self._privileged()),
@@ -527,6 +729,18 @@ class PPOCollector(RolloutCollector):
             "episode_collision_rate": stats["collision"] / denominator,
             "reward_per_step": reward_sum / (steps * rows),
         }
+        if self.speed_on:
+            # The student's mode speed minus the label, per group (m/s), and the step shares.
+            counts = speed_group_counts(buffers["speed_group"])
+            for code_id, name in enumerate(SPEED_GROUPS):
+                metrics[f"speed_bias_{name}"] = bias[code_id] / counts[code_id].clamp_min(1)
+                metrics[f"speed_share_{name}"] = counts[code_id] / (steps * rows)
+                if self.turn_on:
+                    # Mean |turn - label| (rad/s) and the share with the label's sign.
+                    metrics[f"turn_gap_{name}"] = turn_gap[code_id] / counts[code_id].clamp_min(1)
+                    metrics[f"turn_agree_{name}"] = turn_agree[code_id] / counts[code_id].clamp_min(
+                        1
+                    )
         return rollout, metrics
 
 
@@ -563,7 +777,10 @@ class PPORun:
         for parameter in self.teacher.parameters():
             parameter.requires_grad_(False)
         self.critic = Critic(CRITIC_FEATURES, config["critic_hidden"]).to(device)
+        if has_plastic_gains(self.policy):
+            self.policy.core.gain_delta.requires_grad_(False)
         self.actor_optimizer = torch.optim.Adam(parameter_groups(self.policy, 0.0))
+        attach_plastic_projection(self.actor_optimizer, self.policy)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config["critic_lr"])
         self.settings = PPOSettings.from_config(config)
         self.update_rng = torch.Generator().manual_seed(seed ^ 0x0BB0)
@@ -676,6 +893,13 @@ class PPORun:
                     self.policy, self.critic, self.actor_optimizer, self.critic_optimizer,
                     rollout, self.settings, actor_on=plan.actor_on, kick_lambda=plan.kick_lambda,
                     micro_batch=config["micro_batch"], generator=self.update_rng,
+                    speed_coef=config["occlusion_speed"]["coef"],
+                    speed_scale_m_s=config["occlusion_speed"]["scale_m_s"],
+                    turn_coef=config["occlusion_turn"]["coef"],
+                    turn_scale_rad_s=config["occlusion_turn"]["scale_rad_s"],
+                    speed_trains_readout=config["occlusion_speed"]["trains_readout"],
+                    speed_groups=tuple(config["occlusion_speed"]["groups"]),
+                    turn_groups=tuple(config["occlusion_turn"]["groups"]),
                 )  # fmt: skip
                 del rollout
                 self.update += 1

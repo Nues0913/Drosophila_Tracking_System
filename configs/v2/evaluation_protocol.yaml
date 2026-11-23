@@ -255,7 +255,7 @@ throughput:
 host_assignment: {'4070': [5, 1], '4060': [2, 3], '2060': [4]}
 # #161 F, registered before the M2 bench: estimate the formal training time from the measured
 # combined throughput of the three hosts with a 20% margin (evaluation included: 48,000 main
-# episodes plus the noise sensitivity and the v1 comparison). Above 32 hours, the formal
-# matrix runs stage 1 only and PPO is reported from the pilots. The window is M4 (11-24 04:00) to
-# M4b (11-25 10:00): 30 hours since the half-day postponement (#213; 32 before).
+# episodes plus the noise sensitivity and the v1 comparison). Above max_hours_m4_to_m4b, the
+# formal matrix runs stage 1 only and PPO is reported from the pilots. The window is M4 (11-24
+# 04:00) to M4b (11-25 10:00): 30 hours since the half-day postponement (#213; 32 before).
 compute_rule: {margin: 0.20, max_hours_m4_to_m4b: 30, over_budget: stage 1 only}

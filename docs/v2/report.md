@@ -197,7 +197,7 @@ VO2 的 `wind` 遮蔽追蹤比例按時段列於下表。每個 seed 內先平�
 - **評估「遠就加速」**：可見時 teacher 的速度是 0.7·max(d − 1, 0)·max(cos(bearing), 0)，再加動作上限，目標迎面逼近時改用閃避規則。所以同樣距離 > 2 m，目標在前方和在身後，teacher 可以要全速或零速；要另外列「遠、在前方、非閃避」的速度誤差。
 
 ## 5. Gazebo v2（WP6，#140）
-4070 的 `v1compat` 試跑用 seed 100 的 VO2、V2 actor，兩者各 24 回合，48 回合均有效且和 2D 逐回合一致。曲線正常各 15 回合的 sensor→command p95 為 VO2 42.4 ms、V2 42.1 ms。這組是 v2 部署相容性驗證，`wind` 的正式結果來自 2D。程式與證據待 #218 覆核。[WP6 交件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/140#issuecomment-7133091834) · [PR #218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218)。
+4070 的 `v1compat` 試跑用 seed 100 的 VO2、V2 actor，兩者各 24 回合，48 回合均有效且和 2D 逐回合一致。曲線正常各 15 回合的 sensor→command p95 為 VO2 42.4 ms、V2 42.1 ms。Gazebo／2D 的成功回合數皆為 VO2 11、V2 12。一對一配對修補（`4480147`）以同一份證據重算仍為 48/48。這組是 v2 部署相容性驗證，`wind` 的正式結果來自 2D。程式仍在 #218 覆核。[WP6 交件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/140#issuecomment-7133091834) · [PR #218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218)。
 
 ## 6. 必須揭露的限制
 - **配方只在 VO2 上選定**（#143）：對照組沒有各自調參，這對 G-B、G-C 是偏向 VO2 的方向。
@@ -208,8 +208,8 @@ VO2 的 `wind` 遮蔽追蹤比例按時段列於下表。每個 seed 內先平�
   - 觸角兩個通道的公式，是模型的選擇。
   - 同一型、同一側的 LC 細胞收到相同的外部輸入，沒有逐顆的視野位置（#161 B3）。
 - **MaleCNS 的數字**：論文版（166,700 顆、11,710 型）和實際下載的 v1.0 資料（166,691 顆、11,691 型）分開標明。
-- **Stage 1 的低速健康警告**：用 DNp09 讀速度的 Stage 1，最後一輪的確定性速度 std 大多 ≤ 0.02 m/s，以 exit 3 匯出。報告要和讀出 DN 沉默分開列（#210）。
-- **PPO 續跑時不截斷紀錄**：兩次 checkpoint 之間當機的話，`metrics.jsonl` 最多會有 24 次更新重複，讀曲線時每次更新取最後一筆（#210 review）。
+- **Stage 1 的低速健康警告**：正式圖模型以 DNp09＋DNb05 讀速度。30 條鏈中有 15 條記錄低速健康警告（圖模型 15/25，GRU2 0/5）。VO2 有 2/5（seed 1、3），V2 1/5、O2 5/5、RW2 3/5、ER2 4/5。這項警告以最後一輪確定性速度變異度檢查判定，相關 actor 以 exit 3 匯出並保留供 Stage 2 使用（#210）。
+- **PPO 續跑時不截斷紀錄**：兩次 checkpoint 之間停機時，`metrics.jsonl` 最多會有 24 次更新重複，讀曲線時每次更新取最後一筆（#210 review）。4070 的 RW2 seed 5 在排程停機後從第 250 次更新的 checkpoint 續跑。原始紀錄有 315 列、306 次獨立更新，第 251–259 次各有兩筆。
 
 ## 7. 重現
 本機矩陣固定於 `f8e8c21`，GPUtw 改派執行版為 `3982fbc`（與 #215 合併版 `7137d66` 的 Git tree 相同）。每台主機的證據包、權重及校驗清單交至[正式訓練收件區](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)。指令與續跑條件見[訓練手冊](train.md)。正式 2D 證據、重算方式與統計包見 [research-v2-final](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-final)。

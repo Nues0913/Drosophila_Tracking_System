@@ -2,7 +2,7 @@
 
 FlyTrack 以 MaleCNS v1.0 子圖與 flyvis 視覺前端建立追蹤策略，在 2D 模擬中訓練，並用 ROS 2／Gazebo 檢驗部署行為。v2 研究視覺、氣味和風在移動目標遮蔽期間的作用。
 
-**v2 正式訓練進行中。** A3 第十五版已凍結，六個變體（VO2、V2、O2、RW2、ER2、GRU2）各跑五個 seed，依序執行 DAgger 與 PPO。負責執行矩陣的組員請依主機派工與固定 SHA 操作。研究進度與正式評估條件見 [v2 狀態](docs/v2/status.md)、[訓練手冊](docs/v2/train.md) 和[凍結協定](configs/v2/evaluation_protocol.yaml)。
+**v2 正式 2D 評估已交付。** A3 第十五版完成六個變體各五個 seed 的正式矩陣。G-A、G-D、G-E 通過，G-B、G-C 未通過。VO2 曲線正常追蹤在 `v1compat`、`wind` 的成功率分別為 100.0%、98.8%。五個 seed 的證據見[正式 2D 交付](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-final)及[報告 PR](https://github.com/Nues0913/Drosophila_Tracking_System/pull/216)。版本與重現方式見 [v2 狀態](docs/v2/status.md)、[訓練手冊](docs/v2/train.md)和[凍結協定](configs/v2/evaluation_protocol.yaml)。
 
 **formal-v1 已交付。** 2D 與 Gazebo 的已登記比較均未支持 VO、VO-late 對 V 的遮蔽優越性，G3 的 normal 成功率門檻也未達成。完整數據、事後研究與展示紀錄見 [formal-v1 報告](docs/formal_v1_report.md)和 [v1 進度紀錄](docs/status.md)。
 

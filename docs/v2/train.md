@@ -146,11 +146,11 @@ PYTHONPATH=python python -m flytrack_v2.train.ppo \
 python scripts/v2/run_formal.py --host 4070 --seeds 5 \
   --sha f8e8c2180d202d355e4b87cfb4e686ceceae771f --out runs/v2_formal_a3_v15 --dry-run
 
-# GPUtw，#143 改派的 checkout
+# GPUtw，從 #143 正式執行時的固定 checkout 根目錄執行
 python scripts/v2/run_formal.py --host gputw3090 --seeds 1 2 \
   --sha 3982fbc0572a21f5d0cbdcf7ace3c776d40b34fc \
   --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml \
-  --out /workspace/flytrack-f8e8c21/formal_seeds_1_2 --dry-run
+  --out ../formal_seeds_1_2 --dry-run
 ```
 
 - **開跑前的檢查**：任何一項不符就拒絕執行，exit 2。

@@ -1,6 +1,6 @@
 # v2 狀態
 
-2026-11-24 M5 交付（UTC+8）。A3 第十五版的 30 條正式訓練鏈已收件，五個 seed 的正式 2D 評估及統計已完成。報告與 Gazebo 部署程式仍在覆核。[正式 2D 交付](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-final) · [#144 收件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/144#issuecomment-7135235324)。
+2026-11-24 M5 交付（UTC+8）。A3 第十五版的 30 條正式訓練鏈已收件，五個 seed 的正式 2D 評估及統計已完成。Gazebo 部署驗證已驗收，報告待覆核。[正式 2D 交付](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-final) · [#144 收件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/144#issuecomment-7135235324)。
 
 - 計劃書：`docs/v2/大實驗計劃書.md`（#130）
 - 總追蹤：#127
@@ -19,8 +19,8 @@
 | M4 協定凍結、正式派工 | 11-24 04:00（原訂） | 11-23 22:09 合併 #211，#143 已發布開跑令 |
 | M4b 正式訓練完成 | 11-25 10:00 | 完成，四台主機共 30 條訓練鏈，60 份兩階段匯出均已核對 |
 | M5 正式評估與統計 | 11-25 16:00 | 11-24 22:51 完成，完整五 seed 統計已交付 #144 |
-| M6 Gazebo v2、報告初稿 | 11-25 22:00 | [報告 #216](https://github.com/Nues0913/Drosophila_Tracking_System/pull/216)已送審。Gazebo 的 `v1compat` 試跑結果 48/48 一致，sensor→command p95 42.4／42.1 ms（VO2／V2），證據與配對程式在 [#218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218)覆核 |
-| M7 交付 | 11-26 10:00 | 研究預發版已發布，文件與部署 PR 待覆核 |
+| M6 Gazebo v2、報告初稿 | 11-25 22:00 | [報告 #216](https://github.com/Nues0913/Drosophila_Tracking_System/pull/216)已送審。Gazebo 的 `v1compat` 試跑結果 48/48 一致，sensor→command p95 42.4／42.1 ms（VO2／V2），配對程式已在 [#218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218) 合併 |
+| M7 交付 | 11-26 10:00 | 研究預發版已發布，報告與狀態文件待覆核 |
 
 ## 協定
 

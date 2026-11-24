@@ -1,0 +1,31 @@
+worlds: {v1compat: 0.5, wind: 0.5}
+wind_speed_m_s: 0.5
+motions: {curved: 0.5, wander: 0.5}
+scenarios: {normal: 0.40, occlusion: 0.25, noise: 0.20, conflict: 0.15}
+envs_per_instance: 256
+episode_seconds: 60
+desync_first_episode: true
+readout_normalization: true
+# #184 Decision: labels are the action the teacher wants (bounds only); the world still applies
+# the acceleration limit to the executed actions. True is v1's label (around the applied action).
+teacher_limit_acceleration: false
+plume_model: puff
+rounds: {beta: [1.0, 0.5, 0.25, 0.0], env_steps_per_round: 750000}
+replay_ratio: 4
+sequence: {length: 64, burn_in: 16}
+batch_sequences: 256
+optimizer: {name: adam, lr: 1.0e-3, lr_final: 1.0e-4, schedule: cosine_over_all_updates, grad_clip: 1.0}
+activity_coef: 1.0e-4
+label_margin: 1.0e-3  # used only when label_latent_bound is null
+# #184 Decision: every label's latent within +-3 (speed v in [0.024, 0.476] m/s, |turn| <= 0.995
+# omega_max), so labels at the action limits cannot dominate the NLL (#189 review).
+label_latent_bound: 3.0
+held_out: {every_updates: 50, sequences: 256, fraction: 0.05}
+activation_checkpoint: false
+# #138 A2 (paired-observation DAgger): weight of the paired turn loss; 0 collects no pairs and
+# trains exactly as before. See flytrack_v2.train.update.sequence_loss.
+pair_weight: 0.0
+pair_window: 16  # control steps (0.8 s) the transformed branch runs before it forks again
+model: {}
+# #138 A3 seventh version: the fitted input normalization (its code layout must match the model's)
+input_norm: artifacts/input_norm_v2/input_norm.npz

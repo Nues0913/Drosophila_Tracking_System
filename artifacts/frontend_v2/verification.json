@@ -1,0 +1,78 @@
+{
+  "artifact": "artifacts/frontend_v2/frontend.npz",
+  "artifact_sha256": "f3fa7361358ab7d12d78df124561c2662dbfbbecf16fe6d1fe5db74745434895",
+  "artifact_bytes": 1104321,
+  "issue": 135,
+  "command": "PYTHON_DOTENV_DISABLED=1 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 FLYVIS_ROOT_DIR=\"$PWD/data/flyvis\" .venv/bin/python scripts/export_flyvis.py --network-dir \"$PWD/data/flyvis/results/flow/0000/000\" --sensor-contract configs/sensor_contract.json --output artifacts/frontend_v2/frontend.npz --output-types T2 T2a T3 T4a T4b T4c T4d T5a T5b T5c T5d Tm1 Tm2 Tm3 Tm4 Tm9 --visual-bins 9",
+  "checkpoint_name": "chkpt_00000",
+  "checkpoint_sha256": "d0e42857e738d0315897c2d50fde9eb3fb1a3fb1f071d55dfc13d53d72bccc3f",
+  "flyvis_version": "1.2.0",
+  "output_types": [
+    "T2",
+    "T2a",
+    "T3",
+    "T4a",
+    "T4b",
+    "T4c",
+    "T4d",
+    "T5a",
+    "T5b",
+    "T5c",
+    "T5d",
+    "Tm1",
+    "Tm2",
+    "Tm3",
+    "Tm4",
+    "Tm9"
+  ],
+  "visual_bins": 9,
+  "features_per_eye": 144,
+  "n_nodes_per_eye": 45669,
+  "n_edges_per_eye": 1513231,
+  "export_parity_max_abs_error": {
+    "expanded": 1.91e-06,
+    "deployment_state": 1.91e-06,
+    "pooled_features_9_bins": 1.91e-06
+  },
+  "parity": {
+    "atol": 2e-05,
+    "dt": 0.01,
+    "max_abs_error": 1.9073486328125e-06,
+    "n_neural_steps": 120,
+    "passed": true,
+    "rtol": 2e-05,
+    "stimuli": [
+      "constant grey",
+      "central flash",
+      "moving sinusoidal pattern"
+    ]
+  },
+  "kernel_choice": {
+    "host": "2060 (RTX 2060, torch 2.9.1+cu126)",
+    "chosen": "node-major state kept between steps + fused pointwise update (torch.compile), flytrack_v2.frontend.NodeMajorFlyvis",
+    "ms_per_control_step": {
+      "v1 FrozenFlyvis (batch-major state, two transposes per step)": {
+        "256": 67.1,
+        "1024": 267.5
+      },
+      "node-major, eager update": {
+        "256": 56.2,
+        "1024": 225.4
+      },
+      "node-major, fused update (chosen)": {
+        "256": 35.3,
+        "1024": 141.7
+      },
+      "batch-major spmm on a transposed view (rejected)": {
+        "256": 337.5,
+        "1024": 1398.3
+      }
+    },
+    "max_abs_difference_vs_v1": 1.91e-06,
+    "rejected": {
+      "fp16 CSR spmm": "27% faster product but max abs error 0.020, above the 1e-3 budget (plan 3.4)",
+      "pruning nodes that reach no output": "96.7% of nodes reach an output; about 3% saving",
+      "gather + index_add": "one gathered row per edge and column, far more memory traffic than CSR"
+    }
+  }
+}

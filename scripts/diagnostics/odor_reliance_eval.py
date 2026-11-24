@@ -8,7 +8,7 @@ Each actor runs normal, long occlusion and conflict, each with and without
 Long occlusion starts at OCCLUSION_START_S (8) and lasts OCCLUSION_S (12).
 
 Environment: EPISODES (100), SEED_START (1_700_500_000, outside training and the
-formal seeds 0-4), LANES (25), WORKERS (8), DETERMINISTIC=1 for bitwise GPU runs.
+formal seeds 0-4), LANES (25), WORKERS (8).
 The report keeps every episode; ``paired`` holds the #4 Decision statistics:
 the sign test on mean |bearing| while occluded and McNemar on success.
 """
@@ -24,7 +24,6 @@ import numpy as np
 import torch
 import yaml
 from flytrack_core.metrics import EpisodeMetrics
-from flytrack_core.model.sparse import enable_deterministic
 from flytrack_train.config import contract_from_config
 from flytrack_train.parallel import EnvPool
 from flytrack_train.worlds import make_env
@@ -127,9 +126,6 @@ def main():
         "occlusion_long": {"scenario": "occlusion", "scenario_config": occlusion},
         "conflict": {"scenario": "conflict"},
     }
-    deterministic = os.environ.get("DETERMINISTIC") == "1"
-    if deterministic:
-        enable_deterministic()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     contract = contract_from_config(config)
     factories = [
@@ -142,7 +138,6 @@ def main():
         "worlds": worlds,
         "episodes": count,
         "seed_start": seed_start,
-        "deterministic": deterministic,
         "device": str(device),
         "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
         "torch": torch.__version__,

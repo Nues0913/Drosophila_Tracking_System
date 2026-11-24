@@ -1,0 +1,33 @@
+source: {graph: data/subgraphs/v2_main/graph.npz, graph_sha256: a4dca0d775d48025a95cf962cf88c899b91b8de4052dc8d886dba9c66b881dea, rule: 'exactly one left and one right cell, both with input coverage >= 0.40'}
+types:
+  - {type: DNa01, left_body_id: 10442, right_body_id: 10760, left_coverage: 0.564453, right_coverage: 0.566647}
+  - {type: DNa02, left_body_id: 523769, right_body_id: 10360, left_coverage: 0.594651, right_coverage: 0.593234}
+  - {type: DNa03, left_body_id: 519624, right_body_id: 10975, left_coverage: 0.523459, right_coverage: 0.516671}
+  - {type: DNa04, left_body_id: 11814, right_body_id: 10924, left_coverage: 0.511493, right_coverage: 0.481979}
+  - {type: DNa06, left_body_id: 519896, right_body_id: 524412, left_coverage: 0.519106, right_coverage: 0.532861}
+  - {type: DNa11, left_body_id: 10971, right_body_id: 11233, left_coverage: 0.404468, right_coverage: 0.4175}
+  - {type: DNa15, left_body_id: 10884, right_body_id: 10837, left_coverage: 0.627494, right_coverage: 0.671087}
+  - {type: DNae001, left_body_id: 512071, right_body_id: 11563, left_coverage: 0.495969, right_coverage: 0.485719}
+  - {type: DNae002, left_body_id: 11002, right_body_id: 521262, left_coverage: 0.604369, right_coverage: 0.605589}
+  - {type: DNb01, left_body_id: 10654, right_body_id: 10759, left_coverage: 0.544064, right_coverage: 0.503739}
+  - {type: DNb05, left_body_id: 10118, right_body_id: 10065, left_coverage: 0.539469, right_coverage: 0.590233}
+  - {type: DNb09, left_body_id: 11028, right_body_id: 10411, left_coverage: 0.54089, right_coverage: 0.541724}
+  - {type: DNbe007, left_body_id: 10800, right_body_id: 11365, left_coverage: 0.447297, right_coverage: 0.458323}
+  - {type: DNg100, left_body_id: 10045, right_body_id: 10056, left_coverage: 0.485458, right_coverage: 0.482423}
+  - {type: DNg16, left_body_id: 10177, right_body_id: 10440, left_coverage: 0.481929, right_coverage: 0.485394}
+  - {type: DNg40, left_body_id: 10361, right_body_id: 10923, left_coverage: 0.426071, right_coverage: 0.503486}
+  - {type: DNg75, left_body_id: 10192, right_body_id: 520300, left_coverage: 0.545289, right_coverage: 0.558427}
+  - {type: DNg88, left_body_id: 10885, right_body_id: 10544, left_coverage: 0.429515, right_coverage: 0.433119}
+  - {type: DNg97, left_body_id: 13805, right_body_id: 230783, left_coverage: 0.555155, right_coverage: 0.56384}
+  - {type: DNge050, left_body_id: 10301, right_body_id: 256420, left_coverage: 0.480439, right_coverage: 0.4679}
+  - {type: DNge123, left_body_id: 11820, right_body_id: 12705, left_coverage: 0.474954, right_coverage: 0.54145}
+  - {type: DNp03, left_body_id: 10752, right_body_id: 10989, left_coverage: 0.483206, right_coverage: 0.461782}
+  - {type: DNp06, left_body_id: 10228, right_body_id: 10584, left_coverage: 0.472587, right_coverage: 0.488489}
+  - {type: DNp09, left_body_id: 10783, right_body_id: 11177, left_coverage: 0.498958, right_coverage: 0.401507}
+  - {type: DNp103, left_body_id: 10417, right_body_id: 10283, left_coverage: 0.444768, right_coverage: 0.472015}
+  - {type: DNp34, left_body_id: 10968, right_body_id: 519410, left_coverage: 0.437026, right_coverage: 0.445166}
+  - {type: DNp35, left_body_id: 10234, right_body_id: 10558, left_coverage: 0.462283, right_coverage: 0.493522}
+  - {type: DNp56, left_body_id: 522432, right_body_id: 521197, left_coverage: 0.425209, right_coverage: 0.404786}
+  - {type: DNp57, left_body_id: 11961, right_body_id: 803433, left_coverage: 0.49681, right_coverage: 0.459449}
+  - {type: DNpe023, left_body_id: 11410, right_body_id: 521624, left_coverage: 0.46441, right_coverage: 0.450669}
+  - {type: pIP1, left_body_id: 10030, right_body_id: 10038, left_coverage: 0.50833, right_coverage: 0.50732}

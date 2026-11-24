@@ -24,6 +24,7 @@ def generate_launch_description():
             DeclareLaunchArgument("seed", default_value="731"),
             DeclareLaunchArgument("training_seed", default_value="0"),
             DeclareLaunchArgument("max_episodes", default_value="0"),
+            DeclareLaunchArgument("world", default_value="v1compat", choices=["v1compat", "wind"]),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(str(share / "launch/world.launch.py")),
                 launch_arguments={
@@ -33,6 +34,7 @@ def generate_launch_description():
                     "training_seed": LaunchConfiguration("training_seed"),
                     "max_episodes": LaunchConfiguration("max_episodes"),
                     "sensor_contract": LaunchConfiguration("sensor_contract"),
+                    "world": LaunchConfiguration("world"),
                 }.items(),
             ),
             Node(
@@ -43,6 +45,7 @@ def generate_launch_description():
                         "use_sim_time": True,
                         "artifact": LaunchConfiguration("artifact"),
                         "sensor_contract_json": LaunchConfiguration("sensor_contract"),
+                        "world": LaunchConfiguration("world"),
                     }
                 ],
                 output="screen",

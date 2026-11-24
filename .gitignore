@@ -31,9 +31,22 @@ data/subgraphs/olfactory_v2_nokc/*
 !data/subgraphs/olfactory_v2_nokc/edges.parquet
 !data/subgraphs/olfactory_v2_nokc/manifest.json
 !data/subgraphs/olfactory_v2_nokc/excluded_odor_seed_sides.csv
+# v2 release artifacts only; sweep candidates and large diagnostics remain local.
+!data/subgraphs/v2_*/
+data/subgraphs/v2_*/*
+!data/subgraphs/v2_*/graph.npz
+!data/subgraphs/v2_*/nodes.parquet
+!data/subgraphs/v2_*/edges.parquet
+!data/subgraphs/v2_*/manifest.json
+!data/subgraphs/v2_*/coverage.md
+!data/subgraphs/v2_*/config.yaml
+data/subgraphs/v2_sweep_*/
 runs/
 artifacts/*
 !artifacts/frontend/
+!artifacts/frontend_v2/
+!artifacts/input_norm_v2/
+!artifacts/input_norm_v2_dual/
 !artifacts/data_execution/
 artifacts/data_execution/*
 !artifacts/data_execution/*.json

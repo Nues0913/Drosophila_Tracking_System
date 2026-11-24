@@ -16,6 +16,7 @@ DEFAULT_TOPICS = [
     "/fly/camera/left/image_raw",
     "/fly/camera/right/image_raw",
     "/fly/odor",
+    "/fly/wind",  # v2 wind world only (#140); absent in v1compat
     "/fly/neural_activity",
     "/fly/inference_latency_ms",
     "/fly/sensor_timing",

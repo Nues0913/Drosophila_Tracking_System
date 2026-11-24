@@ -35,7 +35,7 @@ Claude 另在本機含 CUDA 重跑完整測試，回報 **435 passed**；該次 
 
 > 下方 2026-10-15 起的舊圖預算表與其他歷史參數數均保留原值，當時使用 requires_grad 宣告計數，不能替代 #77 的 BC effective 驗收。
 
-## 執行環境
+## 2026-10-15 初查環境
 
 - Ubuntu 26.04.1 LTS，Linux 7.0.0-38-generic，x86_64。
 - Intel Core i7-9700，8 核心；RAM 約 15 GiB，初查可用約 4.9 GiB；swap 約 19 GiB。
@@ -44,7 +44,7 @@ Claude 另在本機含 CUDA 重跑完整測試，回報 **435 passed**；該次 
 - ML 使用工作區 `.tools/` 下管理的 Python 3.12.15 與 `.venv/`。公開 PyPI 安裝 uv；不修改系統 Python 或讀取私人套件索引設定。
 - PyTorch 使用 2.9.1 的 CUDA 12.6 發行版，安裝後須實際核對 Pascal 架構與 CUDA 運算。CUDA 發行版依據：[PyTorch 官方安裝表](https://pytorch.org/get-started/previous-versions/)。
 
-## 執行證據與當前工作
+## v1 早期執行證據與當時待辦
 
 | 項目 | 證據／產物 | 狀態 |
 | --- | --- | --- |

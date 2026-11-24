@@ -1,0 +1,263 @@
+# v2 evaluation protocol, schema 4, following docs/v2/大實驗計劃書.md sections 3.9-3.11. Frozen
+# at M4 (2026-11-24 04:00 UTC+8, half a day later than planned, #213) by #142: the formal runs use it as it stands at the M4
+# Decision's SHA, and a later change is a new protocol version, never an edit of this one.
+# Pilots (seeds 100 and 101) before the freeze used the draft; pilot results are never formal.
+schema_version: 4
+spec_version: v2
+status: frozen
+declared_date: '2026-11-18'
+frozen_date: '2026-11-24'
+freeze_issue: 142
+plan: docs/v2/大實驗計劃書.md
+model_variants: [VO2, V2, O2, RW2, ER2, GRU2]
+# #143 7032821608: seed 0 ran the pilots that chose the recipe (#184 (e), #196 (f), #189, #188's
+# first PPO pilot, #137 F05), so the formal seeds are 1-5; tuning uses the pilot seeds only.
+training_seeds: [1, 2, 3, 4, 5]
+pilot_seeds: [100, 101]
+# G-D's reference: the formal-v1 VO-late actor each v2 training seed is paired with, on that
+# seed's episodes. formal-v1 trained seeds 0-4, and the pairing needs only the shared
+# episodes (v1 and v2 share no training randomness), so v2 seed 5 takes v1's seed 0.
+v1_reference_seeds: {1: 1, 2: 2, 3: 3, 4: 4, 5: 0}
+worlds: [v1compat, wind]
+scenarios:
+  normal: {}
+  occlusion: {occlusion_start_s: 8, occlusion_duration_s: 30}
+  # Scale 1.0 is the base below; 0.75 (v1's #20 pilot scale) equals v1's current
+  # configs/scenarios/noise.yaml exactly; 0.5 and 1.0 are the sensitivity analysis (plan S11),
+  # recorded in each episode's noise_scale. The antennae (wind world) take the odor dropout
+  # and keep their constant 0.05 noise at every scale (#169 Decision 5).
+  noise:
+    scale: 0.75
+    sensitivity_scales: [0.5, 1.0]
+    base_at_scale_1:
+      image_noise_std: 0.08
+      brightness_std: 0.2
+      odor_noise_std: 0.03
+      image_dropout: 0.05
+      odor_dropout: 0.1
+  conflict: {decoy_x: -2, decoy_y: 0}
+motions: {primary: curved, secondary: wander}
+episodes_per_cell: 100
+# Episode seeds of each use, disjoint ranges (training draws its own from rng.episode_seed).
+# records.episode_numbers checks that a training seed's block stays below the next range
+# (#137 F16): e.g. pilot_held_out takes train seeds below 1,200.
+# Evaluation episodes: base + 100000 * train_seed + e, e = 0..99, the same e in every
+# scenario, world and variant, so comparisons pair; each training seed has its own episodes,
+# so seed means carry the episode sampling variance (#170: shared episodes shifted every
+# formal-v1 actor together).
+episode_seeds:
+  formal_evaluation: {base: 2000000000, per_train_seed: 100000}
+  pilot_held_out: {base: 1500000000, per_train_seed: 100000}  # selection, the stage 2 rule
+  world_audit: {start: 1620000000}  # flytrack_train.audit.AUDIT_SEED_START
+  teacher_tuning: {start: 1630000000}  # #169
+  reward_tests: {start: 1640000000}  # #181, scripts/v2/track_v2_trajectories.py
+  v1_actor_audit: {base: 1800000000, per_train_seed: 100000}  # #170
+  input_norm_fit: {start: 1900000000}  # #171
+  v1_formal_evaluation: {base: 1700000000, per_train_seed: 100000}  # formal-v1, read only
+# hide_target renders the scene without the target during occlusion (v2 worlds); blackout is
+# v1's black image, used only to audit v1 actors as they were trained (#160 Decision).
+occlusion_view: {v2: hide_target, v1_actor_audit: blackout}
+episode_seconds: 60
+# Unchanged from protocol schema 3 so that G3 stays comparable with v1.
+success_rule: {distance_m: 2.0, bearing_deg: 45.0, fraction: 0.8, collision_invalidates: true}
+statistics:
+  unit: training seed; episodes are averaged within a seed first
+  # #152 Decision: decide with a one-sided paired t test (df n - 1) and Holm; report the t
+  # interval, and the bootstrap interval alongside it without testing it (with five seeds the
+  # bootstrap test's false positive rate is about 12%).
+  test: one-sided paired t test over training seeds, df n - 1, alpha 0.05
+  gate_rule: point estimate reaches the gate's minimum difference and Holm-adjusted p < 0.05
+  # Equal differences on every seed: p is the exact sign-flip value 1/2^n and the t interval
+  # has zero width; the summary flags it (#166).
+  degenerate_differences: exact sign-flip p, flagged in the summary
+  intervals: {t: 0.95, bootstrap: {resamples: 10000, confidence: 0.95, over: training_seeds}}
+  pairing: variants share episode seeds within a training seed
+  multiplicity: Holm within each registered family (see comparisons)
+  summary: flytrack_v2.eval.summary.build_summary (#172), after check_records (#163)
+  # No bitwise requirement (plan 0.2).
+  reproducibility: a rerun reproduces when its success rates fall inside the original intervals
+world_audits:
+  # flytrack_v2.world.audit (#165, #169): every world x scenario x motion, 100 episodes from
+  # world_audit's seeds, paired across policies (v1 used 40).
+  episodes_per_scenario: 100
+  privileged_teacher_min_success: 0.9  # every world and scenario
+  blind_fixed_action_max_success: 0.1  # every world and scenario
+  # v1's set (flytrack_train.audit.FIXED_ACTIONS), (speed m/s, turn rad/s), plus the
+  # privileged teacher's mean applied action
+  blind_policies:
+    stop: [0.0, 0.0]
+    straight: [0.2, 0.0]
+    left_0.05: [0.2, 0.05]
+    left_0.10: [0.2, 0.10]
+    left_0.20: [0.2, 0.20]
+    right_0.05: [0.2, -0.05]
+    right_0.10: [0.2, -0.10]
+    right_0.20: [0.2, -0.20]
+    teacher_mean: the privileged teacher's mean applied action in that cell
+  odor_teacher_min_occlusion_success: 0.5  # wind world (#133); memory-only reported beside it
+  # #139 Decision (the 11-19 audit passed both): (a) replaying v1's own evaluation episodes
+  # (draws v1, v1's seeds) reproduces each episode's success; (b) on per-seed hash episodes,
+  # no cell (formal-v1 success > 0.01) differs from formal-v1 in a two-sided paired t test
+  # over training seeds after Holm across cells; cells inside the formal-v1 interval are
+  # reported. scripts/v2/audit_v1_actors.py, occlusion_view blackout, v1's reward.
+  v1_actor_consistency:
+    replay_success_agreement_min: 0.99
+    distribution: two-sided paired t per cell over training seeds, Holm across cells, alpha 0.05
+    cells_min_formal_success: 0.01
+gates:
+  G-A: {name: behaviour, rule: VO2 curved normal success >= 0.80 in v1compat and in wind}
+  G-B:
+    name: multisensory
+    rule: >-
+      wind world occlusion, both motions pooled: VO2 - V2 >= 0.10 and Holm-adjusted p < 0.05
+  G-C:
+    name: structure
+    rule: >-
+      VO2 noninferior to RW2, ER2 and GRU2 with margin 0.05 on success pooled over the four
+      scenarios (noise at the main scale), both worlds and both motions, one mean per training
+      seed (user decision 2026-11-20, #203 review: normal alone sits at the ceiling after PPO);
+      superiority is reported; a control enters the comparison only if its normal success is
+      >= 0.3; with no control at or above 0.3, G-C is "not testable: no qualifying control"
+      (#161 E2)
+  G-D:
+    name: versus v1
+    rule: v1compat curved normal VO2 - v1 VO-late >= 0.10 and Holm-adjusted p < 0.05
+    # formal-v1's actors run in the same worlds as the v2 variants, occlusion_view v2
+    # (hide_target): the same task on the same episodes. G-D reads curved normal only, so the
+    # view never enters it; v1's occlusion cells are reported beside T-4's blackout audit, the
+    # view v1 was trained with (#197 review).
+  G-E:
+    name: engineering
+    rule: >-
+      end-to-end training environment steps/s >= v1 on the same host, each with its formal
+      configuration's batch (not the same batch); CI green
+formal_v2_condition: G-A and G-E pass and the user agrees; the other gates are reported regardless
+# Holm families. A family is either all gates or all secondary analyses, so a secondary
+# analysis never dilutes a gate's correction (summary.py refuses a mixed family).
+comparisons:
+  primary:  # the gates' tests, one family
+    - G-B
+    - G-C VO2 vs RW2 (noninferiority, margin 0.05)
+    - G-C VO2 vs ER2 (noninferiority, margin 0.05)
+    - G-C VO2 vs GRU2 (noninferiority, margin 0.05)
+    - G-D
+  secondary:
+    G-C superiority: VO2 vs RW2, ER2, GRU2 (superiority), pooled as G-C
+    G-C by scenario: >-
+      VO2 vs each qualifying control in each scenario on its own (noninferiority, margin
+      0.05), as formal-v1 registered its structure comparison; reported only
+    # #169 Decision 2: curved alone reaches 0.51 by memory, so a claim that odor or wind is
+    # used during occlusion rests on wander and on the E1 ablations, never on curved alone.
+    G-B by motion: VO2 - V2 in wind occlusion, curved and wander separately
+    E1 attribution: >-
+      every VO2 training seed's checkpoint on its own episodes, wind world, occlusion scenario:
+      (a) left and right odor swapped, total unchanged; (b) wind rotated by 90 degrees with the
+      odor unchanged (flytrack_v2.eval.runner ObservationAblation). The attribution applies them
+      during the occlusion only (8-38 s, scripts/v2/evaluate_v2.py *_occlusion runs) and
+      compares them with occlusion_baseline, the same occlusion-only batch without an ablation:
+      paired episodes agree until the occlusion starts up to float32 rounding (batch layout,
+      GPU nondeterminism; #194 review), which manifest.json's e1_premise checks (each pair's
+      distance when the occlusion starts: the maximum and the fraction above 1 cm). The premise
+      holds when no episode of any pair is more than 1 cm apart (every fraction_over_1cm is 0);
+      otherwise E1 is reported as "premise failed" and gives no conclusion (#203 review). The
+      measure is the tracking fraction during the occlusion (secondary.jsonl
+      during_tracking_fraction), per seed the mean of (occlusion_baseline - ablation) over its
+      episodes, positive when the ablation lowers the tracking (the report states it); each of
+      (a) and (b) is a one-sided paired t test over training seeds that the ablation lowers
+      it, p < 0.05 with Holm across the two, a secondary family of its own (#194 review). The
+      same ablations run on GRU2, on the same inputs and episodes, and are reported beside
+      VO2's as a descriptive family of their own: whether a learned controller uses odor or
+      wind while the target is hidden. They give no conclusion and are no gate (#141,
+      registered before M4). The same ablations over the whole episode are reported beside them and
+      only say whether the controller depends on the channel. Occlusion tracking is reported
+      before, during, after the occlusion until reacquisition, and after reacquisition
+    A3 speed: >-
+      deterministic actions (mode); per seed, the within-episode pooled slope of the commanded
+      speed on the distance seen before acting (each episode centered on its own means, then
+      sum Sxy / sum Sxx over the seed's normal episodes, so a difference between episodes, such
+      as a failing one both slow and far, never makes a slope; flytrack_v2.eval.runner
+      pooled_slope, #194 review), over the steps whose bearing seen before acting is within
+      45 degrees (the success rule's bearing; the aligned slope) and over all steps (reported
+      beside it); and the actor with its speed held at 0.20 m/s on paired episodes. "The
+      speed problem is solved" needs a positive aligned slope on at least 4 of 5 seeds and
+      lower normal success with the speed held, in a one-sided paired t test over training
+      seeds (p < 0.05, a secondary family of its own; #192 R12). Each seed's aligned slope is
+      reported in m/s per m beside the teacher's 0.257 (#184 (b), teacher driving), with the
+      speed-held paired difference, so a small positive slope is never read as a working speed
+      control. The aligned slope decides because the
+      teacher's speed is 0.7 max(d - 1, 0) max(cos bearing, 0): a policy that imitates it
+      slows down whenever it is not facing the target, so its unrestricted slope can be zero
+      or negative (#184 Decision, made before any aligned slope was measured). Formal-v1's
+      actors have unrestricted slopes of about 0 (#170 audit); both slopes are recomputed for
+      them
+    noise sensitivity: >-
+      every gate's comparison on the noise scenario alone at noise scales 0.5 and 1.0 (G-B in
+      the wind world, G-C over both worlds; G-D has none, formal-v1 runs the main scale only),
+      not the pooled G-C recomputed; reported only. The main scale is never a sensitivity
+      scale (#204 review)
+# #192 R13, registered before M4: the wording of each negative result. Every training seed's
+# result is reported, so many episodes never hide the uncertainty across seeds.
+negative_results:
+  speed: >-
+    "no effective speed control was established" when A3's condition fails: the aligned slope
+    is positive on fewer than 4 of 5 seeds, or holding the speed at 0.20 m/s does not lower
+    normal success (the one-sided paired t test is not significant)
+  occlusion: >-
+    "the use of direction during the occlusion was not shown" when G-B fails, or when
+    neither occlusion-window E1 test (odor, wind) is significant
+  structure: >-
+    "the structure comparison is not testable: no qualifying control" when no control reaches
+    normal success 0.3 (G-C, #161 E2)
+reacquisition:
+  report: censored fraction and the restricted mean time; never the uncensored mean alone
+  restricted_bound_s: 22  # occlusion end (38 s) to episode end (60 s)
+  # #161 E3: an episode that ends before its occlusion ends has both reacquisition fields
+  # null; it is left out of the time and the censored fraction and reported as the fraction
+  # of collisions before the occlusion ended.
+  ended_during_occlusion: reported separately as collisions before the occlusion ended
+training:
+  stage1: dagger_v2  # plan 3.8
+  stage2: ppo_v2
+  # PM selection before M4 (#138, #141): A3 v15. Pilot thresholds are descriptive.
+  recipe: configs/v2/train/a3_v15.yaml
+  # Plan 3.8: stage 2 replaces stage 1 only if its held-out success does not drop. Per
+  # variant, on the pilot held-out episodes (normal and occlusion, both worlds and motions):
+  # stage 2 - stage 1, paired by training seed, noninferior with margin 0.05 (one-sided t
+  # test, p < 0.05), the same rule as G-C. The rule is applied as written; a variant keeps
+  # stage 1 when it fails.
+  stage2_replaces_stage1: held-out success noninferior to stage 1 with margin 0.05
+  stage2_cutline: if PPO-v2 does not beat DAgger-v2 in pilots by 2026-11-22 22:00, stop after stage 1
+tuning:
+  pilots_only: true
+  max_configs_per_sweep: 4
+  # Held-out: the pilot_held_out episode seeds, normal and occlusion, both worlds and both
+  # motions weighted equally; never the formal evaluation's episodes.
+  selection: highest mean held-out (normal + occlusion) success over the pilot seeds
+  # WP7's sweep (#161 A4): g parameterisation x speed readout, everything else at plan 3.8's
+  # defaults; it also records the speed slope, collisions, the zero-input drift and each
+  # row's gain distribution.
+  sweep_wp7:
+    g_param: [softplus, bounded]  # bounded: g_max 0.97
+    speed_readout: [dnp09, bilateral_dn]  # bilateral: configs/v2/model/readout_bilateral_dn.yaml
+  # Tunable in a further registered sweep before M4 only (plan 3.10); defaults otherwise.
+  knobs:
+    learning_rate: [3.0e-4, 1.0e-3]  # default 1e-3, cosine to 1e-4
+    sequence_length: [64, 128]  # default 64 plus 16 burn-in
+    bias_lr_ratio: [0.0, 0.1]  # default 0.1
+    kickstart_anneal_fraction: [0.3, 0.5]  # default 0.3
+  wind_speed_m_s: 0.5  # fixed (#169 Decision 1), no longer swept
+throughput:
+  # End-to-end training environment steps/s on the same host, each side with its formal
+  # configuration's batch (#147 review).
+  hard_floor_vs_v1: 1.0
+  target_vs_v1: 5.0
+  pr_regression_limit: 0.05
+# M4 (#143 7043742783): the six variants of one training seed run on one host, one executor per
+# (variant, seed); scripts/v2/run_formal.py refuses a seed its host is not given.
+host_assignment: {'4070': [5, 1], '4060': [2, 3], '2060': [4]}
+# #161 F, registered before the M2 bench: estimate the formal training time from the measured
+# combined throughput of the three hosts with a 20% margin (evaluation included: 48,000 main
+# episodes plus the noise sensitivity and the v1 comparison). Above max_hours_m4_to_m4b, the
+# formal matrix runs stage 1 only and PPO is reported from the pilots. The window is M4 (11-24
+# 04:00) to M4b (11-25 10:00): 30 hours since the half-day postponement (#213; 32 before).
+compute_rule: {margin: 0.20, max_hours_m4_to_m4b: 30, over_budget: stage 1 only}

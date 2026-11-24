@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import signal
 import time
-from pathlib import Path
 
 import numpy as np
 import rclpy
-from flytrack_core.contracts import SensorContract
-from flytrack_core.model import load_policy_artifact
 from flytrack_core.sensing.hex_eye import CAMERA_KERNELS, HexEye
-from flytrack_interfaces.msg import NeuralActivity, OdorReading
+from flytrack_interfaces.msg import NeuralActivity, OdorReading, WindReading
 from geometry_msgs.msg import Twist
 from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor
@@ -23,8 +19,11 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Float64
 from std_srvs.srv import Trigger
 
+from .artifact import load_deployment_policy
+from .contract import check_deployment_contract
 from .profiling import PolicyProfiler
 from .runtime import PolicyRuntime
+from .timing import SENSORS as TRACED_SENSORS
 from .timing import ControlTracer
 
 SENSOR_TOPICS = (
@@ -32,6 +31,8 @@ SENSOR_TOPICS = (
     "/fly/camera/right/image_raw",
     "/fly/odor",
 )
+WIND_TOPIC = "/fly/wind"
+WORLDS = ("v1compat", "wind")
 
 
 def image_to_grayscale(message: Image) -> np.ndarray:
@@ -94,6 +95,9 @@ class ConnectomePolicyNode(Node):
         # #111 G0e: "subrays" samples the camera with the 2D ray cast's quadrature (the kernel the
         # actors were trained on); "gaussian" reproduces the runs made before G0e (formal-v1 G2).
         self.declare_parameter("vision_kernel", "subrays")
+        # #140: "wind" feeds a v2 policy the antenna reading from /fly/wind; "v1compat" gives it
+        # wind 0 with valid 0, as the 2D v1compat world does.
+        self.declare_parameter("world", "v1compat")
         profiler_enabled = bool(self.get_parameter("profiler_enabled").value)
         profiler_output_path = str(self.get_parameter("profiler_output_path").value)
         if profiler_enabled and not profiler_output_path:
@@ -104,20 +108,27 @@ class ConnectomePolicyNode(Node):
                 "The artifact parameter must identify a complete exported policy directory"
             )
         device = str(self.get_parameter("device").value)
-        policy, contract, self.card = load_policy_artifact(artifact, device=device)
-        expected_path = str(self.get_parameter("sensor_contract_json").value)
-        if expected_path:
-            expected = SensorContract.from_dict(
-                json.loads(Path(expected_path).read_text(encoding="utf-8"))
-            )
-            if expected.sha256() != contract.sha256():
-                raise ValueError("Deployment sensor contract differs from model artifact")
+        policy, contract, self.card, self.artifact_spec = load_deployment_policy(
+            artifact, device=device
+        )
+        check_deployment_contract(str(self.get_parameter("sensor_contract_json").value), contract)
         self.contract = contract
         self.vision_kernel = str(self.get_parameter("vision_kernel").value)
         if self.vision_kernel not in CAMERA_KERNELS:
             raise ValueError(f"vision_kernel must be one of {CAMERA_KERNELS}")
+        self.world = str(self.get_parameter("world").value)
+        if self.world not in WORLDS:
+            raise ValueError(f"world must be one of {WORLDS}, got {self.world!r}")
+        if self.world == "wind" and self.artifact_spec != "v2":
+            raise ValueError("world=wind needs a v2 policy: a v1 actor has no wind input")
         self.eye = HexEye(contract)
-        self.runtime = PolicyRuntime(policy, contract, device, profiler_enabled=profiler_enabled)
+        self.runtime = PolicyRuntime(
+            policy,
+            contract,
+            device,
+            profiler_enabled=profiler_enabled,
+            wind=self.world == "wind",
+        )
         self.tracer = ControlTracer(self)
         camera_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=2, reliability=ReliabilityPolicy.BEST_EFFORT
@@ -149,6 +160,11 @@ class ConnectomePolicyNode(Node):
         self.odor_subscription = self.create_subscription(
             OdorReading, SENSOR_TOPICS[2], self.odor_callback, odor_qos
         )
+        self.wind_subscription = (
+            self.create_subscription(WindReading, WIND_TOPIC, self.wind_callback, odor_qos)
+            if self.world == "wind"
+            else None
+        )
         self.reset_service = self.create_service(
             Trigger, "/connectome_policy_node/reset", self.reset_callback
         )
@@ -162,8 +178,8 @@ class ConnectomePolicyNode(Node):
             self.tracer.on_trace_state = self.profiler.record_trace_state
         self.last_activity_stamp = -float("inf")
         self.get_logger().info(
-            f"Loaded {self.card['variant']} policy with "
-            f"{self.card['trainable_parameters']} trainable parameters"
+            f"Loaded {self.artifact_spec} {self.card['variant']} policy with "
+            f"{self.card.get('trainable_parameters', 'unrecorded')} trainable parameters"
         )
 
     def camera_callback(self, message: Image, eye: int) -> None:
@@ -220,6 +236,14 @@ class ConnectomePolicyNode(Node):
         finally:
             self.profiler.end_sensor_callback(profile, time.monotonic_ns(), accepted)
 
+    def wind_callback(self, message: WindReading) -> None:
+        # Not in the causal ControlTrace, which has a slot for each of v1's three sensors.
+        self.runtime.update_wind(
+            np.array([message.left, message.right], dtype=np.float32),
+            stamp_seconds(message.header),
+            valid=bool(message.valid),
+        )
+
     def reset_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
@@ -269,13 +293,17 @@ class ConnectomePolicyNode(Node):
         publish_started_ns = time.monotonic_ns()
         self.command_publisher.publish(message)
         published_ns = time.monotonic_ns()
-        samples = self.profiler.sensor_references(self.runtime.stamps, self.tracer.latest, valid)
+        # The trace and profiler cover v1's three sensors; the wind slot (index 3) is left out.
+        traced = len(TRACED_SENSORS)
+        samples = self.profiler.sensor_references(
+            self.runtime.stamps[:traced], self.tracer.latest, valid[:traced]
+        )
         trace_sequence, trace_status = self.tracer.command(
             now.to_msg(),
             started_ns,
             published_ns,
-            valid,
-            self.runtime.stamps,
+            valid[:traced],
+            self.runtime.stamps[:traced],
             self.runtime.last_inference_latency_ms is not None,
         )
         if self.runtime.last_inference_latency_ms is not None:

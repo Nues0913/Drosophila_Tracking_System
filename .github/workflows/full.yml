@@ -1,0 +1,35 @@
+# Every test that runs on CPU, after each merge into v2 (plan 4.1, #131). GitHub runs scheduled
+# workflows only from the default branch (main, which carries v1), so the daily full run is
+# triggered by the PM's daily 22:00 (UTC+8) integration merge instead of a cron schedule.
+name: full
+
+on:
+  push:
+    branches: [v2]
+  workflow_dispatch:
+
+concurrency:
+  group: full-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements/ml-cpu-py312.lock
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python --require-hashes -r requirements/ml-cpu-py312.lock
+      - run: uv pip install --python .venv/bin/python --no-deps -e .
+      - run: .venv/bin/python -m pytest -m "not gpu and not ros and not bench" -n auto -q --durations=25

@@ -13,6 +13,9 @@ from flytrack_core.model import build_policy, load_policy_artifact, save_policy_
 from flytrack_train import imitation
 from flytrack_train.config import contract_from_config, prepare_policy, read_config
 
+# v1 legacy-flag compatibility: runs in the full workflow only (#131).
+pytestmark = pytest.mark.legacy
+
 ROOT = Path(__file__).resolve().parents[2]
 
 

@@ -31,6 +31,16 @@ def complete_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in lines if line.strip()]
 
 
+V2_VARIANTS = ("VO2", "V2", "O2", "RW2", "ER2", "GRU2")
+
+
+def card_seed(card: dict) -> int:
+    """Training seed of a v1 card (``metadata.seed``) or a v2 card (``provenance.train_seed``)."""
+    if card.get("spec_version") == "v2":
+        return int(card.get("provenance", {}).get("train_seed", -1))
+    return int(card.get("metadata", {}).get("seed", -1))
+
+
 def validate_cell_rows(rows, variant, seed, card_hash, target_motion):
     if any(
         row["variant"] != variant
@@ -49,7 +59,7 @@ def main():
     parser.add_argument(
         "--variants",
         nargs="+",
-        choices=("V", "O", "VO", "VO-late", "GRU", "RS"),
+        choices=("V", "O", "VO", "VO-late", "GRU", "RS") + V2_VARIANTS,
         default=["V", "VO", "VO-late", "GRU", "RS"],
     )
     parser.add_argument(
@@ -79,6 +89,9 @@ def main():
     parser.add_argument("--policy-device", choices=("cpu", "cuda"), default="cpu")
     # Camera hex-eye kernel (#111 G0e): "gaussian" reproduces runs before G0e (formal-v1 G2).
     parser.add_argument("--vision-kernel", choices=("subrays", "gaussian"), default="subrays")
+    # #140: a v2 card brings its own sensor contract; the world stays v1compat until the
+    # wind G1 is registered (#140 7001508986).
+    parser.add_argument("--world", choices=("v1compat", "wind"), default="v1compat")
     args = parser.parse_args()
     if (
         args.episodes < 1
@@ -112,7 +125,7 @@ def main():
                 raise ValueError("Actors must be in mounted runs/ or artifacts/")
             card_path = artifact / "model_card.json"
             card = json.loads(card_path.read_text(encoding="utf-8"))
-            if card["variant"] != variant or int(card.get("metadata", {}).get("seed", -1)) != seed:
+            if card["variant"] != variant or card_seed(card) != seed:
                 raise ValueError(f"Artifact matrix label differs from {artifact}")
             if card.get("runtime_lesion", "none") != "none":
                 raise ValueError("Formal Gazebo comparison requires unlesioned actors")
@@ -124,6 +137,8 @@ def main():
                         f"Preserve existing results in {cell}; choose a new output directory"
                     )
                 matrices.append((variant, seed, scenario, artifact, cell, sha256(card_path)))
+            if (card.get("spec_version") == "v2") != (variant in V2_VARIANTS):
+                raise ValueError(f"{artifact}: card spec_version does not match variant {variant}")
     compose = [
         "docker",
         "compose",
@@ -149,6 +164,7 @@ def main():
         "policy_device": args.policy_device,
         "policy_vision_kernel": args.vision_kernel,
         "cpu_rendering": bool(args.cpu),
+        "world": args.world,
         "cells": [],
     }
     try:
@@ -167,7 +183,13 @@ def main():
                 POLICY_TORCH_THREADS=str(args.policy_threads),
                 POLICY_DEVICE=args.policy_device,
                 POLICY_VISION_KERNEL=args.vision_kernel,
+                FLYTRACK_WORLD=args.world,
             )
+            if variant in V2_VARIANTS:
+                # The deployment contract must hold every field of the model's (#182).
+                environment["SENSOR_CONTRACT"] = "/workspace/" + str(
+                    (artifact / "sensor_contract.json").relative_to(root)
+                )
             print(f"Gazebo {variant}, model seed {seed}, {scenario}", flush=True)
             cell_started = datetime.now(timezone.utc).isoformat()
             cell_started_monotonic = time.monotonic()

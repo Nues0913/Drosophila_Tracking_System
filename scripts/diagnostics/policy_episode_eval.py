@@ -5,8 +5,6 @@ Environment options come from CONFIG's ``env`` plus the JSON in ENV_OVERRIDES;
 the four registered scenarios are each run for EPISODES episodes (default 30).
 Environment seeds start at 1.6e9, outside training, decoder-validation and
 formal-evaluation ranges. Fixed actions [v, omega] come from FIXED (JSON map).
-DETERMINISTIC=1 makes GPU runs bitwise reproducible (about 2x slower); compare
-against reference files only when both were produced in the same mode.
 """
 
 import json
@@ -20,7 +18,6 @@ import torch
 import yaml
 from flytrack_core.metrics import EpisodeMetrics
 from flytrack_core.model import load_policy_artifact
-from flytrack_core.model.sparse import enable_deterministic
 from flytrack_train.batches import SequenceModel, tensor_observation
 from flytrack_train.config import contract_from_config
 from flytrack_train.parallel import EnvPool
@@ -124,8 +121,6 @@ def main():
     lanes = min(episodes, int(os.environ.get("LANES", 30)))
     fixed = json.loads(os.environ["FIXED"]) if "FIXED" in os.environ else DEFAULT_FIXED
     contract = contract_from_config(config)
-    if os.environ.get("DETERMINISTIC") == "1":
-        enable_deterministic()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pool = EnvPool(
         [partial(make_env, config, contract, scenario=s) for s in SCENARIOS for _ in range(lanes)],

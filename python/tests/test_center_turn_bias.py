@@ -18,6 +18,9 @@ from flytrack_train.config import prepare_policy, read_config
 from flytrack_train.recovery import EpisodeStore, held_out_episodes
 from flytrack_train.turn_bias import TURN_BIAS_TOLERANCE, center_turn_bias, solve_turn_bias
 
+# v1 legacy-flag compatibility: runs in the full workflow only (#131).
+pytestmark = pytest.mark.legacy
+
 ROOT = Path(__file__).resolve().parents[2]
 CPU = torch.device("cpu")
 

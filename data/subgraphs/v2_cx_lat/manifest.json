@@ -1,0 +1,164 @@
+{
+ "source_graph_sha256": "0ea1939ed362490ae8787e42c0f23dc7cae9e47cc2cbd20509bdf8d2da1ad332",
+ "graph_sha256": "f14ae59534f60bf4dafeaafa1c41ef50a8fb8be7a211054864158b43bce391d1",
+ "seed_types": [
+  "ORN_DM1",
+  "ORN_VA2"
+ ],
+ "gains_before": 29276,
+ "gains_after": 29295,
+ "split_pairs": [
+  {
+   "pair": "ORN_DM1->DM1_lPN",
+   "ipsi_edges": 74,
+   "contra_edges": 71,
+   "midline_edges": 0,
+   "ipsi_synapses": 8023.0,
+   "contra_synapses": 5361.0
+  },
+  {
+   "pair": "ORN_DM1->DM2_lPN",
+   "ipsi_edges": 1,
+   "contra_edges": 17,
+   "midline_edges": 0,
+   "ipsi_synapses": 10.0,
+   "contra_synapses": 251.0
+  },
+  {
+   "pair": "ORN_DM1->M_l2PNl20",
+   "ipsi_edges": 61,
+   "contra_edges": 34,
+   "midline_edges": 0,
+   "ipsi_synapses": 1089.0,
+   "contra_synapses": 507.0
+  },
+  {
+   "pair": "ORN_DM1->ORN_DM1",
+   "ipsi_edges": 38,
+   "contra_edges": 3,
+   "midline_edges": 0,
+   "ipsi_synapses": 412.0,
+   "contra_synapses": 31.0
+  },
+  {
+   "pair": "ORN_DM1->il3LN6",
+   "ipsi_edges": 50,
+   "contra_edges": 52,
+   "midline_edges": 0,
+   "ipsi_synapses": 1359.0,
+   "contra_synapses": 1131.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2F_b",
+   "ipsi_edges": 46,
+   "contra_edges": 126,
+   "midline_edges": 0,
+   "ipsi_synapses": 663.0,
+   "contra_synapses": 2725.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2P_a",
+   "ipsi_edges": 2,
+   "contra_edges": 9,
+   "midline_edges": 0,
+   "ipsi_synapses": 21.0,
+   "contra_synapses": 120.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2T_b",
+   "ipsi_edges": 41,
+   "contra_edges": 79,
+   "midline_edges": 0,
+   "ipsi_synapses": 545.0,
+   "contra_synapses": 1284.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2T_c",
+   "ipsi_edges": 3,
+   "contra_edges": 18,
+   "midline_edges": 0,
+   "ipsi_synapses": 42.0,
+   "contra_synapses": 240.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2X02",
+   "ipsi_edges": 24,
+   "contra_edges": 3,
+   "midline_edges": 0,
+   "ipsi_synapses": 297.0,
+   "contra_synapses": 30.0
+  },
+  {
+   "pair": "ORN_DM1->lLN2X04",
+   "ipsi_edges": 2,
+   "contra_edges": 3,
+   "midline_edges": 0,
+   "ipsi_synapses": 28.0,
+   "contra_synapses": 38.0
+  },
+  {
+   "pair": "ORN_VA2->ORN_VA2",
+   "ipsi_edges": 17,
+   "contra_edges": 7,
+   "midline_edges": 0,
+   "ipsi_synapses": 201.0,
+   "contra_synapses": 85.0
+  },
+  {
+   "pair": "ORN_VA2->VA2_adPN",
+   "ipsi_edges": 72,
+   "contra_edges": 68,
+   "midline_edges": 0,
+   "ipsi_synapses": 6970.0,
+   "contra_synapses": 5435.0
+  },
+  {
+   "pair": "ORN_VA2->VA7m_lPN",
+   "ipsi_edges": 2,
+   "contra_edges": 3,
+   "midline_edges": 0,
+   "ipsi_synapses": 33.0,
+   "contra_synapses": 33.0
+  },
+  {
+   "pair": "ORN_VA2->il3LN6",
+   "ipsi_edges": 57,
+   "contra_edges": 48,
+   "midline_edges": 0,
+   "ipsi_synapses": 1726.0,
+   "contra_synapses": 1108.0
+  },
+  {
+   "pair": "ORN_VA2->lLN2F_b",
+   "ipsi_edges": 19,
+   "contra_edges": 127,
+   "midline_edges": 0,
+   "ipsi_synapses": 247.0,
+   "contra_synapses": 2999.0
+  },
+  {
+   "pair": "ORN_VA2->lLN2P_b",
+   "ipsi_edges": 3,
+   "contra_edges": 3,
+   "midline_edges": 0,
+   "ipsi_synapses": 33.0,
+   "contra_synapses": 41.0
+  },
+  {
+   "pair": "ORN_VA2->lLN2T_b",
+   "ipsi_edges": 30,
+   "contra_edges": 103,
+   "midline_edges": 0,
+   "ipsi_synapses": 425.0,
+   "contra_synapses": 1939.0
+  },
+  {
+   "pair": "ORN_VA2->lLN2T_c",
+   "ipsi_edges": 1,
+   "contra_edges": 8,
+   "midline_edges": 0,
+   "ipsi_synapses": 10.0,
+   "contra_synapses": 92.0
+  }
+ ]
+}

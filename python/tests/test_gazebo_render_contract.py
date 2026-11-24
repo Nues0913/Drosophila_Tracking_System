@@ -77,7 +77,8 @@ def test_world_and_models_render_the_2d_intensities():
     assert list(target) == ["target/body/target"]
     observed["target"] = target["target/body/target"]
     agent = materials(BRINGUP / "models/agent/model.sdf")
-    assert len(agent) == 4  # body, two wheels, caster: background-coloured if a camera sees them
+    # body, two wheels, two casters: background-coloured if a camera sees them
+    assert len(agent) == 5
     observed.update({f"agent:{name}": value for name, value in agent.items()})
     for name, value in observed.items():
         kind = (
@@ -155,7 +156,13 @@ def test_agent_collision_shapes_stay_inside_the_collision_radius():
             reach[f"{link.get('name')}/{collision.get('name')}"] = np.hypot(
                 points[:, 0], points[:, 1]
             ).max()
-    assert set(reach) == {"base_link/body", "left_wheel/wheel", "right_wheel/wheel", "caster/ball"}
+    assert set(reach) == {
+        "base_link/body",
+        "left_wheel/wheel",
+        "right_wheel/wheel",
+        "caster/ball",
+        "front_caster/ball",
+    }
     assert reach["base_link/body"] == pytest.approx(env.agent_radius_m, abs=1e-6)
     assert all(value <= env.agent_radius_m + 1e-6 for value in reach.values()), reach
     # The drive plugin must describe the wheels it drives, or commands map to other speeds. The
@@ -304,3 +311,33 @@ def test_target_collision_shape_stays_inside_the_collision_distance():
             ).max()
     assert set(reach) == {"body/target"}
     assert all(value < limit for value in reach.values()), reach
+
+
+def test_front_caster_limits_the_forward_pitch_without_carrying_the_agent():
+    """#140 (E11): with only the rear caster, braking tipped the agent about 35 deg onto its body.
+    The front caster stays just above the floor, so the wheels and the rear caster carry the agent
+    as before, and braking can pitch it forward only until the front caster touches.
+    """
+    model = ET.parse(BRINGUP / "models/agent/model.sdf").getroot().find("model")
+    model_z = float(model.findtext("pose").split()[2])
+
+    def lowest(link_name):
+        link = model.find(f"link[@name='{link_name}']")
+        x, _, z = (float(v) for v in link.findtext("pose").split()[:3])
+        geometry = link.find("collision/geometry")
+        shape = geometry.find("sphere")
+        if shape is None:
+            shape = geometry.find("cylinder")
+        radius = float(shape.findtext("radius"))
+        return x, model_z + z - radius
+
+    for wheel in ("left_wheel", "right_wheel"):
+        assert lowest(wheel)[1] == pytest.approx(0.0, abs=1e-9)
+    rear_x, rear_bottom = lowest("caster")
+    front_x, front_bottom = lowest("front_caster")
+    assert rear_bottom == pytest.approx(0.0, abs=1e-9)
+    assert rear_x < 0 < front_x
+    assert 0 < front_bottom <= 0.005
+    assert np.degrees(np.arctan2(front_bottom, front_x)) < 2.0
+    joints = {j.findtext("child"): j.get("type") for j in model.findall("joint")}
+    assert joints["front_caster"] == "ball"

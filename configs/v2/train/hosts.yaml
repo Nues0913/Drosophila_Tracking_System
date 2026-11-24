@@ -1,0 +1,4 @@
+"4060": {micro_batch: 128}
+"2060": {micro_batch: 64}
+"4070": {micro_batch: 128}
+gputw3090: {micro_batch: 128}

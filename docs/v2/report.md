@@ -197,7 +197,7 @@ VO2 的 `wind` 遮蔽追蹤比例按時段列於下表。每個 seed 內先平�
 - **評估「遠就加速」**：可見時 teacher 的速度是 0.7·max(d − 1, 0)·max(cos(bearing), 0)，再加動作上限，目標迎面逼近時改用閃避規則。所以同樣距離 > 2 m，目標在前方和在身後，teacher 可以要全速或零速；要另外列「遠、在前方、非閃避」的速度誤差。
 
 ## 5. Gazebo v2（WP6，#140）
-4070 的 `v1compat` 試跑用 seed 100 的 VO2、V2 actor，兩者各 24 回合，48 回合均有效且和 2D 逐回合一致。曲線正常各 15 回合的 sensor→command p95 為 VO2 42.4 ms、V2 42.1 ms。Gazebo／2D 的成功回合數皆為 VO2 11、V2 12。一對一配對修補（`4480147`）以同一份證據重算仍為 48/48。這組是 v2 部署相容性驗證，`wind` 的正式結果來自 2D。程式仍在 #218 覆核。[WP6 交件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/140#issuecomment-7133091834) · [PR #218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218)。
+4070 的 `v1compat` 試跑用 seed 100 的 VO2、V2 actor，兩者各 24 回合，48 回合均有效且和 2D 逐回合一致。曲線正常各 15 回合的 sensor→command p95 為 VO2 42.4 ms、V2 42.1 ms。Gazebo／2D 的成功回合數皆為 VO2 11、V2 12。一對一配對修補（`4480147`）以同一份證據重算仍為 48/48。這組是 v2 部署相容性驗證，`wind` 的正式結果來自 2D。配對程式已由 #218 合併至 v2。`wind` 的 Gazebo 回合與兩個感測 topic 的時間戳比對未執行。[WP6 交件](https://github.com/Nues0913/Drosophila_Tracking_System/issues/140#issuecomment-7133091834) · [PR #218](https://github.com/Nues0913/Drosophila_Tracking_System/pull/218)。
 
 ## 6. 必須揭露的限制
 - **配方只在 VO2 上選定**（#143）：對照組沒有各自調參，這對 G-B、G-C 是偏向 VO2 的方向。

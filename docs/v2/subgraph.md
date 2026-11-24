@@ -1,5 +1,7 @@
 # WP3a：子圖 v2（Issue #134）
 
+WP3a 的基圖 `v2_main` 有 8,598 個節點、182,678 條邊。A3 第十五版使用的衍生圖 `v2_cx_lat` 有 **8,792 個節點、185,261 條邊**，加入中央複合體迴路並區分 ORN 同側與對側的增益標籤。下列 sweep 與覆蓋率表記錄基圖萃取。正式圖與標籤拆分見[配方](../../configs/v2/train/a3_v15.yaml)及[衍生圖 manifest](../../data/subgraphs/v2_cx_lat/manifest.json)。
+
 選定 sweep a，產物在 [`data/subgraphs/v2_main/`](../../data/subgraphs/v2_main/)，萃取設定為 [`v2_main.yaml`](../../configs/v2/extraction/v2_main.yaml)。計劃基準為 `4304571`。
 
 ## 規則與可重現性

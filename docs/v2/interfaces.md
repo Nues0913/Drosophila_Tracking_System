@@ -157,11 +157,11 @@ VO2、V2、O2、RW2、ER2、GRU2 共用這個介面。
   - `initial_state(B, device) -> [B, state_size]`，`state_size` 可以是 0；
   - `act(privileged, obs, previous_action, state, *, limit_acceleration=True) -> (action, state)`，輸出在動作上限內；
   - `limit_acceleration=True`（預設，和 v1 相同）：再依 `previous_action` 套用加速度限制。`False`：只套用上下限，標籤是 teacher「想要」的動作，執行時由世界套用加速度限制。DAgger 的標籤用 `False`（#184）。
-- **為什麼要狀態**：遮蔽期間要維持遮蔽前的速度，橫風搜尋也要計時或記方向，這些都放在 teacher 的狀態裡。
+- **為什麼要狀態**：teacher 保存遮蔽開始前的實際速度及轉向，供遮蔽中的速度與失去氣味時的轉向標籤使用。另保存失去氣味的時長、搜尋側與遮蔽旗標。[teacher 行為](world.md)。
 - **重設**：世界自動重設的列（`terminated | truncated`），由呼叫端用 `reset_rows` 重設 teacher 的狀態，和 policy 的中央狀態一樣。
 - **限制**：
   - teacher 的輸出只當訓練標籤，不能當成觀測；
-  - 遮蔽期間，只看觀測的氣味 teacher（WP2b）只能使用 `obs`。
+  - 遮蔽 teacher 的循味與逆風分支讀觸角觀測，避牆另用 agent 自身姿態，並保留前一動作與記憶。遮蔽標籤不讀目標真值；部署 actor 的輸入仍依第 2 節。
 
 ## 7. 產物 schema 4
 

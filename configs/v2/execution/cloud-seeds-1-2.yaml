@@ -1,0 +1,7 @@
+# #143: Run two complete seeds on one cloud worker.
+protocol_sha256: 1b487492b6d91b259e6b2b528535ccd3299a5e74d4654e2ae89387aeef319aed
+host_assignment:
+  '4070': [5]
+  '4060': [3]
+  '2060': [4]
+  gputw3090: [1, 2]

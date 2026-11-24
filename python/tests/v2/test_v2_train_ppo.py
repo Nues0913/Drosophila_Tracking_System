@@ -16,7 +16,9 @@ from flytrack_v2.train.ppo import (
     ppo_update,
     schedule,
 )
+from test_v2_model_core import small_graph
 from torch import nn
+from torch.nn.functional import softplus
 
 
 class _ConstantCritic(nn.Module):
@@ -307,6 +309,73 @@ def test_ppo_runs_stops_resumes_and_exports(tmp_path):
 
 
 @pytest.mark.slow
+def test_ppo_trains_plastic_gain_theta_and_resumes_with_frozen_delta(tmp_path):
+    from flytrack_v2.model import build_policy, export_policy, load_policy
+
+    labels = [("ORN", "Forward", 0, 2.0)]
+    policy = build_policy(
+        "VO2",
+        {"rest_settle_s": 0.05, "rest_refresh_s": 0.05, "plastic_labels": labels},
+        graph=small_graph(),
+    )
+    with torch.no_grad():
+        policy.core.gain_delta.fill_(0.1)
+    init = export_policy(
+        policy,
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    overrides = [
+        "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "epochs=1",
+        "total_env_steps=48", "warmup.critic_only_updates=0", "warmup.actor_ramp_updates=1",
+    ]  # fmt: skip
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
+    device = torch.device("cpu")
+    out = tmp_path / "ppo"
+    torch.manual_seed(5)
+    run = ppo.PPORun(config, init, 5, device, out)
+    run.prepare(resume=False)
+    (out / "STOP").touch()
+    run.run()
+    assert run.update == 1
+    core = run.policy.core
+    delta = core.gain_delta
+    groups = run.actor_optimizer.param_groups
+    assert all(param is not delta for group in groups for param in group["params"])
+    assert any(param is core.gain_theta for param in groups[0]["params"])
+    assert groups[0]["lr"] == config["actor_lr"]
+    assert not delta.requires_grad and delta.grad is None
+    assert torch.equal(delta, policy.core.gain_delta)
+    index = core.plastic_index
+    assert not torch.equal(core.gain_theta[index], policy.core.gain_theta[index])
+    gains = core.gains()[index]
+    assert bool(((core.plastic_lo <= gains) & (gains <= core.plastic_hi)).all())
+
+    resumed = ppo.PPORun(config, init, 5, device, out)
+    resumed.prepare(resume=True)
+    assert resumed.update == 1
+    torch.testing.assert_close(
+        resumed.actor_optimizer.state_dict(), run.actor_optimizer.state_dict()
+    )
+    core = resumed.policy.core
+    assert not core.gain_delta.requires_grad
+    assert torch.equal(core.gain_delta, delta)
+    # Force a bound violation to verify the projection hook also runs after resume.
+    with torch.no_grad():
+        core.gain_delta.fill_(100)
+    (out / "STOP").unlink()
+    resumed.run()
+    raw = softplus(core.gain_theta[index] + core.gain_delta)
+    assert bool(((core.plastic_lo <= raw) & (raw <= core.plastic_hi)).all())
+    final = out / "final"
+    exported = load_policy(final)
+    assert torch.equal(exported.state_dict()["core.gain_delta"], core.gain_delta)
+    assert torch.equal(exported.core.gains(), core.gains())
+    card = json.loads((final / "model_card.json").read_text())
+    assert card["model_config"]["plastic_labels"] == [list(label) for label in labels]
+
+
+@pytest.mark.slow
 def test_teacher_state_follows_the_student_through_the_warm_up(tmp_path):
     """#192 R7: the frozen teacher steps during the critic-only warm-up. With the actor's
     learning rate at 0 the student equals the teacher, so their recurrent states must agree."""
@@ -369,3 +438,268 @@ def test_the_warm_up_needs_one_actor_update_not_a_finished_ramp():
     assert schedule(39, config).actor_on and schedule(39, config).actor_lr > 0
     with pytest.raises(ValueError, match="no actor updates after the critic warm-up"):
         ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "4070", [steps(20)])
+
+
+def test_ppo_rejects_plastic_lr_scale_in_yaml_and_overrides(tmp_path):
+    defaults = ppo.CONFIG_DIR / "ppo.yaml"
+    config = tmp_path / "ppo.yaml"
+    config.write_text(defaults.read_text() + "\nplastic_lr_scale: 3.0\n")
+    with pytest.raises(ValueError, match="same keys as ppo.yaml"):
+        ppo.load_ppo_config(config, "2060")
+    with pytest.raises(ValueError, match="Expected an existing setting.*plastic_lr_scale=3.0"):
+        ppo.load_ppo_config(defaults, "2060", ["plastic_lr_scale=3.0"])
+
+
+# ---------------------------------------------------------------------------------------------
+# #138 A2 third version: the occlusion speed term
+
+
+def test_speed_groups_split_present_odor_by_the_teachers_slowdown():
+    cases = torch.tensor([0, 1, 1, 2, 3, 1], dtype=torch.uint8)
+    # mean odor / near (2.0): 0.25, 0.25, 0.05, -, -, exactly 0.1
+    odor = torch.tensor([[0.5, 0.5], [0.4, 0.6], [0.1, 0.1], [0.0, 0.0], [0.9, 0.9], [0.2, 0.2]])
+    groups = ppo.occlusion_speed_groups(cases, odor, near=2.0, strong_slowdown=0.1)
+    assert groups.tolist() == [0, 1, 2, 3, 0, 1]
+
+
+def test_speed_term_is_the_mean_over_groups_of_each_groups_mean_whatever_the_parts():
+    generator = torch.Generator().manual_seed(3)
+    speed = torch.rand(6, 10, generator=generator) * 0.4
+    label = torch.rand(6, 10, generator=generator) * 0.4
+    group = torch.randint(0, 3, (6, 10), generator=generator).to(torch.uint8)  # no group 3
+    counts = ppo.speed_group_counts(group)
+    assert counts[2] == 0
+    scale = 0.05
+    error = torch.nn.functional.huber_loss(
+        (speed - label) / scale, torch.zeros_like(speed), reduction="none"
+    )
+    expected = sum(error[group == g].mean() for g in (1, 2)) / 2
+    whole = ppo.occlusion_speed_term(speed, label, group, counts, scale)
+    split = sum(
+        ppo.occlusion_speed_term(speed[:, c], label[:, c], group[:, c], counts, scale)
+        for c in (slice(0, 3), slice(3, 10))
+    )
+    torch.testing.assert_close(whole, expected)
+    torch.testing.assert_close(split, expected)
+    empty = torch.zeros_like(group)
+    assert ppo.occlusion_speed_term(speed, label, empty, ppo.speed_group_counts(empty), scale) == 0
+
+
+def test_the_speed_term_pulls_the_mode_speed_to_the_teachers_label():
+    """Zero reward (no policy gradient beyond noise): only the speed term moves the speed, and
+    only on the grouped steps' label. v_max is 1 in the toy policy, so the speed starts at 0.5."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    policy, critic = _ToyPolicy(1), Critic(1, (16,))
+    actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+    value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+    generator = torch.Generator().manual_seed(4)
+    for _ in range(150):
+        rollout = _toy_rollout(policy, env, n, steps, generator)
+        rollout.speed_label = torch.full((steps, n), 0.3)
+        rollout.speed_group = torch.full((steps, n), 3, dtype=torch.uint8)
+        metrics = ppo_update(
+            policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+            micro_batch=n // 4, generator=generator, speed_coef=1.0,
+        )  # fmt: skip
+    speed = policy.forward_code(torch.ones(1, 1), torch.zeros(1, policy.hidden)).dist.mode()[0, 0]
+    assert float(speed) == pytest.approx(0.3, abs=0.02)
+    assert float(metrics["speed_loss"]) < 0.1
+
+
+def test_the_occlusion_speed_is_off_by_default():
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060")
+    assert config["occlusion_speed"]["coef"] == config["occlusion_turn"]["coef"] == 0.0
+
+
+@pytest.mark.slow
+def test_ppo_with_the_occlusion_speed_labels_every_step_and_resumes(tmp_path):
+    from flytrack_v2.model import build_policy, export_policy
+
+    init = export_policy(
+        build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05}),
+        tmp_path / "stage1",
+        provenance={"git_sha": None, "dirty": None, "config_sha256": "c" * 64, "stages": []},
+    )
+    overrides = [
+        "envs_per_instance=2", "rollout_steps=3", "minibatches=2", "total_env_steps=96",
+        "warmup.critic_only_updates=1", "warmup.actor_ramp_updates=1", "checkpoint_every=1",
+        "occlusion_speed.coef=1.0", "occlusion_turn.coef=1.0",
+        "occlusion_speed.catchup_min_distance_m=1.0",
+    ]  # fmt: skip
+    config = ppo.load_ppo_config(ppo.CONFIG_DIR / "ppo.yaml", "2060", overrides)
+    run = ppo.PPORun(config, init, 1, torch.device("cpu"), tmp_path / "ppo")
+    run.prepare(resume=False)
+    rollout, collected = run.collector.collect_ppo(3, kickstart=False)
+    assert rollout.speed_label.shape == rollout.speed_group.shape == (3, config["rows"])
+    assert torch.isfinite(rollout.speed_label).all()
+    assert {"speed_bias_lost", "speed_share_strong", "turn_gap_weak"} <= set(collected)
+    assert rollout.turn_label.shape == rollout.speed_label.shape
+    # Nothing is occluded in the first seconds: no step is grouped, and the teacher's
+    # occlusion flag (state column 4) is still 0.
+    assert int(rollout.speed_group.sum()) == 0
+    assert float(run.collector.teacher_state[:, 4].abs().sum()) == 0
+    assert not run.collector.seen_occlusion.any()
+    assert "seen_occlusion" in run.collector.checkpoint()
+    args = ["--init", str(init), "--seed", "1", "--host", "2060", "--device", "cpu"]
+    out = tmp_path / "main"
+    args += ["--out", str(out), "--override", *overrides]
+    out.mkdir()
+    (out / "STOP").touch()
+    assert ppo.main(args) == 0
+    (out / "STOP").unlink()
+    assert ppo.main([*args, "--resume"]) == 0
+    rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines()]
+    assert [row["update"] for row in rows] == [1, 2, 3, 4]
+    assert "speed_loss" not in rows[0] and "speed_loss" in rows[1] and "turn_loss" in rows[1]
+    assert all(math.isfinite(row["speed_bias_strong"]) for row in rows)
+
+
+def test_the_turn_term_pulls_the_mode_turn_to_the_teachers_label():
+    """#138 A2 fourth version: the turn term alone moves the turn rate (omega_max 1 in the toy
+    policy, so it starts at 0) to the grouped steps' label, and leaves the speed alone."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    policy, critic = _ToyPolicy(1), Critic(1, (16,))
+    actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+    value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+    generator = torch.Generator().manual_seed(5)
+    for _ in range(150):
+        rollout = _toy_rollout(policy, env, n, steps, generator)
+        rollout.speed_label = torch.full((steps, n), 0.3)
+        rollout.turn_label = torch.full((steps, n), -0.4)
+        rollout.speed_group = torch.full((steps, n), 1, dtype=torch.uint8)
+        metrics = ppo_update(
+            policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+            micro_batch=n // 4, generator=generator, turn_coef=1.0,
+        )  # fmt: skip
+    with torch.no_grad():
+        mode = policy.forward_code(torch.ones(1, 1), torch.zeros(1, policy.hidden)).dist.mode()[0]
+    assert float(mode[1]) == pytest.approx(-0.4, abs=0.03)
+    assert float(mode[0]) == pytest.approx(0.5, abs=0.1)  # no speed term: only PPO noise
+    assert "turn_loss" in metrics and "speed_loss" not in metrics
+
+
+def test_the_turn_term_leaves_the_catchup_group_out():
+    """Catch-up steps (group 4) carry a speed label only: with every step in that group, the
+    turn coefficient changes nothing (same seed, same updates), and the speed reaches its label."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    def train(turn_coef):
+        torch.manual_seed(7)
+        policy, critic = _ToyPolicy(1), Critic(1, (16,))
+        actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+        value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+        generator = torch.Generator().manual_seed(6)
+        for _ in range(100):
+            rollout = _toy_rollout(policy, env, n, steps, generator)
+            rollout.speed_label = torch.full((steps, n), 0.3)
+            rollout.turn_label = torch.full((steps, n), -0.4)
+            rollout.speed_group = torch.full((steps, n), ppo.CATCHUP, dtype=torch.uint8)
+            metrics = ppo_update(
+                policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+                micro_batch=n // 4, generator=generator, speed_coef=1.0, turn_coef=turn_coef,
+            )  # fmt: skip
+        return policy, metrics
+
+    with_turn, metrics = train(1.0)
+    without, _ = train(0.0)
+    for a, b in zip(with_turn.parameters(), without.parameters(), strict=True):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    assert float(metrics["turn_loss"]) == 0.0
+    with torch.no_grad():
+        state = torch.zeros(1, with_turn.hidden)
+        mode = with_turn.forward_code(torch.ones(1, 1), state).dist.mode()[0]
+    assert float(mode[0]) == pytest.approx(0.3, abs=0.02)
+
+
+@pytest.mark.slow
+def test_the_speed_term_can_leave_the_speed_readout_weights_alone():
+    """#138 A2 fifth version: the mode's speed is the same either way; without speed_readout its
+    gradient reaches the speed bias (and the graph) but not the speed readout weights."""
+    from flytrack_v2.model import build_policy
+
+    torch.manual_seed(8)
+    policy = build_policy("VO2", {"rest_settle_s": 0.05, "rest_refresh_s": 0.05})
+    n, steps = 2, 2
+    none = torch.zeros(steps, n, dtype=torch.bool)
+    rollout = Rollout(
+        code=torch.randn(steps, n, policy.code_size) * 0.1,
+        latent=torch.zeros(steps, n, 2),
+        logp=torch.zeros(steps, n),
+        features=torch.zeros(steps, n, 1),
+        reward=torch.zeros(steps, n),
+        terminated=none,
+        truncated=none,
+        final_features=torch.zeros(steps, n, 1),
+        last_features=torch.zeros(n, 1),
+        central=policy.initial_central_state(n, "cpu"),
+        initial=policy.initial_central_state(1, "cpu"),
+    )
+    found = {}
+    for flag in (True, False):
+        policy.zero_grad(set_to_none=True)
+        *_, mode = ppo._actor_replay(policy, rollout, torch.arange(n), speed_readout=flag)
+        mode[..., 0].sum().backward()
+        weight = policy.readout.speed_weight.grad
+        found[flag] = (mode.detach(), weight, policy.readout.speed_bias.grad.clone())
+    torch.testing.assert_close(found[True][0], found[False][0])
+    assert float(found[True][1].abs().sum()) > 0
+    assert found[False][1] is None or float(found[False][1].abs().sum()) == 0
+    torch.testing.assert_close(found[True][2], found[False][2])
+
+
+def test_group_table_keeps_only_the_named_groups():
+    """#138 A2 eighth version: the defaults keep every earlier version's groups."""
+    assert ppo.group_table(ppo.SPEED_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 4]
+    assert ppo.group_table(ppo.TURN_GROUPS, "cpu").tolist() == [0, 1, 2, 3, 0]
+    assert ppo.group_table(("strong", "weak"), "cpu").tolist() == [0, 1, 2, 0, 0]
+    for bad in ((), ("near",), ("weak", "weak")):
+        with pytest.raises(ValueError, match="groups"):
+            ppo.group_table(bad, "cpu")
+
+
+def test_training_on_some_groups_equals_dropping_the_others():
+    """Speed and turn terms on (strong, weak) only train exactly as if the lost and catch-up
+    steps had no group (same seed, same updates)."""
+    n, steps = 32, 4
+
+    def env(t, latent):
+        return torch.ones(n, 1), torch.ones(n, 1), torch.zeros(n), torch.zeros(n, dtype=torch.bool)
+
+    groups = torch.tensor([1, 2, 3, 4], dtype=torch.uint8).repeat(steps, n // 4)
+
+    def train(group, **kwargs):
+        torch.manual_seed(7)
+        policy, critic = _ToyPolicy(1), Critic(1, (16,))
+        actor = torch.optim.Adam(policy.parameters(), lr=1e-2)
+        value = torch.optim.Adam(critic.parameters(), lr=1e-2)
+        generator = torch.Generator().manual_seed(6)
+        for _ in range(20):
+            rollout = _toy_rollout(policy, env, n, steps, generator)
+            rollout.speed_label = torch.linspace(0.1, 0.4, n).repeat(steps, 1)
+            rollout.turn_label = torch.linspace(-0.5, 0.5, n).repeat(steps, 1)
+            rollout.speed_group = group.clone()
+            metrics = ppo_update(
+                policy, critic, actor, value, rollout, _PROBE, actor_on=True, kick_lambda=0.0,
+                micro_batch=n // 4, generator=generator, speed_coef=1.0, turn_coef=1.0, **kwargs
+            )  # fmt: skip
+        return policy, metrics
+
+    chosen, metrics = train(groups, speed_groups=("strong", "weak"), turn_groups=("strong", "weak"))
+    dropped, reference = train(torch.where(groups > 2, 0, groups).to(torch.uint8))
+    for a, b in zip(chosen.parameters(), dropped.parameters(), strict=True):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    for key in ("speed_loss", "turn_loss"):
+        torch.testing.assert_close(metrics[key], reference[key], rtol=0, atol=0)
+    with pytest.raises(ValueError, match="catch-up"):
+        train(groups, turn_groups=("strong", "catchup"))

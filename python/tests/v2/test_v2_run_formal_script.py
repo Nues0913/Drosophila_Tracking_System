@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flytrack_v2.train.config import load_config
+from flytrack_v2.train.ppo import load_ppo_config
 
 ROOT = Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("run_formal", ROOT / "scripts/v2/run_formal.py")
@@ -55,7 +57,8 @@ def test_preflight_passes_a_frozen_protocol_at_the_decision_sha(tmp_path):
         ({"seeds": [0, 1]}, FROZEN, "", {}, "not the protocol's training seeds"),
         ({"seeds": [100]}, FROZEN, "", {}, "not the protocol's training seeds"),
         ({"seeds": [1, 1]}, FROZEN, "", {}, "listed twice"),
-        ({}, PROTOCOL | {"status": "draft_until_m4"}, "", {}, "still a draft"),
+        ({}, PROTOCOL | {"status": "draft_until_m4"}, "", {}, "not frozen"),
+        ({}, PROTOCOL | {"status": "draft"}, "", {}, "not frozen"),  # any status but frozen
         ({"host": "3090"}, FROZEN, "", {}, "not in configs/v2/train/hosts.yaml"),
         ({"variants": ["VO2", "GRU3"]}, FROZEN, "", {}, "not in the protocol"),
         ({"seeds": [5, 2]}, FROZEN, "", {}, "not assigned to host 4070"),
@@ -80,9 +83,57 @@ def test_smoke_takes_pilot_seeds_and_a_draft_but_never_a_training_seed(tmp_path)
     assert run_formal.preflight(smoke, draft, HOSTS, HEAD, "", {})
 
 
+def test_the_frozen_protocol_gives_every_training_seed_to_one_host(tmp_path):
+    """M4 (#142): the repository's protocol is frozen and assigns each training seed once."""
+    assert PROTOCOL["status"] == "frozen"
+    seeds = [seed for given in PROTOCOL["host_assignment"].values() for seed in given]
+    assert sorted(seeds) == sorted(PROTOCOL["training_seeds"])
+    assert set(PROTOCOL["host_assignment"]) <= set(HOSTS)
+    for host, given in PROTOCOL["host_assignment"].items():
+        run = args(tmp_path, host=host, seeds=list(given))
+        assert run_formal.preflight(run, PROTOCOL, HOSTS, HEAD, "", {}) == []
+
+
 def test_host_assignment_keys_may_be_numbers(tmp_path):
     numeric = FROZEN | {"host_assignment": {4070: [5, 1], 4060: [2, 3], 2060: [4]}}
     assert run_formal.preflight(args(tmp_path), numeric, HOSTS, HEAD, "", {}) == []
+
+
+def test_cloud_assignment_only_moves_the_two_complete_seeds(tmp_path):
+    path = ROOT / "configs/v2/execution/cloud-seeds-1-2.yaml"
+    doc = yaml.safe_load(path.read_text())
+    digest = run_formal.sha256(run_formal.PROTOCOL)
+    protocol = run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
+    assert protocol == PROTOCOL | {"host_assignment": doc["host_assignment"]}
+    assert protocol["host_assignment"] == {
+        "4070": [5],
+        "4060": [3],
+        "2060": [4],
+        "gputw3090": [1, 2],
+    }
+    cloud = args(tmp_path, host="gputw3090", seeds=[1, 2])
+    assert run_formal.preflight(cloud, protocol, HOSTS, HEAD, "", {}) == []
+    assert run_formal.preflight(cloud, PROTOCOL, HOSTS, HEAD, "", {})
+    for host, seed in (("4070", 1), ("4060", 2)):
+        old_host = args(tmp_path, host=host, seeds=[seed])
+        assert run_formal.preflight(old_host, protocol, HOSTS, HEAD, "", {})
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"protocol_sha256": "stale"}, "does not match"),
+        ({"training": {}}, "expected only"),
+        ({"host_assignment": {"ghost": [1, 2, 3, 4, 5]}}, "configured hosts"),
+        ({"host_assignment": {"2060": [1, 1, 2, 3, 4, 5]}}, "exactly one host"),
+        ({"host_assignment": {"2060": [1, 2, 3, 4]}}, "exactly one host"),
+    ],
+)
+def test_execution_assignment_rejects_stale_or_invalid_maps(changes, expected):
+    digest = run_formal.sha256(run_formal.PROTOCOL)
+    doc = {"protocol_sha256": digest, "host_assignment": ASSIGNMENT} | changes
+    with pytest.raises(ValueError, match=expected):
+        run_formal.apply_execution_assignment(PROTOCOL, HOSTS, doc, digest)
 
 
 def test_each_stage_is_evaluated_on_the_held_out_episodes_right_after_it(tmp_path):
@@ -108,6 +159,36 @@ def test_smoke_chain_is_tiny(tmp_path):
     assert "rounds.env_steps_per_round=72" in steps[0]["cmd"]
     assert "total_env_steps=96" in steps[2]["cmd"]
     assert steps[1]["cmd"][-2:] == ["--episodes", "2"] == steps[3]["cmd"][-2:]
+
+
+@pytest.mark.parametrize(("host", "variant", "checkpoint"), [
+    ("2060", "VO2", True), ("4070", "ER2", True), ("4060", "RW2", False),
+    ("2060", "GRU2", False),
+])  # fmt: skip
+def test_frozen_a3_recipe_reaches_both_trainers(tmp_path, host, variant, checkpoint):
+    recipe = yaml.safe_load((ROOT / PROTOCOL["training"]["recipe"]).read_text())
+    stage1, _, stage2, _ = run_formal.chain(args(tmp_path, host=host), variant, 4, recipe)
+    dagger_args = stage1["cmd"][stage1["cmd"].index("--override") + 1 :]
+    ppo_args = stage2["cmd"][stage2["cmd"].index("--override") + 1 :]
+    config_dir = ROOT / "configs/v2/train"
+    dagger = load_config(config_dir / "dagger.yaml", host, dagger_args)
+    ppo = load_ppo_config(config_dir / "ppo.yaml", host, ppo_args)
+    assert dagger["activation_checkpoint"] is checkpoint
+    assert dagger["pair_weight"] == 10 and dagger["pair_window"] == 16
+    assert dagger["model"]["odor_adaptation_fractions"] == [1.0, 0.5]
+    if variant == "GRU2":
+        assert dagger["model"]["plastic_labels"] is None
+        assert dagger["model"]["budget_target"] == 34805
+    else:
+        source = ROOT / "scripts/v2/explore/a3_plastic_labels.json"
+        rows = json.loads(source.read_text())["labels"]
+        assert dagger["model"]["plastic_labels"] == [
+            [row["pre"], row["post"], row["code"], row["cap"]] for row in rows
+        ]
+    assert ppo["occlusion_speed"]["coef"] == 0.02
+    assert ppo["occlusion_turn"]["coef"] == 0.2
+    assert not ppo["occlusion_speed"]["trains_readout"]
+    assert ppo["kickstart"]["anneal_fraction"] == 0.3
 
 
 def test_artifact_done_needs_every_checksum_to_match(tmp_path):

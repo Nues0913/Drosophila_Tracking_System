@@ -1,6 +1,6 @@
-# FlyTrack v2 報告（草稿）
+# FlyTrack v2 正式實驗報告
 
-> - 正式 2D 矩陣及五個 seed 的統計已完成，報告待審。第 4 節保存選型前的探索紀錄。
+> - 交付版本：[formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2)，對應 `main` 的 `0720dc4`。
 > - 計劃書：[`docs/v2/大實驗計劃書.md`](大實驗計劃書.md)；協定：`configs/v2/evaluation_protocol.yaml`（schema 4，M4 凍結，#142）。
 > - 總追蹤：[#127](https://github.com/Nues0913/Drosophila_Tracking_System/issues/127)。
 
@@ -212,4 +212,4 @@ VO2 的 `wind` 遮蔽追蹤比例按時段列於下表。每個 seed 內先平�
 - **PPO 續跑時不截斷紀錄**：兩次 checkpoint 之間停機時，`metrics.jsonl` 最多會有 24 次更新重複，讀曲線時每次更新取最後一筆（#210 review）。4070 的 RW2 seed 5 在排程停機後從第 250 次更新的 checkpoint 續跑。原始紀錄有 315 列、306 次獨立更新，第 251–259 次各有兩筆。
 
 ## 7. 重現
-本機矩陣固定於 `f8e8c21`，GPUtw 改派執行版為 `3982fbc`（與 #215 合併版 `7137d66` 的 Git tree 相同）。每台主機的證據包、權重及校驗清單交至[正式訓練收件區](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)。指令與續跑條件見[訓練手冊](train.md)。正式 2D 證據、重算方式與統計包見 [research-v2-final](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-final)。
+本機矩陣固定於 `f8e8c21`，GPUtw 改派執行版為 `3982fbc`（與 #215 合併版 `7137d66` 的 Git tree 相同）。每台主機的證據包、權重及校驗清單交至[正式訓練收件區](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)。指令與續跑條件見[訓練手冊](train.md)。正式 2D 證據、重算方式、統計與 Gazebo 部署證據見 [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2)。

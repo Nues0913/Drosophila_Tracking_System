@@ -35,6 +35,7 @@ def test_matrix_forwards_motion_checks_rows_and_records_full_cell(tmp_path, monk
         if "up" in command:
             env = kwargs["env"]
             assert env["TARGET_MOTION"] == motion
+            assert env["SENSOR_CONTRACT"] == "/workspace/configs/sensor_contract.json"
             cell = tmp_path / env["EVAL_OUTPUT"].removeprefix("/workspace/")
             row = {"variant": "V", "seed": 0, "model_card_sha256": digest, "target_motion": motion}
             (cell / "episodes.jsonl").write_text(json.dumps(row) + "\n")

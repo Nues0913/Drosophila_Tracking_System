@@ -19,8 +19,7 @@ uv pip install --python .venv/bin/python --no-deps -e .
 uv pip check --python .venv/bin/python
 ```
 
-目前的相容性證據：`runs/validation/ml_environment.json`、
-`runs/validation/pytest_with_frontend.xml`、`docs/frontend_execution.md`。
+當時的相容性與前端 parity 驗證記錄在 [frontend_execution.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/frontend_execution.md)（封存）。
 這組依賴已在本機通過相容性與真實前端測試；乾淨容器重建仍需以實際 Docker 建置結果核對。
 
 v2 的 GitHub Actions 使用 [CPU 雜湊鎖檔](ml-cpu-py312.lock) 建立 Python 3.12 環境。GPU 訓練環境與每台主機的套件版本由正式 runner 記錄在 `ENVIRONMENT_<host>.txt`。[CI 設定](../.github/workflows/ci.yml)、[正式訓練手冊](../docs/v2/train.md)。

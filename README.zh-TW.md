@@ -54,6 +54,8 @@ formal-v2 要測的是：目標被遮住、看不見的時候，氣味和風能�
 
 遮蔽期間把左右氣味對調，VO2 在這段時間的追蹤比例從 57.0% 掉到 14.2%；把風向轉 90°，掉到 33.2%。兩者經 Holm 校正後都顯著，可見策略確實用到了這些輸入。遮蔽期間 VO2 跟住目標的時間也比 V2 多（57.0% 對 40.6%）。不過它撞上目標的次數也比較多，有碰撞的回合 VO2 是 41.7%、V2 是 15.0%，所以整體成功率幾乎沒變。
 
+我們在協定之外另做了一次事後檢查：同一批遮蔽回合重跑，碰到目標不再結束回合（撞牆仍會）。這時 VO2 的成功率是 29.9%，V2 是 18.9%，差 +11.0 個百分點（95% t 區間 −0.1 至 +22.1，未校正的單尾 p = 0.025），差距大多來自漫遊目標（+19.4 個百分點）。紀錄和腳本放在 [research-v2-collision-check](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-collision-check)。
+
 我們認為部分原因出在解剖結構。嗅覺投射神經元同時接收左右觸角的輸入，在我們的模型裡，左右氣味差約有 79% 在這第一個突觸就抵消了。剩下的氣味轉向大多經由一條兩個突觸的路徑到 DNb05。
 
 <p align="center">
@@ -113,7 +115,7 @@ python -m pytest -m "not slow and not gpu and not ros and not legacy and not ben
 
 ```bash
 gh release download research-v2-formal -p 'v2_formal_2060_weights.tar.gz' -p 'v2_formal_2060_SHA256SUMS'
-sha256sum -c v2_formal_2060_SHA256SUMS
+sha256sum -c --ignore-missing v2_formal_2060_SHA256SUMS
 mkdir -p runs/formal_weights && tar xzf v2_formal_2060_weights.tar.gz -C runs/formal_weights
 python scripts/v2/evaluate_v2.py \
   --artifacts runs/formal_weights/VO2/seed_4/stage2/final \
@@ -131,18 +133,21 @@ python scripts/v2/evaluate_v2.py \
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 17 小時。`--host` 會從 [hosts.yaml](configs/v2/train/hosts.yaml) 選出適合該 GPU 的批次設定。
+要重現某個正式 seed，就拿掉 `--smoke`，並使用這個 seed 訓練時的主機標籤：seed 1–2 是 `gputw3090`，seed 3 是 `4060`，seed 4 是 `2060`，seed 5 是 `4070`。標籤會從 [hosts.yaml](configs/v2/train/hosts.yaml) 決定批次大小。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 16 小時。
+
+```bash
+python scripts/v2/run_formal.py --host 2060 --seeds 4 --sha "$(git rev-parse HEAD)" \
+  --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml --out runs/v2_formal
+```
 
 ### 在 ROS 2／Gazebo 執行
 
 ```bash
 docker compose --profile sim build
-export ARTIFACT=/workspace/runs/formal_weights/VO2/seed_4/stage2/final
-export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-policy 節點以 20 Hz 發布 `/cmd_vel`。v2 模型要像上面一樣搭配它自己的 `sensor_contract.json`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。要批次跑多個回合，可以用 `scripts/run_gazebo_matrix.py`。
+預設會跑評估範例解壓出來的 VO2 seed 4。要換別的模型，設定 `ARTIFACT` 即可，例如 `ARTIFACT=/workspace/runs/formal_weights/V2/seed_4/stage2/final`。policy 節點以 20 Hz 發布 `/cmd_vel`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。要批次跑多個回合，可以用 `scripts/run_gazebo_matrix.py`。
 
 ## 目錄結構
 
@@ -157,6 +162,8 @@ configs/v2/                 感測契約、評估協定、訓練設定
 data/subgraphs/             萃取出的子圖（CC BY 4.0）
 artifacts/                  轉換好的 flyvis 前端、輸入正規化
 ros2_ws/                    ROS 2 套件
+docker/                     ML 和 ROS 的容器映像
+requirements/               固定版本的依賴鎖定檔
 docs/                       文件和報告
 ```
 
@@ -196,8 +203,8 @@ docs/                       文件和報告
 
 我們的程式碼採 [MIT 授權](LICENSE)。repo 裡有兩部分沿用原本的授權：
 
-- `data/subgraphs/` 的子圖衍生自 MaleCNS v1.0，仍屬 CC BY 4.0。
-- `artifacts/` 的前端轉換自 flyvis（MIT）。
+- `data/subgraphs/` 的子圖和 `artifacts/data_execution/` 的摘要衍生自 MaleCNS v1.0，仍屬 CC BY 4.0。
+- `artifacts/frontend/` 和 `artifacts/frontend_v2/` 的前端轉換自 flyvis（MIT）。
 
 詳見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

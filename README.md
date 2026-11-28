@@ -54,6 +54,8 @@ All gates were fixed in the [evaluation protocol](configs/v2/evaluation_protocol
 
 Swapping the left and right odor during occlusion lowered VO2's tracking fraction in that window from 57.0% to 14.2%. Rotating the wind by 90° lowered it to 33.2%. Both drops are significant after Holm correction, so the policy does use these inputs. VO2 also stayed with the hidden target more than V2 did (57.0% vs 40.6% of the occlusion window). It hit the target more often as well, with collisions in 41.7% of episodes against 15.0% for V2, which is why overall success barely changed.
 
+As a post-hoc check outside the protocol, we re-ran the same occlusion episodes with target contact no longer ending the episode (walls still did). VO2 then succeeded in 29.9% of episodes and V2 in 18.9%, a difference of +11.0 pp (95% t interval −0.1 to +22.1, one-sided p = 0.025 before correction). Most of the difference came from wandering targets (+19.4 pp). The records and scripts are in the [research-v2-collision-check](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-collision-check) release.
+
 We think part of the reason is anatomical. Olfactory projection neurons receive input from both antennae, and in our model about 79% of the left–right odor difference cancels at that first synapse. Most of the odor steering that is left goes through a two-synapse path to DNb05.
 
 <p align="center">
@@ -113,7 +115,7 @@ Weights for all 60 formal checkpoints are on the [research-v2-formal](https://gi
 
 ```bash
 gh release download research-v2-formal -p 'v2_formal_2060_weights.tar.gz' -p 'v2_formal_2060_SHA256SUMS'
-sha256sum -c v2_formal_2060_SHA256SUMS
+sha256sum -c --ignore-missing v2_formal_2060_SHA256SUMS
 mkdir -p runs/formal_weights && tar xzf v2_formal_2060_weights.tar.gz -C runs/formal_weights
 python scripts/v2/evaluate_v2.py \
   --artifacts runs/formal_weights/VO2/seed_4/stage2/final \
@@ -131,18 +133,21 @@ This takes about a minute on a CPU. The results go to `episodes.jsonl` and `seco
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-To reproduce formal-v2, run seeds 1–5 without `--smoke`. The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 17 hours on an RTX 2060. `--host` picks the batch settings for your GPU from [hosts.yaml](configs/v2/train/hosts.yaml).
+To reproduce a formal seed, drop `--smoke` and use the host label that seed was trained under: `gputw3090` for seeds 1–2, `4060` for seed 3, `2060` for seed 4, and `4070` for seed 5. The label sets the batch size from [hosts.yaml](configs/v2/train/hosts.yaml). The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 16 hours on an RTX 2060.
+
+```bash
+python scripts/v2/run_formal.py --host 2060 --seeds 4 --sha "$(git rev-parse HEAD)" \
+  --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml --out runs/v2_formal
+```
 
 ### Run in ROS 2 / Gazebo
 
 ```bash
 docker compose --profile sim build
-export ARTIFACT=/workspace/runs/formal_weights/VO2/seed_4/stage2/final
-export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-The policy node publishes `/cmd_vel` at 20 Hz. A v2 model must be paired with its own `sensor_contract.json`, as above. Foxglove can connect to `ws://localhost:8765`. Without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`. `scripts/run_gazebo_matrix.py` runs batches of episodes.
+By default this runs the VO2 seed-4 policy extracted in the evaluation example. To run another model, set `ARTIFACT`, for example `ARTIFACT=/workspace/runs/formal_weights/V2/seed_4/stage2/final`. The policy node publishes `/cmd_vel` at 20 Hz. Foxglove can connect to `ws://localhost:8765`. Without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`. `scripts/run_gazebo_matrix.py` runs batches of episodes.
 
 ## Repository structure
 
@@ -157,6 +162,8 @@ configs/v2/                 sensor contract, evaluation protocol, training confi
 data/subgraphs/             extracted subgraphs (CC BY 4.0)
 artifacts/                  converted flyvis frontend, input normalization
 ros2_ws/                    ROS 2 packages
+docker/                     ML and ROS container images
+requirements/               pinned dependency lock files
 docs/                       documentation and reports
 ```
 
@@ -196,8 +203,8 @@ Please also cite the data and models this project builds on:
 
 Our code is under the [MIT License](LICENSE). Two parts of the repository keep their original licenses:
 
-- The subgraphs in `data/subgraphs/` are derived from MaleCNS v1.0 and stay under CC BY 4.0.
-- The frontend in `artifacts/` is converted from flyvis (MIT).
+- The subgraphs in `data/subgraphs/` and the summaries in `artifacts/data_execution/` are derived from MaleCNS v1.0 and stay under CC BY 4.0.
+- The frontends in `artifacts/frontend/` and `artifacts/frontend_v2/` are converted from flyvis (MIT).
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 

@@ -45,7 +45,7 @@ state 是單一 `Tensor[B,policy.state_size]`，包含雙眼固定前端電位�
 
 photoreceptor 索引按 `sensing.hex_eye.axial_coordinates` 的 `(q,r)` 順序轉換，即 r 外圈、q 內圈，不能假定上游 node 順序就是感測順序。中央 trainable τ 使用 `2·dt + softplus(raw_tau)`；固定 flyvis τ 依上游規則下限為 dt，以保存來源模型的數值行為。控制週期 50 ms，神經步長 10 ms，各控制步執行五個 Euler 子步。
 
-早期前端來自 flyvis 使用的視葉連接體，中央 graph 來自 MaleCNS。這是已揭露的混合資料來源，不把前端稱為 MaleCNS 重建。官方 checkpoint 轉換已通過 parity（`docs/frontend_execution.md`）；跨 flyvis 版本相容性與 GPU/CPU 數值差異未驗證。
+早期前端來自 flyvis 使用的視葉連接體，中央 graph 來自 MaleCNS。這是已揭露的混合資料來源，不把前端稱為 MaleCNS 重建。官方 checkpoint 轉換已通過 parity（[frontend_execution.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/frontend_execution.md)，封存）；跨 flyvis 版本相容性與 GPU/CPU 數值差異未驗證。
 
 ## 感測投射與缺失
 

@@ -8,7 +8,7 @@
 ![PyTorch 2.9](https://img.shields.io/badge/pytorch-2.9-ee4c2c.svg)
 ![ROS 2](https://img.shields.io/badge/ROS%202-Gazebo-22314e.svg)
 
-**English** · [繁體中文](README.zh-TW.md) · [Report](docs/v2/report.md) · [Release](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) · [Pretrained weights](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)
+**English** · [繁體中文](README.zh-TW.md) · [Report](docs/v2/report.md) · [Release](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) · [Pretrained weights](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal) · [Video](https://youtu.be/Dj_BiW-q4VQ)
 
 FlyTrack is a target-tracking agent whose controller is wired from the connectome of the adult *Drosophila* male central nervous system (MaleCNS v1.0). A recurrent rate network built on an 8,792-neuron subgraph receives compound-eye images, bilateral odor, and antennal wind, and drives forward speed and turning through descending neurons. We train it with imitation learning and recurrent PPO in GPU-batched 2D worlds, evaluate it under a pre-registered protocol, and deploy the same policy in ROS 2 / Gazebo.
 
@@ -17,7 +17,7 @@ The question we ask: **when the target disappears from view, can odor and wind k
 <p align="center">
   <img src="docs/assets/vo_vs_v_occlusion.gif" width="820" alt="The same occluded episode replayed with the multisensory model (left) and the vision-only model (right)">
 </p>
-<p align="center"><sub>One wind-world episode with the target hidden from 8 s to 38 s. Left: VO2 (vision + odor + wind) stays near the target; right: V2 (vision only) loses it. This is a single episode. Across the 1,000 formal occlusion episodes, whole-episode success was 19.9% for VO2 and 17.7% for V2 (see <a href="#results-formal-v2">Results</a>).</sub></p>
+<p align="center"><sub>Clip from the <a href="https://youtu.be/Dj_BiW-q4VQ">project video</a> (Traditional Chinese, 4 min). One wind-world episode with the target hidden from 8 s to 38 s. Left: VO2 (vision + odor + wind) stays near the target; right: V2 (vision only) loses it. This is a single episode. Across the 1,000 formal occlusion episodes, whole-episode success was 19.9% for VO2 and 17.7% for V2 (see <a href="#results-formal-v2">Results</a>).</sub></p>
 
 ## Highlights
 

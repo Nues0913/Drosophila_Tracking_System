@@ -8,7 +8,7 @@
 ![PyTorch 2.9](https://img.shields.io/badge/pytorch-2.9-ee4c2c.svg)
 ![ROS 2](https://img.shields.io/badge/ROS%202-Gazebo-22314e.svg)
 
-[English](README.md) · **繁體中文** · [報告](docs/v2/report.md) · [Release](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) · [預訓練權重](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal)
+[English](README.md) · **繁體中文** · [報告](docs/v2/report.md) · [Release](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) · [預訓練權重](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-formal) · [影片](https://youtu.be/Dj_BiW-q4VQ)
 
 FlyTrack 是一個目標追蹤代理人，控制器依照成年雄果蠅中樞神經系統的連接體（MaleCNS v1.0）接線。我們從中取出 8,792 顆神經元的子圖，建成循環發放率網路。網路接收複眼影像、左右觸角的氣味和風，經由下行神經元輸出前進速度和轉向。訓練用模仿學習和循環 PPO，在 GPU 批次化的 2D 世界中進行；評估照事先登記的協定；同一個策略也部署到 ROS 2／Gazebo。
 
@@ -17,7 +17,7 @@ FlyTrack 是一個目標追蹤代理人，控制器依照成年雄果蠅中樞�
 <p align="center">
   <img src="docs/assets/vo_vs_v_occlusion.gif" width="820" alt="同一個遮蔽回合，左邊是多感官模型，右邊是純視覺模型">
 </p>
-<p align="center"><sub>風世界的一個回合，目標在 8 秒到 38 秒之間被遮住。左邊 VO2（視覺＋氣味＋風）一直待在目標附近，右邊 V2（只有視覺）跟丟了。這只是單一回合；在正式評估的 1,000 個遮蔽回合中，整回合成功率 VO2 是 19.9%、V2 是 17.7%（見<a href="#正式結果formal-v2">正式結果</a>）。</sub></p>
+<p align="center"><sub>取自<a href="https://youtu.be/Dj_BiW-q4VQ">專案影片</a>（4 分鐘）。風世界的一個回合，目標在 8 秒到 38 秒之間被遮住。左邊 VO2（視覺＋氣味＋風）一直待在目標附近，右邊 V2（只有視覺）跟丟了。這只是單一回合；在正式評估的 1,000 個遮蔽回合中，整回合成功率 VO2 是 19.9%、V2 是 17.7%（見<a href="#正式結果formal-v2">正式結果</a>）。</sub></p>
 
 ## 重點
 

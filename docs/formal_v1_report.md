@@ -1,7 +1,7 @@
 # FlyTrack formal-v1 報告
 
 > 版本：formal-v1（協定 schema 3，main `35432c3` 訓練與 2D 評估；Gazebo 用 main `a58b7b2`）。
-> 這份報告整理已驗收的結果。逐日的紀錄和證據在 [status.md](status.md)，總追蹤在 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。
+> 這份報告整理已驗收的結果。逐日的紀錄和證據在 [status.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/status.md)，總追蹤在 [#28](https://github.com/Nues0913/Drosophila_Tracking_System/issues/28)。
 
 ## 摘要
 - 研究問題：在同一個感測前端之後，比較六個變體（V、O、VO、VO-late、GRU、RS）的追蹤表現。中央網路使用 MaleCNS 的連接體子圖。
@@ -18,7 +18,7 @@
 ### 1.1 資料、前端與子圖
 - 早期視覺用 flyvis 的預訓練前端（方案 A）；中央子圖取自 MaleCNS v1.0。
 - 正式圖是 no-KC：4,502 個節點、31,682 條邊（#55）。
-- 來源與驗證：[data_sources.md](data_sources.md)、[frontend_execution.md](frontend_execution.md)、[olfactory_reextraction_55.md](olfactory_reextraction_55.md)。
+- 來源與驗證：[data_sources.md](data_sources.md)、[frontend_execution.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/frontend_execution.md)、[olfactory_reextraction_55.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/olfactory_reextraction_55.md)。
 - 生物對應查證：[biology_verification.md](biology_verification.md)（#27）。
 
 ### 1.2 模型與變體
@@ -111,12 +111,12 @@
 | D3（#104） | 速度讀出加上校準過、切斷梯度的 DN 列 | 不成立：速度只是整體變快，撞上目標的次數變多 | `d3_forward_rows.tar.gz` |
 
 - formal-v2 沒有觸發。使用者 11-11 同意 PM 的建議，formal-v1 不再做速度讀出的實驗（[#35 6894303266](https://github.com/Nues0913/Drosophila_Tracking_System/issues/35#issuecomment-6894303266)）；P3／PPO 留在 #35。
-- formal-v1 交付之後的探索（#35，2026-11-16 起：S2、M1、R2、S4 等）都標為未登記，不改這份報告的結論；結果和結論見 [status.md](status.md) 的 2026-11-18、2026-11-17、2026-11-16 三節，證據包在 release `research-35`。11-18 的 T1（可見度閘門轉向讀出）和 S8（衍生圖加閘門）以 wander 遮蔽為主要終點，照登記的規則判定都不成立。
+- formal-v1 交付之後的探索（#35，2026-11-16 起：S2、M1、R2、S4 等）都標為未登記，不改這份報告的結論；結果和結論見 [status.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/status.md) 的 2026-11-18、2026-11-17、2026-11-16 三節，證據包在 release `research-35`。11-18 的 T1（可見度閘門轉向讀出）和 S8（衍生圖加閘門）以 wander 遮蔽為主要終點，照登記的規則判定都不成立。
 
 ## 5. Gazebo（#88）
 ### 5.1 平台的一致性
 - **G0b**（PR #99）：policy 改用單執行緒，計時改由 evaluator 補齊。
-- **G0c**（PR #102）：改用平光材質。修改前，Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關係數 r 是 −0.97；修改後 r 是 0.97–0.98。細節見 [gazebo_consistency.md](gazebo_consistency.md)。
+- **G0c**（PR #102）：改用平光材質。修改前，Gazebo 的視覺輸入和 2D 明暗相反，逐幀相關係數 r 是 −0.97；修改後 r 是 0.97–0.98。細節見 [gazebo_consistency.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/gazebo_consistency.md)。
 - **G1 範圍**：2060、4070、4060 三台主機，和 2D 逐回合配對，三台都是 47/48 一致，判定 GO。
 - **G2 期間發現、G2 之後才修的兩個問題**（G0d，PR #107，G2 結束後合併，main `8e19c9b`）：
   - 斜角撞牆記不到碰撞（6763512170）；

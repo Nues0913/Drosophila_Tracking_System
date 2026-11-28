@@ -1,7 +1,0 @@
-{
-  "episodes": 32,
-  "steps": 2560,
-  "observation_elements_compared": 97280,
-  "passed": true,
-  "baseline_sha": "d1d6eacf650a5cdb9eb1161a820d7df7371882a5"
-}

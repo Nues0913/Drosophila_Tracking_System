@@ -10,13 +10,14 @@
 | 2026-11-18 | [v1-final](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/v1-final): final state of v1 (also kept on the `release/v1` branch); the v2 plan is confirmed |
 | 2026-11-18 to 11-23 | v2 implementation, pilot runs, and the occlusion exploration track that selected the A3 recipe |
 | 2026-11-24 | [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2): six variants × five seeds, gates G-A to G-E, Gazebo compatibility check ([v2/report.md](v2/report.md)) |
-| 2026-11-28 | `main` reorganized as the public showcase; process documents archived |
+| 2026-11-28 | `main` reorganized as the public showcase; process documents archived; 41 working branches deleted after archiving their heads; post-hoc collision check released |
 
 ## Releases
 
 | Tag | Contents |
 | --- | --- |
 | `formal-v2` | Formal v2 results and deployment check (latest) |
+| `research-v2-collision-check` | Post-hoc check outside the protocol: VO2 and V2 when target contact does not end the episode |
 | `research-v2-final` | Formal 2D evaluation records and five-seed statistics |
 | `research-v2-formal` | Weights and training evidence of the formal matrix, one archive per host |
 | `research-v2-pilot`, `research-v2-wp6` | v2 pilot runs; ROS 2 / Gazebo evidence |
@@ -30,5 +31,9 @@ Before `main` was turned into the showcase, the repository also held the team's 
 - branch [`archive/team-docs`](https://github.com/Nues0913/Drosophila_Tracking_System/tree/archive/team-docs)
 
 Some code comments, frozen configs, and protocol files still name these documents (for example `docs/status.md`, `docs/dn/…`, `docs/gpu_hosts.md`, `後續計畫.md`). Those files are hashed into model cards and frozen protocols, so they were left unchanged. Look such paths up in the archive tag. Links in the remaining Markdown documents already point to the archive.
+
+## Archived branches
+
+Only `main`, `release/v1`, `v2`, and `archive/team-docs` remain as branches. The 41 working branches of the experiment and exploration tracks were deleted on 2026-11-28. Their heads are the parents of the commit at tag [`branch-archive-2026-11-28`](https://github.com/Nues0913/Drosophila_Tracking_System/tree/branch-archive-2026-11-28), so every commit cited in the reports stays reachable. `BRANCHES.md` in that commit lists each branch with its head commit.
 
 The issue tracker and pull requests keep the full discussion behind each decision. Issue numbers such as #35, #138, or #144 in the documents refer to them.

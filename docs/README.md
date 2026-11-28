@@ -7,7 +7,7 @@ Most technical documents are written in Traditional Chinese. The [top-level READ
 | Document | Contents |
 | --- | --- |
 | [v2/report.md](v2/report.md) | Formal-v2 report: methods, gates G-A to G-E, secondary analyses, exploration track, Gazebo check, limitations |
-| [v2/大實驗計劃書.md](v2/大實驗計劃書.md) | The v2 study plan, confirmed before implementation; the frozen protocol cites its sections 3.9–3.11 |
+| [v2/大實驗計劃書.md](v2/大實驗計劃書.md) | The v2 study plan, confirmed before implementation; the frozen protocol cites its sections 3.9–3.11. It is a historical document, and the process documents it mentions are in the [archive](HISTORY.md#archived-process-documents) |
 | [v2/subgraph.md](v2/subgraph.md) | MaleCNS subgraph extraction, thresholds, and checks |
 | [v2/model.md](v2/model.md) | Connectome core, descending-neuron readout, and sensory encoding |
 | [v2/interfaces.md](v2/interfaces.md) | Sensor contract v2 and the observation interface |

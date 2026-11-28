@@ -115,7 +115,7 @@ python -m pytest -m "not slow and not gpu and not ros and not legacy and not ben
 
 ```bash
 gh release download research-v2-formal -p 'v2_formal_2060_weights.tar.gz' -p 'v2_formal_2060_SHA256SUMS'
-sha256sum -c v2_formal_2060_SHA256SUMS
+sha256sum -c --ignore-missing v2_formal_2060_SHA256SUMS
 mkdir -p runs/formal_weights && tar xzf v2_formal_2060_weights.tar.gz -C runs/formal_weights
 python scripts/v2/evaluate_v2.py \
   --artifacts runs/formal_weights/VO2/seed_4/stage2/final \
@@ -133,7 +133,7 @@ python scripts/v2/evaluate_v2.py \
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 17 小時。`--host` 會從 [hosts.yaml](configs/v2/train/hosts.yaml) 選出適合該 GPU 的批次設定。
+要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 16 小時。`--host` 會從 [hosts.yaml](configs/v2/train/hosts.yaml) 選出適合該 GPU 的批次設定。
 
 ### 在 ROS 2／Gazebo 執行
 
@@ -159,6 +159,8 @@ configs/v2/                 感測契約、評估協定、訓練設定
 data/subgraphs/             萃取出的子圖（CC BY 4.0）
 artifacts/                  轉換好的 flyvis 前端、輸入正規化
 ros2_ws/                    ROS 2 套件
+docker/                     ML 和 ROS 的容器映像
+requirements/               固定版本的依賴鎖定檔
 docs/                       文件和報告
 ```
 
@@ -198,8 +200,8 @@ docs/                       文件和報告
 
 我們的程式碼採 [MIT 授權](LICENSE)。repo 裡有兩部分沿用原本的授權：
 
-- `data/subgraphs/` 的子圖衍生自 MaleCNS v1.0，仍屬 CC BY 4.0。
-- `artifacts/` 的前端轉換自 flyvis（MIT）。
+- `data/subgraphs/` 的子圖和 `artifacts/data_execution/` 的摘要衍生自 MaleCNS v1.0，仍屬 CC BY 4.0。
+- `artifacts/frontend/` 和 `artifacts/frontend_v2/` 的前端轉換自 flyvis（MIT）。
 
 詳見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

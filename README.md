@@ -115,7 +115,7 @@ Weights for all 60 formal checkpoints are on the [research-v2-formal](https://gi
 
 ```bash
 gh release download research-v2-formal -p 'v2_formal_2060_weights.tar.gz' -p 'v2_formal_2060_SHA256SUMS'
-sha256sum -c v2_formal_2060_SHA256SUMS
+sha256sum -c --ignore-missing v2_formal_2060_SHA256SUMS
 mkdir -p runs/formal_weights && tar xzf v2_formal_2060_weights.tar.gz -C runs/formal_weights
 python scripts/v2/evaluate_v2.py \
   --artifacts runs/formal_weights/VO2/seed_4/stage2/final \
@@ -133,7 +133,7 @@ This takes about a minute on a CPU. The results go to `episodes.jsonl` and `seco
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-To reproduce formal-v2, run seeds 1–5 without `--smoke`. The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 17 hours on an RTX 2060. `--host` picks the batch settings for your GPU from [hosts.yaml](configs/v2/train/hosts.yaml).
+To reproduce formal-v2, run seeds 1–5 without `--smoke`. The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 16 hours on an RTX 2060. `--host` picks the batch settings for your GPU from [hosts.yaml](configs/v2/train/hosts.yaml).
 
 ### Run in ROS 2 / Gazebo
 
@@ -159,6 +159,8 @@ configs/v2/                 sensor contract, evaluation protocol, training confi
 data/subgraphs/             extracted subgraphs (CC BY 4.0)
 artifacts/                  converted flyvis frontend, input normalization
 ros2_ws/                    ROS 2 packages
+docker/                     ML and ROS container images
+requirements/               pinned dependency lock files
 docs/                       documentation and reports
 ```
 
@@ -198,8 +200,8 @@ Please also cite the data and models this project builds on:
 
 Our code is under the [MIT License](LICENSE). Two parts of the repository keep their original licenses:
 
-- The subgraphs in `data/subgraphs/` are derived from MaleCNS v1.0 and stay under CC BY 4.0.
-- The frontend in `artifacts/` is converted from flyvis (MIT).
+- The subgraphs in `data/subgraphs/` and the summaries in `artifacts/data_execution/` are derived from MaleCNS v1.0 and stay under CC BY 4.0.
+- The frontends in `artifacts/frontend/` and `artifacts/frontend_v2/` are converted from flyvis (MIT).
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 

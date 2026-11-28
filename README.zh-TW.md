@@ -133,18 +133,21 @@ python scripts/v2/evaluate_v2.py \
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 16 小時。`--host` 會從 [hosts.yaml](configs/v2/train/hosts.yaml) 選出適合該 GPU 的批次設定。
+要重現某個正式 seed，就拿掉 `--smoke`，並使用這個 seed 訓練時的主機標籤：seed 1–2 是 `gputw3090`，seed 3 是 `4060`，seed 4 是 `2060`，seed 5 是 `4070`。標籤會從 [hosts.yaml](configs/v2/train/hosts.yaml) 決定批次大小。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 16 小時。
+
+```bash
+python scripts/v2/run_formal.py --host 2060 --seeds 4 --sha "$(git rev-parse HEAD)" \
+  --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml --out runs/v2_formal
+```
 
 ### 在 ROS 2／Gazebo 執行
 
 ```bash
 docker compose --profile sim build
-export ARTIFACT=/workspace/runs/formal_weights/VO2/seed_4/stage2/final
-export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-policy 節點以 20 Hz 發布 `/cmd_vel`。v2 模型要像上面一樣搭配它自己的 `sensor_contract.json`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。要批次跑多個回合，可以用 `scripts/run_gazebo_matrix.py`。
+預設會跑評估範例解壓出來的 VO2 seed 4。要換別的模型，設定 `ARTIFACT` 即可，例如 `ARTIFACT=/workspace/runs/formal_weights/V2/seed_4/stage2/final`。policy 節點以 20 Hz 發布 `/cmd_vel`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。要批次跑多個回合，可以用 `scripts/run_gazebo_matrix.py`。
 
 ## 目錄結構
 

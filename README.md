@@ -133,18 +133,21 @@ This takes about a minute on a CPU. The results go to `episodes.jsonl` and `seco
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-To reproduce formal-v2, run seeds 1–5 without `--smoke`. The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 16 hours on an RTX 2060. `--host` picks the batch settings for your GPU from [hosts.yaml](configs/v2/train/hosts.yaml).
+To reproduce a formal seed, drop `--smoke` and use the host label that seed was trained under: `gputw3090` for seeds 1–2, `4060` for seed 3, `2060` for seed 4, and `4070` for seed 5. The label sets the batch size from [hosts.yaml](configs/v2/train/hosts.yaml). The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 16 hours on an RTX 2060.
+
+```bash
+python scripts/v2/run_formal.py --host 2060 --seeds 4 --sha "$(git rev-parse HEAD)" \
+  --execution-assignment configs/v2/execution/cloud-seeds-1-2.yaml --out runs/v2_formal
+```
 
 ### Run in ROS 2 / Gazebo
 
 ```bash
 docker compose --profile sim build
-export ARTIFACT=/workspace/runs/formal_weights/VO2/seed_4/stage2/final
-export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-The policy node publishes `/cmd_vel` at 20 Hz. A v2 model must be paired with its own `sensor_contract.json`, as above. Foxglove can connect to `ws://localhost:8765`. Without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`. `scripts/run_gazebo_matrix.py` runs batches of episodes.
+By default this runs the VO2 seed-4 policy extracted in the evaluation example. To run another model, set `ARTIFACT`, for example `ARTIFACT=/workspace/runs/formal_weights/V2/seed_4/stage2/final`. The policy node publishes `/cmd_vel` at 20 Hz. Foxglove can connect to `ws://localhost:8765`. Without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`. `scripts/run_gazebo_matrix.py` runs batches of episodes.
 
 ## Repository structure
 

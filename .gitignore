@@ -58,7 +58,6 @@ ros2_ws/log/
 *.bag
 *.db3
 *.mcap
-colab_workspace/
 
 # 個人文件（計劃書封面含個資；作業 PDF 與本專案無關）
 *.pdf

@@ -190,6 +190,9 @@ def main():
                 environment["SENSOR_CONTRACT"] = "/workspace/" + str(
                     (artifact / "sensor_contract.json").relative_to(root)
                 )
+            else:
+                # v1 actors keep the v1 contract; Compose now defaults to the v2 one.
+                environment["SENSOR_CONTRACT"] = "/workspace/configs/sensor_contract.json"
             print(f"Gazebo {variant}, model seed {seed}, {scenario}", flush=True)
             cell_started = datetime.now(timezone.utc).isoformat()
             cell_started_monotonic = time.monotonic()

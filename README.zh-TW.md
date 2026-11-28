@@ -125,17 +125,13 @@ python scripts/v2/evaluate_v2.py \
 
 ### 訓練
 
-`scripts/v2/run_formal.py` 會對指定的 seed 訓練全部六個變體。每個變體依序跑第一階段、held-out 評估、第二階段、再一次 held-out 評估。想先確認環境沒問題，可以跑玩具規模的版本（RTX 2060 約 13 分鐘）：
+`scripts/v2/run_formal.py` 會對指定的 seed 訓練並評估全部六個變體。可以先跑玩具規模的版本確認環境，RTX 2060 約 13 分鐘：
 
 ```bash
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5；建議先加 `--dry-run` 看執行計畫。配方是 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 17 小時。
-
-- `--host` 從 [hosts.yaml](configs/v2/train/hosts.yaml) 選 micro-batch 大小。
-- 工作目錄有未提交的修改時，runner 不會開始。
-- 第一階段的速度健康檢查出現警告時，會以 exit 3 結束。runner 會記下來並繼續，smoke 規模下很常見。
+要重現 formal-v2，就拿掉 `--smoke`、改用 seed 1–5。runner 用的是正式配方 [a3_v15.yaml](configs/v2/train/a3_v15.yaml)。在 RTX 2060 上，一個 seed 約花 17 小時。`--host` 會從 [hosts.yaml](configs/v2/train/hosts.yaml) 選出適合該 GPU 的批次設定。
 
 ### 在 ROS 2／Gazebo 執行
 
@@ -146,9 +142,7 @@ export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-policy 節點以 20 Hz 發布 `/cmd_vel`。模型的雜湊、時間步、幾何或感測契約不符時，它會拒絕載入，所以 v2 模型要搭配它自己的 `sensor_contract.json`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。
-
-要一次跑很多回合，可以用 `scripts/run_gazebo_matrix.py`。Gazebo 只驗證過 puff 世界（預設值），見 [world.md](docs/v2/world.md) 第 8 節。
+policy 節點以 20 Hz 發布 `/cmd_vel`。v2 模型要像上面一樣搭配它自己的 `sensor_contract.json`。Foxglove 可以連到 `ws://localhost:8765`。機器沒有 NVIDIA 容器支援的話，加上 `-f compose.yaml -f compose.cpu.yaml`。要批次跑多個回合，可以用 `scripts/run_gazebo_matrix.py`。
 
 ## 目錄結構
 
@@ -171,12 +165,11 @@ docs/                       文件和報告
 - 訓練配方是只看 VO2 選的，這對 G-B 和 G-C 裡的 VO2 有利。五個 seed 的統計檢定力也有限。
 - 同型別、同一側的視覺神經元共用一個感受野，因為 MaleCNS 沒有這些型別逐顆細胞的視網膜位置。
 - 用 DNp09 和 DNb05 讀前進速度是我們的建模選擇，不是已確立的生理結果。
-- 30 次正式訓練中，有 15 次在第一階段結束時出現速度變異過低的警告。
 - Gazebo 只測了 puff 世界。
 
 ## 歷史
 
-第一個正式版本是 [formal-v1](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1)（2026-10-28），用 4,502 顆神經元的圖和 CPU 世界（[報告](docs/formal_v1_report.md)）。目前的版本是 [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2)（2026-11-24）。計畫文件和進度紀錄已經移出 `main`，存放位置見 [HISTORY.md](docs/HISTORY.md)。
+第一個正式版本是 [formal-v1](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1)（2026-10-28），用 4,502 顆神經元的圖和 CPU 世界（[報告](docs/formal_v1_report.md)）。目前的版本是 [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2)（2026-11-24）。
 
 ## 團隊
 

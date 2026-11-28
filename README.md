@@ -125,17 +125,13 @@ This takes about a minute on a CPU. The results go to `episodes.jsonl` and `seco
 
 ### Train
 
-`scripts/v2/run_formal.py` trains all six variants for the given seeds. For each variant it runs Stage 1, a held-out evaluation, Stage 2, and another held-out evaluation. To check the setup with a toy-sized run (about 13 minutes on an RTX 2060):
+`scripts/v2/run_formal.py` trains and evaluates all six variants for the given seeds. A toy-sized run checks the setup in about 13 minutes on an RTX 2060:
 
 ```bash
 python scripts/v2/run_formal.py --host 2060 --seeds 100 --sha "$(git rev-parse HEAD)" --smoke --out runs/smoke
 ```
 
-To reproduce formal-v2, use seeds 1–5 without `--smoke`, and add `--dry-run` first to see the plan. The recipe is [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 17 hours on an RTX 2060.
-
-- `--host` selects the micro-batch size from [hosts.yaml](configs/v2/train/hosts.yaml).
-- The runner refuses to start from a dirty checkout.
-- Stage 1 exits with code 3 when its speed-health check warns. The runner logs this and continues, and it happens often in smoke runs.
+To reproduce formal-v2, run seeds 1–5 without `--smoke`. The runner uses the formal recipe, [a3_v15.yaml](configs/v2/train/a3_v15.yaml). One seed took about 17 hours on an RTX 2060. `--host` picks the batch settings for your GPU from [hosts.yaml](configs/v2/train/hosts.yaml).
 
 ### Run in ROS 2 / Gazebo
 
@@ -146,9 +142,7 @@ export SENSOR_CONTRACT=$ARTIFACT/sensor_contract.json
 docker compose --profile sim up sim policy eval viz
 ```
 
-The policy node publishes `/cmd_vel` at 20 Hz. It refuses to load a model whose hashes, timing, geometry, or sensor contract do not match, so a v2 model needs its own `sensor_contract.json`. Foxglove can connect to `ws://localhost:8765`. On a machine without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`.
-
-To run many episodes at once, use `scripts/run_gazebo_matrix.py`. Only the puff world (the default) was validated in Gazebo; see [world.md](docs/v2/world.md) §8.
+The policy node publishes `/cmd_vel` at 20 Hz. A v2 model must be paired with its own `sensor_contract.json`, as above. Foxglove can connect to `ws://localhost:8765`. Without NVIDIA container support, add `-f compose.yaml -f compose.cpu.yaml`. `scripts/run_gazebo_matrix.py` runs batches of episodes.
 
 ## Repository structure
 
@@ -171,12 +165,11 @@ docs/                       documentation and reports
 - We chose the training recipe by looking at VO2 only, which favors VO2 in G-B and G-C. Five seeds also give limited statistical power.
 - Visual neurons of the same type on the same side share one receptive field, because MaleCNS does not give per-cell retinotopy for these types.
 - Reading forward speed from DNp09 and DNb05 is our modeling choice. It is not an established physiological result.
-- In 15 of the 30 formal runs, Stage 1 ended with a low speed-variability warning.
 - Gazebo was tested in the puff world only.
 
 ## History
 
-The first formal version, [formal-v1](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1) (2026-10-28), used a 4,502-neuron graph and CPU worlds ([report](docs/formal_v1_report.md)). The current version is [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) (2026-11-24). Our planning documents and progress logs have been moved out of `main`; [HISTORY.md](docs/HISTORY.md) says where to find them.
+The first formal version, [formal-v1](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v1) (2026-10-28), used a 4,502-neuron graph and CPU worlds ([report](docs/formal_v1_report.md)). The current version is [formal-v2](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2) (2026-11-24).
 
 ## Team
 

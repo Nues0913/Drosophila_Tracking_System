@@ -54,7 +54,7 @@ All gates were fixed in the [evaluation protocol](configs/v2/evaluation_protocol
 
 Swapping the left and right odor during occlusion lowered VO2's tracking fraction in that window from 57.0% to 14.2%. Rotating the wind by 90° lowered it to 33.2%. Both drops are significant after Holm correction, so the policy does use these inputs. VO2 also stayed with the hidden target more than V2 did (57.0% vs 40.6% of the occlusion window). It hit the target more often as well, with collisions in 41.7% of episodes against 15.0% for V2, which is why overall success barely changed.
 
-As a post-hoc check outside the protocol, we re-ran the same occlusion episodes with target contact no longer ending the episode (walls still did). VO2 then succeeded in 29.9% of episodes and V2 in 18.9%, a difference of +11.0 pp (95% t interval −0.1 to +22.1, one-sided p = 0.025 before correction). Most of the difference came from wandering targets (+19.4 pp).
+As a post-hoc check outside the protocol, we re-ran the same occlusion episodes with target contact no longer ending the episode (walls still did). VO2 then succeeded in 29.9% of episodes and V2 in 18.9%, a difference of +11.0 pp (95% t interval −0.1 to +22.1, one-sided p = 0.025 before correction). Most of the difference came from wandering targets (+19.4 pp). The records and scripts are in the [research-v2-collision-check](https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/research-v2-collision-check) release.
 
 We think part of the reason is anatomical. Olfactory projection neurons receive input from both antennae, and in our model about 79% of the left–right odor difference cancels at that first synapse. Most of the odor steering that is left goes through a two-synapse path to DNb05.
 

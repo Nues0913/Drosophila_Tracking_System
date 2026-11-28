@@ -22,4 +22,4 @@
 - `data/raw/download_manifest.json`：下載狀態、來源 URL、實際位元組數、ETag 與本地 SHA-256（不進 git，重新下載時產生）。
 - `data/raw/download_verification.json`：下載後核對結果與官方 Google Storage 物件 generation。
 
-實際 Feather schema 已核對（`artifacts/data_execution/raw_schemas.json`），型別盤點與子圖萃取已完成，見 [status.md](status.md)。
+實際 Feather schema 已核對（`artifacts/data_execution/raw_schemas.json`），型別盤點與子圖萃取已完成，見 [status.md](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/status.md)。

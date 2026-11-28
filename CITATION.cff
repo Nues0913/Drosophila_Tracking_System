@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+message: "If you use FlyTrack, please cite it as below, together with the MaleCNS connectome and flyvis."
+title: "FlyTrack: Connectome-Constrained Multisensory Target Tracking"
+type: software
+authors:
+  - alias: Nues0913
+    website: "https://github.com/Nues0913"
+  - alias: MiLong9487
+    website: "https://github.com/MiLong9487"
+  - alias: cweiting731
+    website: "https://github.com/cweiting731"
+version: formal-v2
+date-released: 2026-11-24
+license: MIT
+repository-code: "https://github.com/Nues0913/Drosophila_Tracking_System"
+url: "https://github.com/Nues0913/Drosophila_Tracking_System/releases/tag/formal-v2"
+abstract: >-
+  A target-tracking agent whose controller is a recurrent rate network wired from an
+  8,792-neuron subgraph of the Drosophila male central nervous system connectome
+  (MaleCNS v1.0). It combines a frozen flyvis visual frontend, olfactory and antennal
+  wind input, and descending-neuron readouts; it is trained with paired-observation
+  DAgger and recurrent PPO in GPU-batched 2D worlds, evaluated under a pre-registered
+  protocol, and deployed in ROS 2 / Gazebo.
+keywords:
+  - connectome
+  - Drosophila
+  - MaleCNS
+  - multisensory integration
+  - target tracking
+  - reinforcement learning
+  - imitation learning
+  - ROS 2
+references:
+  - type: article
+    title: "Sexual dimorphism in the complete Drosophila male central nervous system connectome"
+    authors:
+      - family-names: Berg
+        given-names: S.
+      - name: "et al."
+    journal: Cell
+    volume: 189
+    issue: 18
+    start: 5504
+    end: "5526.e15"
+    year: 2026
+    doi: 10.1016/j.cell.2026.08.015
+  - type: article
+    title: "Connectome-constrained networks predict neural activity across the fly visual system"
+    authors:
+      - family-names: Lappalainen
+        given-names: Janne K.
+      - family-names: Tschopp
+        given-names: Fabian D.
+      - family-names: Prakhya
+        given-names: Sridhama
+      - family-names: McGill
+        given-names: Mason
+      - family-names: Nern
+        given-names: Aljoscha
+      - family-names: Shinomiya
+        given-names: Kazunori
+      - family-names: Takemura
+        given-names: Shin-ya
+      - family-names: Gruntman
+        given-names: Eyal
+      - family-names: Macke
+        given-names: Jakob H.
+      - family-names: Turaga
+        given-names: Srinivas C.
+    journal: Nature
+    year: 2024
+    doi: 10.1038/s41586-024-07939-3

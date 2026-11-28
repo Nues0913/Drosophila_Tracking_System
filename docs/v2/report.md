@@ -88,7 +88,7 @@ VO2 的 `wind` 遮蔽追蹤比例按時段列於下表。每個 seed 內先平�
 - 使用者 11-21 定義「神經元自己學會」：測試時動作只來自網路和 DN 讀出，不能有旁路或控制器；訓練時可以有 teacher。
 
 ### 4.2 候選與結果
-選定的 A3 第十五版在 4070 試跑 seed 100 的 wind 遮蔽為 98/200，同機 V2 為 36/200；在 2060 試跑 seed 101 為 23/200。試跑以 `868c373` 執行。正式版另外修正 Stage 1 配對損失的完整 batch 正規化。兩次試跑的 seed 與主機同時改變，無法從這組差異單獨估計主機效應。[選型與試跑](status.md)、[凍結版本](https://github.com/Nues0913/Drosophila_Tracking_System/pull/211)。
+選定的 A3 第十五版在 4070 試跑 seed 100 的 wind 遮蔽為 98/200，同機 V2 為 36/200；在 2060 試跑 seed 101 為 23/200。試跑以 `868c373` 執行。正式版另外修正 Stage 1 配對損失的完整 batch 正規化。兩次試跑的 seed 與主機同時改變，無法從這組差異單獨估計主機效應。[選型與試跑](https://github.com/Nues0913/Drosophila_Tracking_System/blob/team-archive-2026-11-28/docs/v2/status.md)、[凍結版本](https://github.com/Nues0913/Drosophila_Tracking_System/pull/211)。
 
 最後的「永和豆漿無糖中杯冰的計畫」並未採用。4070 的 VO2 seed 100 為 37/200，4060 的 seed 101 為 29/200，後者未過標準 4。4070 的 V2 在安全存檔點停止，沒有配對評估。[停止紀錄](https://github.com/Nues0913/Drosophila_Tracking_System/issues/138#issuecomment-7096343339)。
 - **C3**：VO2 加上觀測式的循味逆風控制器。標準 1–4 在兩個 seed 都通過，wind 遮蔽成功率 0.065 → 0.63。但它是混合系統，不符合「自己學會」，只當作「觀測裡的氣味和風已經足夠」的證據。
